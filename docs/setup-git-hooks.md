@@ -17,35 +17,51 @@ gitleaks version
 
 ## 2. Point Git at the hooks
 
-From the repository root:
+From the repository root (PowerShell):
 
-```sh
+```powershell
 git config core.hooksPath .githooks
-git config --get core.hooksPath   # prints: .githooks
+git config core.hooksPath   # expect: .githooks
 ```
 
 ## 3. Check that the scan blocks a secret
 
-Use a throwaway branch and a random fake token, and don't push it. (A token like `ghp_aaaa…` won't trigger gitleaks: it looks too unlike a real one.)
+This runs in a throwaway repo in your temp folder, never in `rts-game`. It points that repo at `C:/dev/rts-game/.githooks`, tries to commit a random fake token, expects the commit to be blocked, then deletes the folder. It stops on any unexpected result. (A token like `ghp_aaaa…` won't trigger gitleaks because it doesn't look like a real one, so the script makes a random one.)
 
-```sh
-git switch -c hook-test
-printf 'token = "ghp_%s"\n' "$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 36)" > hook-test.txt
-git add hook-test.txt
-git commit -m "test: hook check"   # expect: blocked, exit 1, value redacted
-git reset hook-test.txt
-rm hook-test.txt
-git switch -
-git branch -D hook-test
+```powershell
+$hooks = 'C:/dev/rts-game/.githooks'
+$tmp = Join-Path ([IO.Path]::GetTempPath()) ("hook-test-" + [guid]::NewGuid())
+New-Item -ItemType Directory $tmp | Out-Null
+Push-Location $tmp
+try {
+  git init -q
+  if ($LASTEXITCODE -ne 0) { throw "git init failed" }
+  git config core.hooksPath $hooks
+  if ($LASTEXITCODE -ne 0) { throw "git config failed" }
+  $chars = [char[]]'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+  $token = 'ghp_' + -join (1..36 | ForEach-Object { $chars | Get-Random })
+  Set-Content token.txt "token = `"$token`""
+  git add token.txt
+  if ($LASTEXITCODE -ne 0) { throw "git add failed" }
+  $out = git -c user.name=hook-test -c user.email=hook-test@example.invalid commit -q -m "hook test" 2>&1 | Out-String
+  if ($LASTEXITCODE -eq 0) { throw "UNEXPECTED: the commit went through. The secret scan is NOT working." }
+  if ($out -notmatch 'Commit blocked') { throw "UNEXPECTED: commit failed for another reason:`n$out" }
+  Write-Host "OK: the hook blocked the fake token."
+} finally {
+  Pop-Location
+  Remove-Item -Recurse -Force $tmp
+}
 ```
 
-If the commit goes through, stop: the hook isn't active. Check step 2.
+If it prints anything other than `OK: ...`, stop and fix that before you rely on the hooks.
 
 ## 4. Check the LFS hooks
 
-```sh
-ls .githooks   # expect: post-checkout post-commit post-merge pre-commit pre-merge-commit pre-push
-grep -l "git lfs" .githooks/*   # expect: post-checkout post-commit post-merge pre-push
+```powershell
+Get-ChildItem .githooks -Name
+# expect: post-checkout post-commit post-merge pre-commit pre-merge-commit pre-push
+Select-String -Path .githooks/* -Pattern 'git lfs' -List | ForEach-Object Filename
+# expect: post-checkout post-commit post-merge pre-push
 ```
 
 Don't run `git lfs install` after setting `core.hooksPath`: it may rewrite the hooks in `.githooks/`, which is a protected path.
