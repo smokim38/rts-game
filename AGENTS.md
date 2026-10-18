@@ -162,12 +162,12 @@ Reviews cost usage, so we spend them where the risk is. The Producer sets the ti
 | **Standard** | Code, tests, tools and scripts, Blender/Python scripts, shaders, scenes and prefabs | One reviewer from the **other vendor**: Codex writes → Claude reviews; Claude writes → Codex reviews. |
 | **Critical** | Protected paths, ADRs, new dependencies, security or permission changes, anything hard to undo | An other-vendor reviewer, in depth. The owner reads the review before merging. |
 
-**Protected paths:** `.githooks/`, `.claude/`, `.codex/`, `AGENTS.md`, `CLAUDE.md`, `.gitattributes`, `.gitleaksignore`
+**Protected paths:** `.githooks/`, `.claude/`, `.codex/`, `.github/`, `AGENTS.md`, `CLAUDE.md`, `.gitattributes`, `.gitleaksignore`
 - An agent may propose a change to a protected path only as a PR for its assigned `approved` Issue, and only if that Issue explicitly names the path. The PR is Critical tier, the owner merges, and the current rules apply until then. There is no other exception.
-- `.gitleaksignore` is stricter: only the owner edits it.
+- `.gitleaksignore` is deliberately stricter: only the owner edits it, and agents may not propose changes to it, even for an approved Issue.
 
 **Also always Critical:**
-- `.gitignore`, gitleaks config, `.github/`, MCP server configuration
+- `.gitignore`, gitleaks config, MCP server configuration
 - `Game/Packages/manifest.json`, `Game/Packages/packages-lock.json`, `Game/ProjectSettings/ProjectVersion.txt`
 - `docs/adr/`
 
