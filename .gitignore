@@ -1,0 +1,47 @@
+# ===== Unity (the project lives in Game/) =====
+Game/[Ll]ibrary/
+Game/[Tt]emp/
+Game/[Oo]bj/
+Game/[Bb]uild/
+Game/[Bb]uilds/
+Game/[Ll]ogs/
+Game/[Uu]ser[Ss]ettings/
+Game/[Mm]emoryCaptures/
+Game/[Rr]ecordings/
+Game/.utmp/
+*_BurstDebugInformation_DoNotShip/
+*_BackUpThisFolder_ButDontShipItWithYourGame/
+
+# Generated IDE files (Unity regenerates them)
+*.csproj
+*.sln
+*.slnx
+*.user
+*.suo
+*.pidb
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+.vs/
+
+# Logs & crash reports
+*.log
+sysinfo.txt
+crashlytics-build.properties
+
+# Blender backups
+*.blend1
+*.blend2
+
+# OS clutter
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Secrets: never commit
+.env
+.env.*
+*.pem
+*.pfx
+*.key
