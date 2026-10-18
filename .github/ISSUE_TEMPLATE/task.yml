@@ -1,0 +1,76 @@
+name: Task
+description: Docs, art, tooling, setup or other work that isn't a feature or a bug
+title: "chore: "
+labels: ["type:task"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This repository is **public**: no secrets, tokens or personal information.
+        Only the owner adds the `approved` label. Until then this Issue is a suggestion, not work (see `docs/studio/workflow.md`).
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What this task delivers and why. One or two sentences.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Testable checks, including the files or paths the result goes in.
+      value: |
+        - [ ]
+    validations:
+      required: true
+  - type: dropdown
+    id: role
+    attributes:
+      label: Suggested role
+      options:
+        - producer
+        - game-designer
+        - tech-architect
+        - tech-artist
+        - gameplay-programmer
+        - qa-test-engineer
+        - code-reviewer
+    validations:
+      required: true
+  - type: dropdown
+    id: type
+    attributes:
+      label: Type
+      options:
+        - task
+        - docs
+        - art
+        - spike
+    validations:
+      required: true
+  - type: dropdown
+    id: tier
+    attributes:
+      label: Suggested tier
+      description: The Producer sets the final tier (AGENTS.md §6).
+      options:
+        - "Standard: code, tests, tools, scripts, shaders, scenes, prefabs"
+        - "Critical: protected paths, ADRs, new dependencies, security, hard to undo"
+        - "Owner: game design, balance numbers, art look and feel"
+        - "Light: typos, wording, formatting, renames with no behavior change"
+    validations:
+      required: true
+  - type: dropdown
+    id: size
+    attributes:
+      label: Suggested size
+      options:
+        - "S: under a day"
+        - "M: one or two days"
+        - "L: bigger; consider splitting"
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Related Issues, ADRs or docs, and any protected paths this touches (these must be named here).
