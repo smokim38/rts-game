@@ -61,7 +61,7 @@ $StatusOptions = @(
 )
 $GitHubDefaultStatus = @('Todo', 'In Progress', 'Done')
 $StatusRenames = @{ 'Todo' = 'Backlog'; 'In Progress' = 'In progress' }
-$SizeOptions = @('S', 'M', 'L')
+$RequiredSizeOptions = @('S', 'M', 'L')
 $LabelLimit = 10000
 
 # `approved` is applied only by the owner, by hand. This script must never create or touch it.
@@ -191,21 +191,21 @@ if (-not $project) {
     Test-Complete @($fieldList.fields).Count $fieldList.totalCount 'project fields'
     $fields = $fieldList.fields
     $size = $fields | Where-Object name -ceq 'Size' | Select-Object -First 1
-    $sizeOptions = @($size.options | ForEach-Object name)
-    $missingSizes = @($SizeOptions | Where-Object { $sizeOptions -cnotcontains $_ })
+    $ExistingSizeOptions = @($size.options | ForEach-Object name)
+    $missingSizes = @($RequiredSizeOptions | Where-Object { $ExistingSizeOptions -cnotcontains $_ })
     if ($size -and $size.type -ne 'ProjectV2SingleSelectField') {
         Write-Host "  exists but is a $($size.type), not a single-select field; left as is"
         $Summary.Manual += @"
 Fix the Size field by hand at https://github.com/users/$Owner/projects/$number/settings (Custom fields):
   1. Rename the current "Size" field to "Size (old)".
-  2. Create a single-select field "Size" with the options $($SizeOptions -join ', ').
+  2. Create a single-select field "Size" with the options $($RequiredSizeOptions -join ', ').
   3. Copy each card's size across, then delete "Size (old)". Deleting it earlier loses those values.
 "@
     } elseif ($size -and $missingSizes) {
         Write-Host "  exists but lacks the options: $($missingSizes -join ', '); left as is"
         $Summary.Manual += "Add the options $($missingSizes -join ', ') to the Size field at https://github.com/users/$Owner/projects/$number/settings (Custom fields > Size). Don't delete or recreate the field: that clears every card's Size."
     } elseif ($size) {
-        Write-Host "  exists: $($sizeOptions -join ', ')"
+        Write-Host "  exists: $($ExistingSizeOptions -join ', ')"
         $Summary.Existed += 'field Size'
     } elseif ($PSCmdlet.ShouldProcess('Size', 'Create single-select field (S, M, L)')) {
         Invoke-Gh -Arguments @('project', 'field-create', $number, '--owner', $Owner, '--name', 'Size', '--data-type', 'SINGLE_SELECT', '--single-select-options', 'S,M,L') | Out-Null

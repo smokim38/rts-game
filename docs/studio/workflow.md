@@ -36,7 +36,7 @@ There is one consolidated review per round, with a verdict of Approve, Request c
 
 ### QA (step 7)
 
-For `type:feature` Issues that change gameplay, the Producer asks `qa-test-engineer` to check the PR once the review approves it. The card stays in In review. QA is part of the same Issue, so it doesn't count against anyone's WIP limit. QA:
+For `type:feature` Issues that change gameplay, the Producer asks `qa-test-engineer` to check the PR once the review approves it. The card stays in In review. QA needs no separate tracking Issue, but the check takes the QA engineer's one WIP slot until it posts its result, and the Issue stays in the author's slot too. QA:
 - runs the relevant tests and a performance check on the PR's head commit
 - posts a PR comment starting with `QA: pass` or `QA: fail`, followed by the SHA it tested and what it ran
 - never fixes code itself (AGENTS.md §1)
@@ -91,7 +91,7 @@ A `type:spike` Issue is time-boxed research. Its output is a written finding (a 
 
 ## WIP limit
 
-Each engineer (gameplay-programmer, qa-test-engineer, tech-artist) has at most **one open assigned Issue** at a time. An Issue in In progress, In review or Blocked counts. We start with one gameplay-programmer. If an engineer is blocked, the Producer resolves the blocker or asks the owner; the engineer doesn't start a second Issue. Fixes requested by review or QA belong to the same Issue, so they never need a second one.
+Each engineer (gameplay-programmer, qa-test-engineer, tech-artist) has **one WIP slot**: at most one open assigned Issue at a time. An Issue in In progress, In review or Blocked counts. For qa-test-engineer, a QA check on a PR also fills the slot until its result is posted. We start with one gameplay-programmer. If an engineer is blocked, the Producer resolves the blocker or asks the owner; the engineer doesn't start a second Issue. Fixes requested by review or QA belong to the same Issue, so they never need a second one.
 
 ## Merge policy
 
