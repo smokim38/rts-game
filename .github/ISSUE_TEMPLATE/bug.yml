@@ -1,0 +1,90 @@
+name: Bug
+description: Something in the game, tools or pipeline doesn't work as it should
+title: "fix: "
+labels: ["type:bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This repository is **public**: no secrets, tokens or personal information. Don't paste logs that contain local paths with a user name.
+        Only the owner adds the `approved` label. Until then this Issue is a report, not work (see `docs/studio/workflow.md`).
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What the correct behavior is, in one or two sentences.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      value: |
+        1.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Expected vs actual
+      description: What you expected, and what happened instead (errors, screenshots, Profiler numbers).
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Commit or build
+      description: The commit SHA or branch where you saw it.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How we'll know it's fixed. Include a regression test where possible.
+      value: |
+        - [ ]
+    validations:
+      required: true
+  - type: dropdown
+    id: role
+    attributes:
+      label: Suggested role
+      options:
+        - gameplay-programmer
+        - tech-artist
+        - qa-test-engineer
+        - game-designer
+        - tech-architect
+        - code-reviewer
+        - producer
+    validations:
+      required: true
+  - type: dropdown
+    id: type
+    attributes:
+      label: Type
+      options:
+        - bug
+    validations:
+      required: true
+  - type: dropdown
+    id: tier
+    attributes:
+      label: Suggested tier
+      description: The Producer sets the final tier (AGENTS.md §6).
+      options:
+        - "Standard: code, tests, tools, scripts, shaders, scenes, prefabs"
+        - "Critical: protected paths, ADRs, new dependencies, security, hard to undo"
+        - "Owner: game design, balance numbers, art look and feel"
+        - "Light: typos, wording, formatting, renames with no behavior change"
+    validations:
+      required: true
+  - type: dropdown
+    id: size
+    attributes:
+      label: Suggested size
+      options:
+        - "S: under a day"
+        - "M: one or two days"
+        - "L: bigger; consider splitting"
