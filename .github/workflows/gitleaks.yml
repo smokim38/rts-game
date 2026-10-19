@@ -9,7 +9,6 @@
 name: gitleaks
 
 on:
-  pull_request:  # TEMPORARY: tests this revision on PR #13 before main has it; removed before merge
   pull_request_target:
   push:
     branches: [main]
