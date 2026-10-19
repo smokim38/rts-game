@@ -8,7 +8,6 @@
 name: gitleaks
 
 on:
-  pull_request:  # TEMPORARY: lets this PR test the workflow before main has it; removed before merge
   pull_request_target:
   push:
     branches: [main]
