@@ -1,19 +1,29 @@
 # Server-side secret scan (AGENTS.md §5). It must pass before the owner merges.
 #
 # pull_request_target runs this file as it is on main, so a pull request can't weaken the
-# check that judges it. The pull request's content is only read, never run, and the token
-# is read-only, which keeps this trigger safe for a public repository.
-# The config is written here, and .gitleaksignore is taken from main's history, so a
-# pull request can't change either one.
+# check that judges it. The token is read-only, no secrets are used, and the pull request's
+# content is only read by gitleaks, never built or run. That is why checking out fork code
+# here is safe (allow-unsafe-pr-checkout below; see https://gh.io/securely-using-pull_request_target).
+# The config is written here, and .gitleaksignore is taken from main's history, so a pull
+# request can't change either one.
 name: gitleaks
 
 on:
+  pull_request:  # TEMPORARY: tests this revision on PR #13 before main has it; removed before merge
   pull_request_target:
   push:
     branches: [main]
 
 permissions:
   contents: read
+
+env:
+  # The git log options for every scan:
+  # - only the checked-out commit and its ancestors, not every fetched branch (HEAD)
+  # - plain-text patches whatever .gitattributes or config say (--text, --no-textconv, --no-ext-diff)
+  # - merge commits diffed against each parent, so a secret added while resolving a merge is seen
+  # - gitleaks' default filter (no deleted, unmerged or broken entries)
+  LOG_OPTS: --full-history --diff-filter=tuxdb --text --no-textconv --no-ext-diff --diff-merges=separate HEAD
 
 jobs:
   gitleaks:
@@ -28,6 +38,7 @@ jobs:
           path: scan
           fetch-depth: 0
           persist-credentials: false
+          allow-unsafe-pr-checkout: true
 
       - name: Install gitleaks 8.30.1 (official release, checksum verified)
         working-directory: ${{ runner.temp }}
@@ -39,16 +50,62 @@ jobs:
       - name: Use the trusted config and ignore list
         run: |
           printf '[extend]\nuseDefault = true\n' > "$RUNNER_TEMP/gitleaks.toml"
-          mkdir "$RUNNER_TEMP/ignore"
+          mkdir "$RUNNER_TEMP/ignore" "$RUNNER_TEMP/no-ignore"
           if git -C scan cat-file -e refs/remotes/origin/main:.gitleaksignore 2>/dev/null; then
             git -C scan show refs/remotes/origin/main:.gitleaksignore > "$RUNNER_TEMP/ignore/.gitleaksignore"
           fi
           # gitleaks also reads .gitleaksignore from the folder it scans; only main's copy counts.
           rm -f scan/.gitleaksignore
 
-      - name: Scan the full history
+      - name: Self-test the scan settings
+        # Throwaway repositories with random fake tokens. Each case that would slip past a
+        # weaker scan must be caught, and a secret outside HEAD's history must not count.
+        run: |
+          set -euo pipefail
+          base="$RUNNER_TEMP/selftest"
+          token() { python3 -c "import secrets, string; print('ghp_' + ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(36)))"; }
+          repo() {
+            rm -rf "$base/$1" && mkdir -p "$base/$1" && cd "$base/$1"
+            git init -q -b main && git config user.name ci && git config user.email ci@example.invalid
+            echo base > base.txt && git add base.txt && git commit -q -m base
+          }
+          expect() {
+            set +e
+            "$RUNNER_TEMP/gitleaks" git --no-banner --redact --exit-code 3 --config "$RUNNER_TEMP/gitleaks.toml" \
+              --gitleaks-ignore-path "$RUNNER_TEMP/no-ignore" --log-opts="$LOG_OPTS" . > "$base/out" 2>&1
+            code=$?
+            set -e
+            case "$1:$code" in
+              leaks:3|clean:0) echo "ok: $2" ;;
+              *) cat "$base/out"; echo "::error::self-test failed: $2 (expected $1, exit $code)"; exit 1 ;;
+            esac
+          }
+
+          repo diff-attribute
+          echo 'token.txt -diff' > .gitattributes && echo "token = \"$(token)\"" > token.txt
+          git add .gitattributes token.txt && git commit -q -m attr
+          expect leaks "a file marked -diff in .gitattributes"
+
+          repo merge-only
+          git switch -q -c side && echo side > side.txt && git add side.txt && git commit -q -m side
+          git switch -q main && echo main > main.txt && git add main.txt && git commit -q -m main
+          git merge -q --no-ff --no-commit side
+          echo "token = \"$(token)\"" > merge.txt && git add merge.txt && git commit -q -m merge
+          expect leaks "a secret added only in a merge commit"
+
+          repo other-branch
+          git switch -q -c feature && echo "token = \"$(token)\"" > token.txt && git add token.txt && git commit -q -m leak
+          git switch -q main
+          expect clean "a secret on another branch, outside HEAD's history"
+
+          repo clean
+          expect clean "a clean history"
+
+      - name: Scan the checked-out commit and its full history
         run: >
-          "$RUNNER_TEMP/gitleaks" git scan
+          "$RUNNER_TEMP/gitleaks" git
           --redact --no-banner --ignore-gitleaks-allow
           --config "$RUNNER_TEMP/gitleaks.toml"
           --gitleaks-ignore-path "$RUNNER_TEMP/ignore"
+          --log-opts="$LOG_OPTS"
+          scan

@@ -1,4 +1,6 @@
 #!/bin/sh
 # Runs the same gitleaks scan as pre-commit on merge commits.
+# Only `exec` and parameter expansion run here, and inherited shell functions can't replace
+# either one; pre-commit then cleans the environment before it does anything else.
 
-exec "$(dirname "$0")/pre-commit"
+exec /usr/bin/sh "${0%/*}/pre-commit" "$@"
