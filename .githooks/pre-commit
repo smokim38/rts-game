@@ -8,8 +8,11 @@
 # Nothing in the caller's environment can change the scan:
 # - First the script re-runs itself under `env -i`, keeping only what Git and Windows need.
 #   Inherited shell functions, Git config overrides (GIT_CONFIG_*) and GITLEAKS_* variables
-#   are gone. Before that it uses only `case`, `exec` and parameter expansion, which
-#   inherited functions can't replace.
+#   are gone, and `sh -p` ignores SHELLOPTS and similar startup variables. Before that it
+#   uses only `case`, `exec` and parameter expansion, which inherited functions can't replace.
+#   Limit: Git for Windows drops options from a hook's #! line, so the first shell Git
+#   starts still reads an inherited SHELLOPTS (e.g. noexec, which skips the whole hook).
+#   The studio guard keeps agents from setting it; the CI scan is the guarantee.
 # - Only Git for Windows' own folders (under Program Files) are on PATH.
 # - The gitleaks binary must match the pinned official build.
 # - The scan reads each staged file's raw content from the index, not a diff, so
@@ -28,7 +31,7 @@ case "$1" in
       GIT_DIR="$GIT_DIR" GIT_WORK_TREE="$GIT_WORK_TREE" GIT_INDEX_FILE="$GIT_INDEX_FILE" \
       GIT_OBJECT_DIRECTORY="$GIT_OBJECT_DIRECTORY" \
       GIT_ALTERNATE_OBJECT_DIRECTORIES="$GIT_ALTERNATE_OBJECT_DIRECTORIES" \
-      /usr/bin/sh "$0" --clean-env "$@"
+      /usr/bin/sh -p "$0" --clean-env "$@"
     ;;
 esac
 
@@ -87,8 +90,10 @@ while IFS= read -r line; do
   git --no-replace-objects cat-file blob "$blob" > "$tmp/files/$path" || block "could not read $path from the index."
 done < "$tmp/list"
 
-# gitleaks would read a staged .gitleaksignore as exceptions; scan it as plain content instead.
+# gitleaks would read a staged .gitleaksignore as exceptions; scan it as plain content instead,
+# under a name no other staged file may take.
 if [ -f "$tmp/files/.gitleaksignore" ]; then
+  [ -e "$tmp/files/.gitleaksignore.staged" ] && block "a staged .gitleaksignore.staged would hide the staged .gitleaksignore from the scan; rename it."
   mv "$tmp/files/.gitleaksignore" "$tmp/files/.gitleaksignore.staged" || block "could not prepare .gitleaksignore for the scan."
 fi
 

@@ -9,6 +9,9 @@ The hooks in `.githooks/` do two jobs:
   - **Pinned binary.** The gitleaks binary must match the SHA-256 of the official 8.30.1 build pinned in `pre-commit`, so a replaced binary or a fake `gitleaks` earlier on `PATH` blocks the commit. Only Git for Windows' own folders (under Program Files) stay on `PATH`.
   - **Raw content.** It reads each staged file's raw content from the index, not a diff. So `.gitattributes` (`-diff`), textconv and big-file settings can't hide a file.
   - **Fixed config.** It always uses `.githooks/gitleaks.toml`, so `GITLEAKS_CONFIG` or a `.gitleaks.toml` in the repository can't change the rules.
+  - **Limit: inherited `SHELLOPTS`.** Git for Windows drops options from a hook's `#!` line, so the first shell Git starts still reads an inherited `SHELLOPTS`. With `SHELLOPTS=noexec`, the hook does nothing and the commit goes through. No change inside the hook can prevent that.
+    - The studio guard keeps agents from setting it: hook-running git commands must run alone, calls don't keep environment changes, and `setx` and shell profiles are owner-only.
+    - The CI scan, which this can't affect, is the guarantee.
 - **Git LFS:** `pre-push`, `post-checkout`, `post-commit` and `post-merge` are the standard hooks from `git lfs install`. Setting `core.hooksPath` makes Git ignore `.git/hooks/`, so these copies keep LFS working.
 
 ## 1. Install gitleaks
