@@ -113,7 +113,7 @@ These rules change only through a Critical-tier PR to this file, and the rules i
 - Never commit personal information: real names, private emails, phone numbers, or local paths containing a Windows user name (`C:\Users\<name>\...`). Use repo-relative paths.
 
 **Secret scanning**
-- Hooks in `.githooks/` run gitleaks (tested with 8.30.1) on local commits (`pre-commit`) and merge commits (`pre-merge-commit`). A CI gitleaks scan (to be added) is the server-side backstop. Setup: `docs/setup-git-hooks.md`.
+- Hooks in `.githooks/` run gitleaks (tested with 8.30.1) on local commits (`pre-commit`) and merge commits (`pre-merge-commit`). The CI gitleaks scan (`.github/workflows/gitleaks.yml`) is the server-side backstop, and it must pass before the owner merges. Setup: `docs/setup-git-hooks.md`.
 - The scan ignores inline `gitleaks:allow` comments. Exceptions go only in `.gitleaksignore`, which only the owner edits.
 - Never use `--no-verify` and never change `core.hooksPath`.
 

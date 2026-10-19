@@ -101,11 +101,12 @@ When the guard blocks a call, Claude sees the reason and the AGENTS.md section, 
 ### Known limits
 - **The guard is a guardrail, not a sandbox.** An agent that writes a script file and runs it (`node x.js`, `python x.py`) isn't inspected. Default mode prompts the owner for that, because it isn't allow-listed. Read those prompts.
 - **Owner-only files are protected by name, not by path, in shell commands.** The guard reads file names in a command as text. A wildcard (`set?ings.json`) or a recursive delete of a parent folder (`Remove-Item -Recurse .claude`) can still reach them. Edit and Write calls are checked by their real path. The fix is Windows file permissions, tracked in Issue #11.
-- **The environment rules are partly best-effort.** What holds is structural: the hook-running git commands run alone, and calls don't keep environment changes. The token rules catch the common forms. The lasting fix is a `.githooks` that ignores `GITLEAKS_*` overrides (follow-up below).
-- **Server-side controls give the hard guarantees.** They are owner settings, tracked as follow-ups:
-  - a `main` ruleset: PR required, no direct or force pushes, no deletion
-  - a CI gitleaks scan as a required check
-  - `.githooks` that ignore `GITLEAKS_*` overrides
+- **The environment rules are partly best-effort.** What holds is structural:
+  - The hook-running git commands run alone, and calls don't keep environment changes.
+  - The gitleaks hook itself ignores `GITLEAKS_*`, pins its config and checks the gitleaks binary (`docs/setup-git-hooks.md`).
+- **Server-side controls give the hard guarantees:**
+  - The CI gitleaks scan (`.github/workflows/gitleaks.yml`) runs on every PR and push to `main`.
+  - Making it a required check, and adding a `main` ruleset (PR required, no direct or force pushes, no deletion), are owner settings. Both are described in `docs/setup-git-hooks.md`.
 - **Some legitimate commands are blocked too.** The guard prefers a false block over a miss. Ask the owner when a block is wrong. The fix is a reviewed change to the guard, never a workaround.
 - **Labels can't be protected on GitHub.** All agents act through the owner's account, so only the guard and the Issue timeline show who added the `approved` label.
 

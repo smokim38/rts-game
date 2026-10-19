@@ -4,16 +4,28 @@ Owner steps, once per clone. Agents may not run step 2 (it changes git config).
 
 The hooks in `.githooks/` do two jobs:
 
-- **Secret scan:** `pre-commit` and `pre-merge-commit` run gitleaks on staged changes and block the commit if it finds a secret. They fail closed: no gitleaks, no commit.
+- **Secret scan:** `pre-commit` and `pre-merge-commit` run gitleaks on the staged files and block the commit if it finds a secret. They fail closed: no gitleaks, no commit. Nothing in the caller's environment can change the scan:
+  - **Clean environment.** The hook first re-runs itself under `env -i`, keeping only the variables Git and Windows need. Inherited shell functions, Git config overrides (`GIT_CONFIG_*`) and `GITLEAKS_*` variables are dropped.
+  - **Pinned binary.** The gitleaks binary must match the SHA-256 of the official 8.30.1 build pinned in `pre-commit`, so a replaced binary or a fake `gitleaks` earlier on `PATH` blocks the commit. Only Git for Windows' own folders (under Program Files) stay on `PATH`.
+  - **Raw content.** It reads each staged file's raw content from the index, not a diff. So `.gitattributes` (`-diff`), textconv and big-file settings can't hide a file.
+  - **Fixed config.** It always uses `.githooks/gitleaks.toml`, so `GITLEAKS_CONFIG` or a `.gitleaks.toml` in the repository can't change the rules.
+  - **Limit: inherited `SHELLOPTS`.** Git for Windows drops options from a hook's `#!` line, so the first shell Git starts still reads an inherited `SHELLOPTS`. With `SHELLOPTS=noexec`, the hook does nothing and the commit goes through. No change inside the hook can prevent that.
+    - The studio guard keeps agents from setting it: hook-running git commands must run alone, calls don't keep environment changes, and `setx` and shell profiles are owner-only.
+    - The CI scan, which this can't affect, is the guarantee.
 - **Git LFS:** `pre-push`, `post-checkout`, `post-commit` and `post-merge` are the standard hooks from `git lfs install`. Setting `core.hooksPath` makes Git ignore `.git/hooks/`, so these copies keep LFS working.
 
 ## 1. Install gitleaks
 
-Install gitleaks v8 from the official releases: https://github.com/gitleaks/gitleaks/releases. The hooks were tested with **8.30.1**.
+Install gitleaks **8.30.1** from the official releases (https://github.com/gitleaks/gitleaks/releases) or with `winget install Gitleaks.Gitleaks`. The hook accepts only the build whose SHA-256 is pinned in `.githooks/pre-commit`.
 
 ```sh
 gitleaks version
 ```
+
+**Upgrading gitleaks** blocks every commit until the pin is updated. The owner does that in a Critical-tier PR:
+1. Download the new `gitleaks_<version>_windows_x64.zip` and `gitleaks_<version>_checksums.txt` from the official release, and check the zip with the checksums file.
+2. Take the SHA-256 of `gitleaks.exe` inside the zip, and check that it matches the installed binary.
+3. Put the new version and hash in `.githooks/pre-commit`, and the new version and tarball checksum in `.github/workflows/gitleaks.yml`.
 
 ## 2. Point Git at the hooks
 
@@ -26,12 +38,24 @@ git config core.hooksPath   # expect: .githooks
 
 ## 3. Check that the scan blocks a secret
 
-This runs in a throwaway repo in your temp folder, never in `rts-game`. It points that repo at `C:/dev/rts-game/.githooks`, tries to commit a random fake token, expects the commit to be blocked, then deletes the folder. It stops on any unexpected result. (A token like `ghp_aaaa…` won't trigger gitleaks because it doesn't look like a real one, so the script makes a random one.)
+Owner only: agents can't run this, because it sets git config and environment variables in the test.
+
+This runs in a throwaway repo in your temp folder, never in `rts-game`. It points that repo at `C:/dev/rts-game/.githooks` and tries to commit a random fake token seven ways. Each attempt must be blocked:
+1. plainly
+2. with `GITLEAKS_CONFIG` pointing to a config that allows everything
+3. with a `.gitleaks.toml` in the repo that allows everything
+4. with a fake `gitleaks` first on `PATH`
+5. with `GIT_CONFIG_*` variables setting `core.bigFileThreshold=1`, so Git treats every file as binary
+6. with the file marked `-diff` in `.gitattributes`
+7. as a merge (`pre-merge-commit`), with an inherited `dirname` shell function pointing at a fake hook that always passes
+
+Then it deletes the folder. It stops on any unexpected result. (A token like `ghp_aaaa…` won't trigger gitleaks because it doesn't look like a real one, so the script makes a random one.)
 
 ```powershell
 $hooks = 'C:/dev/rts-game/.githooks'
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ("hook-test-" + [guid]::NewGuid())
 New-Item -ItemType Directory $tmp | Out-Null
+$savedPath = $env:PATH
 Push-Location $tmp
 try {
   git init -q
@@ -43,17 +67,71 @@ try {
   Set-Content token.txt "token = `"$token`""
   git add token.txt
   if ($LASTEXITCODE -ne 0) { throw "git add failed" }
-  $out = git -c user.name=hook-test -c user.email=hook-test@example.invalid commit -q -m "hook test" 2>&1 | Out-String
-  if ($LASTEXITCODE -eq 0) { throw "UNEXPECTED: the commit went through. The secret scan is NOT working." }
-  if ($out -notmatch 'Commit blocked') { throw "UNEXPECTED: commit failed for another reason:`n$out" }
-  Write-Host "OK: the hook blocked the fake token."
+  function Test-Blocked([string]$Case, [string]$Expect) {
+    $out = git -c user.name=hook-test -c user.email=hook-test@example.invalid commit -q -m "hook test" 2>&1 | Out-String
+    if ($LASTEXITCODE -eq 0) { throw "UNEXPECTED ($Case): the commit went through. The secret scan is NOT working." }
+    if ($out -notmatch $Expect) { throw "UNEXPECTED ($Case): commit failed for another reason:`n$out" }
+    Write-Host "OK: blocked ($Case)."
+  }
+  $allowAll = "[allowlist]`npaths = ['''.*''']"
+
+  Test-Blocked 'plain fake token' 'Commit blocked'
+
+  Set-Content allow-all.toml $allowAll
+  $env:GITLEAKS_CONFIG = Join-Path $tmp 'allow-all.toml'
+  Test-Blocked 'GITLEAKS_CONFIG allows everything' 'Commit blocked'
+  Remove-Item Env:GITLEAKS_CONFIG
+
+  Set-Content .gitleaks.toml $allowAll
+  git add .gitleaks.toml
+  Test-Blocked '.gitleaks.toml allows everything' 'Commit blocked'
+  git rm -q --cached .gitleaks.toml
+
+  New-Item -ItemType Directory fake | Out-Null
+  Copy-Item "$env:SystemRoot\System32\whoami.exe" fake\gitleaks.exe
+  $env:PATH = (Join-Path $tmp 'fake') + ';' + $savedPath
+  Test-Blocked 'fake gitleaks first on PATH' 'pinned'
+  $env:PATH = $savedPath
+
+  $env:GIT_CONFIG_COUNT = '1'; $env:GIT_CONFIG_KEY_0 = 'core.bigFileThreshold'; $env:GIT_CONFIG_VALUE_0 = '1'
+  Test-Blocked 'GIT_CONFIG_* makes every file binary' 'Commit blocked'
+  Remove-Item Env:GIT_CONFIG_COUNT, Env:GIT_CONFIG_KEY_0, Env:GIT_CONFIG_VALUE_0
+
+  Set-Content .gitattributes 'token.txt -diff'
+  git add .gitattributes
+  Test-Blocked 'token.txt marked -diff' 'Commit blocked'
+  git rm -q --cached .gitattributes token.txt
+
+  # A merge whose side branch adds the token. The side commit is made with plumbing,
+  # which runs no hooks; the merge itself must be blocked by pre-merge-commit.
+  Set-Content base.txt 'base'
+  git add base.txt
+  git -c user.name=hook-test -c user.email=hook-test@example.invalid commit -q -m base
+  if ($LASTEXITCODE -ne 0) { throw "the clean base commit failed" }
+  git add token.txt
+  $tree = git write-tree
+  $side = git -c user.name=hook-test -c user.email=hook-test@example.invalid commit-tree $tree -p HEAD -m side
+  git update-ref refs/heads/side $side
+  git rm -q --cached token.txt
+  Remove-Item token.txt
+  Set-Content fake\pre-commit "#!/bin/sh`nexit 0"
+  $fakeDir = (Join-Path $tmp 'fake') -replace '\\', '/'
+  [Environment]::SetEnvironmentVariable('BASH_FUNC_dirname%%', "() { echo $fakeDir; }", 'Process')
+  $out = git -c user.name=hook-test -c user.email=hook-test@example.invalid merge -q --no-ff -m merge side 2>&1 | Out-String
+  [Environment]::SetEnvironmentVariable('BASH_FUNC_dirname%%', $null, 'Process')
+  if ($LASTEXITCODE -eq 0) { throw "UNEXPECTED (merge): the merge commit went through. The secret scan is NOT working." }
+  if ($out -notmatch 'Commit blocked') { throw "UNEXPECTED (merge): merge failed for another reason:`n$out" }
+  Write-Host "OK: blocked (merge with an inherited dirname function)."
 } finally {
+  $env:PATH = $savedPath
+  Remove-Item Env:GITLEAKS_CONFIG, Env:GIT_CONFIG_COUNT, Env:GIT_CONFIG_KEY_0, Env:GIT_CONFIG_VALUE_0 -ErrorAction SilentlyContinue
+  [Environment]::SetEnvironmentVariable('BASH_FUNC_dirname%%', $null, 'Process')
   Pop-Location
   Remove-Item -Recurse -Force $tmp
 }
 ```
 
-If it prints anything other than `OK: ...`, stop and fix that before you rely on the hooks.
+If it prints anything other than seven `OK: blocked …` lines, stop and fix that before you rely on the hooks.
 
 ## 4. Check the LFS hooks
 
@@ -65,3 +143,25 @@ Select-String -Path .githooks/* -Pattern 'git lfs' -List | ForEach-Object Filena
 ```
 
 Don't run `git lfs install` after setting `core.hooksPath`: it may rewrite the hooks in `.githooks/`, which is a protected path.
+
+## 5. The CI scan (server-side backstop)
+
+Local hooks can be skipped, so `.github/workflows/gitleaks.yml` scans every pull request and every push to `main`. It uses the official gitleaks 8.30.1 Linux build, checked against its published checksum.
+- **What it scans:** the checked-out commit and its full history, not other branches. Patches are forced to plain text (`--text --no-textconv --no-ext-diff`), so `.gitattributes` can't hide a file. Merge commits get their own diff against each parent (`--diff-merges=separate`), so a secret added while resolving a merge is seen.
+- **Self-test:** before scanning, the workflow builds throwaway repositories with random fake tokens: a file marked `-diff`, a secret added only in a merge, and a secret on another branch. It fails the check if the scan misses the first two, or counts the third.
+- **Rules a PR can't change:** the workflow runs from `main` (`pull_request_target`) and writes its own config, so a pull request can't change the rules it is judged by. It uses only `main`'s `.gitleaksignore` and deletes the copy in the scanned code.
+- **Read-only:** it only reads the pull request's content (forks included) and never builds or runs it. The token is read-only and no secrets are used. That is why `allow-unsafe-pr-checkout` is safe here.
+
+**Exceptions** (owner only, in `.gitleaksignore`): the hook and CI identify findings differently.
+- The hook scans the staged files themselves, so its findings look like `path:rule-id:line`.
+- CI scans history, so its findings look like `commit:path:rule-id:line`.
+
+Add the line that the blocked scan printed. Add both lines if both scans report the same finding.
+
+Owner settings on GitHub (once, after the workflow is on `main`):
+1. **Required check.** Settings → Rules → Rulesets → New branch ruleset. Target: the default branch.
+   - Turn on "Require status checks to pass" and add `gitleaks`.
+   - Turn on "Require a pull request before merging", "Block force pushes" and "Restrict deletions".
+2. **Bypass list.** Leave it empty, so the rules apply to you as well. Don't bypass the check for a false positive. Instead:
+   1. Add the exception to `.gitleaksignore` in a PR of its own, and merge that PR.
+   2. Re-run the failed check: the scan reads `.gitleaksignore` only from `main`.

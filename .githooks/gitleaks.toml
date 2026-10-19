@@ -1,0 +1,5 @@
+# Secret-scan config for the git hooks and the CI scan. Owner-only (.githooks/ is protected).
+# The hooks and CI always pass it with --config, so GITLEAKS_* variables and any
+# .gitleaks.toml elsewhere in the repository can't change what is scanned.
+[extend]
+useDefault = true
