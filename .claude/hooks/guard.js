@@ -28,8 +28,17 @@ const DOWNLOADERS = new Set(['curl', 'wget', 'iwr', 'irm', 'invoke-webrequest', 
 const READERS = new Set([
   'cat', 'type', 'get-content', 'gc', 'more', 'less', 'head', 'tail', 'grep', 'egrep', 'rg', 'select-string',
   'sls', 'findstr', 'ls', 'dir', 'get-item', 'get-childitem', 'gci', 'test-path', 'wc', 'stat', 'file',
-  'get-itemproperty', 'gp',
+  'get-itemproperty', 'gp', 'get-acl', 'whoami',
 ]);
+// Programs that take `git` or `gh` as plain data and never run it, e.g. `gitleaks git`.
+// Anything else (xargs, find -exec, unknown programs) may run its arguments, so git and gh
+// are checked wherever they appear there.
+const NON_RUNNERS = new Set([
+  ...READERS, 'gitleaks', 'echo', 'printf', 'write-output', 'write-host', 'man', 'help', 'get-help', 'which',
+  'where', 'get-command', 'gcm',
+]);
+// Redirection targets that discard output instead of writing a file.
+const NULL_TARGET = /^(\/dev\/null|\$null|nul)$/i;
 const DIRECTORY_CHANGERS = new Set(['cd', 'pushd', 'chdir', 'set-location', 'sl', 'push-location']);
 const GIT_READS = new Set(['diff', 'log', 'show', 'status', 'blame', 'ls-files', 'check-ignore', 'cat-file']);
 // Built-in git commands. Anything else (an alias or a git-* program) is blocked, because the guard can't see what it runs.
@@ -88,6 +97,7 @@ function lexLine(src, dialect) {
   let hasSubst = false;
   let ansi = false;
   let wordBrace = false;
+  const braces = []; // PowerShell: 'hash' for @{, 'block' for any other {
   let tokens = [];
   let text = null;
   let dynamic = false;
@@ -212,16 +222,43 @@ function lexLine(src, dialect) {
     }
     // Unquoted wildcards expand to file names the guard can't know.
     if (bash && (c === '*' || c === '?' || (c === '[' && /^[^\s\]]+\]/.test(src.slice(i + 1))))) dynamic = true;
-    // PowerShell reads `{…}` inside a word as a script block, which splits the word.
-    if (!bash && c === '{' && text !== null && text !== '@' && text !== '$') wordBrace = true;
+    // PowerShell reads `{…}` inside a word as a script block, which splits the word. Inside a
+    // hashtable, `key={…}` is a script-block value (e.g. Select-Object @{n='x';e={…}}).
+    if (!bash && c === '{') {
+      const hashValue = braces.at(-1) === 'hash' && text?.endsWith('=');
+      if (text !== null && text !== '@' && text !== '$' && !hashValue) wordBrace = true;
+      braces.push(text === '@' ? 'hash' : 'block');
+    }
+    if (!bash && c === '}') braces.pop();
+    // Bash `&>` sends both output streams to a file: a redirection, not a separator.
+    if (bash && c === '&' && src[i + 1] === '>') {
+      endToken();
+      i++;
+      if (src[i + 1] === '>') i++;
+      tokens.push({ text: '>', redirect: true });
+      continue;
+    }
     if (';&|(){}'.includes(c)) {
       if (c === '(' && text === null && tokens.at(-1)?.redirect) hasSubst = true;
       endSegment(c);
       continue;
     }
     if (c === '<' || c === '>') {
-      endToken();
-      tokens.push({ text: c, redirect: true });
+      // A stream number (`2>`) or PowerShell's `*>` belongs to the redirection.
+      if (c === '>' && text !== null && /^(\d+|\*)$/.test(text)) {
+        text = null;
+        dynamic = false;
+      } else endToken();
+      let op = c;
+      if (c === '>' && src[i + 1] === '>') op += src[++i];
+      // `>&1`, `2>&1`, `>&-`: duplicates or closes a stream; no file is involved.
+      if (src[i + 1] === '&' && /[\d-]/.test(src[i + 2] ?? '')) {
+        i += 2;
+        while (/\d/.test(src[i + 1] ?? '')) i++;
+        tokens.push({ text: op, redirect: true, dup: true });
+        continue;
+      }
+      tokens.push({ text: op, redirect: true });
       continue;
     }
     add(c);
@@ -258,9 +295,15 @@ function parse(src, dialect, depth = 0, strict = true) {
   return { segments, hasSubst };
 }
 
+// git, gh or a downloader run as a command: the name stands alone, optionally with a path in
+// front or an executable extension, and ends at a space, quote, separator or the end.
+// Names inside other words (`setup-git-hooks.md`, `gitleaks`) don't count.
+const RUNS_TOOL = /(^|[^\w.-])(git(-[\w-]+)?|gh|curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod)(\.(exe|cmd|bat))?(?=$|[\s'"`;&|()])/i;
+
 function checkInterpreterCode(text, depth) {
+  // Also test the text without quotes and escapes, so `g\it` or `"g"it` still read as git.
   const flat = text.replace(/["'`^\\]/g, '');
-  if (/\b(git|gh|curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod)(\.exe)?\b/i.test(flat)) {
+  if (RUNS_TOOL.test(text) || RUNS_TOOL.test(flat)) {
     block('run git, gh and downloads directly, not inside code passed to another shell or interpreter');
   }
   for (const dialect of ['Bash', 'PowerShell']) {
@@ -275,7 +318,7 @@ function argsAfter(tokens, i) {
   for (let j = i + 1; j < tokens.length; j++) {
     const t = tokens[j];
     if (t.redirect) {
-      if (t.text !== '<<') j++;
+      if (t.text !== '<<' && !t.dup) j++;
       continue;
     }
     out.push(t.text);
@@ -539,11 +582,18 @@ function checkGh(a) {
 
 // ---------- shell commands ----------
 
+// Output redirected into a file (not a stream duplicate like 2>&1, and not a null device).
+function writesFile(seg) {
+  return seg.tokens.some((t, i) => t.redirect && t.text.startsWith('>') && !t.dup && !NULL_TARGET.test(seg.tokens[i + 1]?.text ?? ''));
+}
+
 function isReadSegment(seg) {
-  if (seg.tokens.some((t) => t.redirect && t.text === '>')) return false;
+  if (writesFile(seg)) return false;
   const i = commandIndex(seg);
   if (i < 0) return false;
   const name = cmdName(seg.tokens[i].text);
+  // icacls only reads when its switches are limited to listing options.
+  if (name === 'icacls') return argsAfter(seg.tokens, i).every((a) => !a.startsWith('/') || /^\/[tclq]$/i.test(a));
   return READERS.has(name) || (name === 'git' && GIT_READS.has(parseGitArgs(argsAfter(seg.tokens, i)).sub));
 }
 
@@ -624,11 +674,15 @@ function checkSegment(seg, input, dialect, command, total) {
     }
     if (['new-psdrive', 'ndr', 'mount'].includes(name)) block('a new drive can hide a path from the guard');
   }
+  const headName = ci >= 0 ? cmdName(seg.tokens[ci].text) : '';
   seg.tokens.forEach((t, i) => {
     if (!isCommandToken(t)) return;
     const name = cmdName(t.text);
     if (name !== 'git' && name !== 'gh') return;
-    if (seg.tokens.slice(i + 1).some((x) => x.dynamic)) block(`\`${name}\` arguments built from variables or expansions can’t be checked; write them out`);
+    if (i !== ci && NON_RUNNERS.has(headName)) return; // only data for a program that doesn't run it
+    const after = seg.tokens.slice(i + 1);
+    const discards = (x, k) => after[k - 1]?.redirect && NULL_TARGET.test(x.text); // 2>$null
+    if (after.some((x, k) => x.dynamic && !discards(x, k))) block(`\`${name}\` arguments built from variables or expansions can’t be checked; write them out`);
     if (name === 'git') checkGit(argsAfter(seg.tokens, i), total === 1 && i === 0);
     else checkGh(argsAfter(seg.tokens, i));
   });

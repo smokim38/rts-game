@@ -100,7 +100,7 @@ When the guard blocks a call, Claude sees the reason and the AGENTS.md section, 
 
 ### Known limits
 - **The guard is a guardrail, not a sandbox.** An agent that writes a script file and runs it (`node x.js`, `python x.py`) isn't inspected. Default mode prompts the owner for that, because it isn't allow-listed. Read those prompts.
-- **Owner-only files are protected by name, not by path, in shell commands.** The guard reads file names in a command as text. A wildcard (`set?ings.json`) or a recursive delete of a parent folder (`Remove-Item -Recurse .claude`) can still reach them. Edit and Write calls are checked by their real path. The fix is Windows file permissions, tracked in Issue #11.
+- **Owner-only files are protected by name, not by path, in shell commands.** The guard reads file names in a command as text. A wildcard (`set?ings.json`) or a recursive delete of a parent folder (`Remove-Item -Recurse .claude`) can still reach them. Edit and Write calls are checked by their real path. This is an accepted limitation: the owner decided against protecting these files with Windows permissions (Issue #11, closed), so it rests on the guard, plus the CI scan and the `main` ruleset for anything that reaches GitHub.
 - **The environment rules are partly best-effort.** What holds is structural:
   - The hook-running git commands run alone, and calls don't keep environment changes.
   - The gitleaks hook itself ignores `GITLEAKS_*`, pins its config and checks the gitleaks binary (`docs/setup-git-hooks.md`).

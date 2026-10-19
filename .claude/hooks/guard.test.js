@@ -171,6 +171,17 @@ const blockedBash = [
   'git commit --no-verif? -m x',
   'git commit [-]-no-verify -m x',
   '{ git push --force origin HEAD:refs/heads/x; }',
+  // Issue #12: the fixes for false positives must not open these
+  'xargs git push --force',
+  'find . -exec git push -f \\;',
+  'nohup git push -f origin HEAD:refs/heads/x',
+  'echo x 2>&1 > .gitleaksignore',
+  'git ls-files 2> .gitleaksignore',
+  'echo x &> .gitleaksignore',
+  'echo x >> .gitleaksignore',
+  "bash -c 'g\\it push'",
+  "bash -c 'git-push --force'",
+  "sh -c '/usr/bin/git push -f'",
 ];
 
 const blockedPowerShell = [
@@ -216,6 +227,15 @@ const blockedPowerShell = [
   "gh api repos/{owner}/{repo}/issues/8/labels -f 'labels[]=approved'",
   "gh api 'repos/{owner}/{repo}/pulls/9/merge' -X PUT",
   '.{git push --force origin HEAD:refs/heads/x}',
+  // Issue #12: the fixes for false positives must not open these
+  'pwsh -Command "& \'C:\\Program Files\\Git\\cmd\\git.exe\' push --force"',
+  "pwsh -Command 'git.cmd push --force'",
+  '$h = @{ a = 1 }; .{git push --force}',
+  "@{ a = 1 }; gh api repos/{owner}/x -X PUT",
+  'icacls .gitleaksignore /grant Everyone:F',
+  'icacls .gitleaksignore /reset',
+  'Get-Content x 2>&1 > .gitleaksignore',
+  'git log > $out',
 ];
 
 const allowedBash = [
@@ -266,6 +286,13 @@ const allowedBash = [
   'ls docs/*.md',
   '[ -f AGENTS.md ] && echo yes',
   '{ git status; }',
+  // Issue #12: false positives seen in real use
+  'gitleaks git --help 2>&1',
+  'gitleaks version',
+  'git ls-files --error-unmatch .gitleaksignore 2>&1',
+  'git status 2>/dev/null',
+  'cat .gitleaksignore 2>&1 | head -5',
+  'echo git push --force',
 ];
 
 const allowedPowerShell = [
@@ -283,6 +310,14 @@ const allowedPowerShell = [
   "gh api 'repos/{owner}/{repo}/pulls/9'",
   '$h = @{ a = 1 }',
   'Get-ChildItem | Where-Object { $_.Length -gt 0 }',
+  // Issue #12: false positives seen in real use
+  "pwsh -NoProfile -File 'C:\\tmp\\parse-doc-script.ps1' -Path 'C:\\dev\\rts-game\\docs\\setup-git-hooks.md'",
+  "Get-ChildItem -Recurse | Select-Object @{n='Path';e={$_.FullName}} | Format-Table",
+  'icacls C:\\dev\\rts-game\\.git\\config',
+  'icacls C:\\dev /t /c',
+  'Get-Acl .gitleaksignore',
+  'whoami /groups',
+  'git status 2>$null',
 ];
 
 for (const c of blockedBash) expect(2, `Bash ${c}`, shell('Bash', c));
