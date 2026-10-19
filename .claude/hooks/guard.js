@@ -87,6 +87,7 @@ function lexLine(src, dialect) {
   const heredocs = [];
   let hasSubst = false;
   let ansi = false;
+  let wordBrace = false;
   let tokens = [];
   let text = null;
   let dynamic = false;
@@ -197,6 +198,22 @@ function lexLine(src, dialect) {
       endSegment('`');
       continue;
     }
+    // Bash: `{` and `}` group commands only as words of their own. Inside a word a simple
+    // `{name}` (a gh placeholder) is literal; any other braces are a brace expansion.
+    if (bash && (c === '{' || c === '}')) {
+      const next = src[i + 1] ?? ' ';
+      if (text === null && (c === '{' ? /\s/.test(next) : /[\s;&|)]/.test(next))) {
+        endSegment(c);
+        continue;
+      }
+      if (c === '{' && !/^[A-Za-z0-9_\-/:@]*\}/.test(src.slice(i + 1))) dynamic = true;
+      add(c);
+      continue;
+    }
+    // Unquoted wildcards expand to file names the guard can't know.
+    if (bash && (c === '*' || c === '?' || (c === '[' && /^[^\s\]]+\]/.test(src.slice(i + 1))))) dynamic = true;
+    // PowerShell reads `{…}` inside a word as a script block, which splits the word.
+    if (!bash && c === '{' && text !== null && text !== '@' && text !== '$') wordBrace = true;
     if (';&|(){}'.includes(c)) {
       if (c === '(' && text === null && tokens.at(-1)?.redirect) hasSubst = true;
       endSegment(c);
@@ -210,13 +227,16 @@ function lexLine(src, dialect) {
     add(c);
   }
   endSegment('');
-  return { segments, parts, hasSubst, ansi };
+  return { segments, parts, hasSubst, ansi, wordBrace };
 }
 
-function parse(src, dialect, depth = 0) {
+// `strict` is false only for code passed to an interpreter, which is parsed in both dialects
+// because its language is unknown.
+function parse(src, dialect, depth = 0, strict = true) {
   if (depth > MAX_DEPTH) block('the command nests quoted commands too deeply to check');
   const top = lexLine(src, dialect);
   if (top.ansi) block("ANSI-C quoting ($'…') can't be checked; write the argument out plainly");
+  if (strict && top.wordBrace) block("PowerShell reads `{…}` inside a word as a script block; quote arguments that contain braces, e.g. 'repos/{owner}/{repo}'");
   const runsCode = top.segments.some((s) =>
     s.tokens.some((t, i) => isCommandToken(t) && (INTERPRETERS.has(cmdName(t.text)) || (i === 0 && t.text === '.'))),
   );
@@ -231,7 +251,7 @@ function parse(src, dialect, depth = 0) {
   }
   for (const p of top.parts) {
     if (!p.subst) continue;
-    const inner = parse(p.text, dialect, depth + 1);
+    const inner = parse(p.text, dialect, depth + 1, strict);
     segments.push(...inner.segments);
     hasSubst ||= inner.hasSubst;
   }
@@ -244,7 +264,7 @@ function checkInterpreterCode(text, depth) {
     block('run git, gh and downloads directly, not inside code passed to another shell or interpreter');
   }
   for (const dialect of ['Bash', 'PowerShell']) {
-    const inner = parse(text, dialect, depth + 1);
+    const inner = parse(text, dialect, depth + 1, false);
     for (const seg of inner.segments) checkEnvironment(seg, text);
   }
 }

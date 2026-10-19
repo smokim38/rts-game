@@ -49,7 +49,7 @@ The guard applies to every Claude Code session on the PC. A session opened in an
 pwsh -File tools/install-claude-guard.ps1                     # installs from origin/main
 pwsh -File tools/install-claude-guard.ps1 -Ref origin/<branch>  # try a PR before merging
 ```
-The script installs the committed version from the ref, never the working tree. It requires Claude Code 2.1.295 or later and node under Program Files, and it is idempotent. Restart Claude Code afterwards.
+The script installs the committed version from the ref, never the working tree, and checks that the installed file has the same git object ID as the commit. It requires Claude Code 2.1.295 or later and node under Program Files, and it is idempotent. Restart Claude Code afterwards.
 
 ### What the guard blocks
 **Owner-only files:**
@@ -87,7 +87,7 @@ Reading them is fine. Agents describe proposed changes in the PR, and the owner 
 
 **Arguments the guard can't read:**
 - ANSI-C quoting (`$'…'`)
-- variables or expansions in git or gh arguments, or as a command name
+- variables or expansions in git or gh arguments, or as a command name, including Bash brace expansions (`{a,b}`) and unquoted wildcards. A simple placeholder like `repos/{owner}/{repo}` is fine in Bash; in PowerShell, quote it (`'repos/{owner}/{repo}'`), because PowerShell reads unquoted braces as a script block.
 - PowerShell splatting
 - encoded PowerShell commands, `cmd /c` and WSL
 - git, gh or downloads inside code passed to another shell or interpreter (`bash -c`, `pwsh -Command`, `node -e`, `iex`)
@@ -100,6 +100,7 @@ When the guard blocks a call, Claude sees the reason and the AGENTS.md section, 
 
 ### Known limits
 - **The guard is a guardrail, not a sandbox.** An agent that writes a script file and runs it (`node x.js`, `python x.py`) isn't inspected. Default mode prompts the owner for that, because it isn't allow-listed. Read those prompts.
+- **Owner-only files are protected by name, not by path, in shell commands.** The guard reads file names in a command as text. A wildcard (`set?ings.json`) or a recursive delete of a parent folder (`Remove-Item -Recurse .claude`) can still reach them. Edit and Write calls are checked by their real path. The fix is Windows file permissions, tracked in Issue #11.
 - **The environment rules are partly best-effort.** What holds is structural: the hook-running git commands run alone, and calls don't keep environment changes. The token rules catch the common forms. The lasting fix is a `.githooks` that ignores `GITLEAKS_*` overrides (follow-up below).
 - **Server-side controls give the hard guarantees.** They are owner settings, tracked as follow-ups:
   - a `main` ruleset: PR required, no direct or force pushes, no deletion
@@ -110,7 +111,7 @@ When the guard blocks a call, Claude sees the reason and the AGENTS.md section, 
 
 ## How to test the guardrails
 
-1. **Unit tests** (about 250 cases, around 20 seconds). They cover every finding from both rounds of the PR #9 review:
+1. **Unit tests** (about 275 cases, around 20 seconds). They cover every finding from the PR #9 review rounds, except the known limit above:
    ```sh
    node --test .claude/hooks/guard.test.js
    ```

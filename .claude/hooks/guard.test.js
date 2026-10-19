@@ -158,6 +158,19 @@ const blockedBash = [
   'export PATH',
   'echo x >> ~/.bashrc',
   'echo "export GITLEAKS_CONFIG=x" >> "$CLAUDE_ENV_FILE"',
+  // Round 3: braces and wildcards
+  'gh api repos/{owner}/{repo}/pulls/9/merge -X PUT',
+  "gh api repos/{owner}/{repo}/issues/8/labels -f 'labels[]=approved'",
+  "gh api 'repos/{owner}/{repo}/pulls/9/merge' -X PUT",
+  'gh api "repos/{owner}/{repo}/issues/8/labels" -f "labels[]=approved"',
+  'git commit {-n,} -m x',
+  'git commit -m x -{n,}',
+  'git push origin HEAD:refs/heads/{main,x}',
+  'git push origin HEAD:refs/heads/ma{1..1}in',
+  'git commit --no-v* -m x',
+  'git commit --no-verif? -m x',
+  'git commit [-]-no-verify -m x',
+  '{ git push --force origin HEAD:refs/heads/x; }',
 ];
 
 const blockedPowerShell = [
@@ -198,6 +211,11 @@ const blockedPowerShell = [
   "New-PSDrive -Name E -PSProvider Environment -Root ''",
   "Add-Content $PROFILE '$env:GITLEAKS_CONFIG = 1'",
   'git add .; git commit -m x',
+  // Round 3: braces inside a word are script blocks in PowerShell
+  'gh api repos/{owner}/{repo}/pulls/9/merge -X PUT',
+  "gh api repos/{owner}/{repo}/issues/8/labels -f 'labels[]=approved'",
+  "gh api 'repos/{owner}/{repo}/pulls/9/merge' -X PUT",
+  '.{git push --force origin HEAD:refs/heads/x}',
 ];
 
 const allowedBash = [
@@ -242,6 +260,12 @@ const allowedBash = [
   'git merge origin/main',
   'echo $GIT_DIR',
   'echo "${PATH}"',
+  "gh api 'repos/{owner}/{repo}/pulls/9'",
+  'gh api repos/{owner}/{repo}/issues/8',
+  "git add '*.md'",
+  'ls docs/*.md',
+  '[ -f AGENTS.md ] && echo yes',
+  '{ git status; }',
 ];
 
 const allowedPowerShell = [
@@ -256,6 +280,9 @@ const allowedPowerShell = [
   'Get-ChildItem Env:',
   'Get-Item Env:GIT_DIR',
   'git commit -m x',
+  "gh api 'repos/{owner}/{repo}/pulls/9'",
+  '$h = @{ a = 1 }',
+  'Get-ChildItem | Where-Object { $_.Length -gt 0 }',
 ];
 
 for (const c of blockedBash) expect(2, `Bash ${c}`, shell('Bash', c));

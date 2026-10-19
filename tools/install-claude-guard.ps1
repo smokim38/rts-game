@@ -23,6 +23,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $minimumClaude = [version]'2.1.295'   # first version with onFailure "block" for hooks
+# git writes UTF-8; without this, PowerShell decodes it with the console code page and garbles non-ASCII text.
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 
 function Show-FromRef([string]$Path) {
     $text = git -C $repo show "${Ref}:$Path"
@@ -53,7 +55,14 @@ $settingsPath = Join-Path $managedDir 'managed-settings.json'
 New-Item -ItemType Directory -Force -Path $hookDir | Out-Null
 
 Set-Content -LiteralPath $guardPath -Value (Show-FromRef '.claude/hooks/guard.js') -NoNewline -Encoding utf8NoBOM
-Write-Host "Installed guard.js from $Ref ($commit) to $guardPath"
+# The installed file must be byte-for-byte the committed one: compare git object IDs.
+$expected = git -C $repo rev-parse "${Ref}:.claude/hooks/guard.js"
+$actual = git -C $repo hash-object --no-filters -- $guardPath
+if ($LASTEXITCODE -ne 0 -or $actual -ne $expected) {
+    Remove-Item -LiteralPath $guardPath
+    throw "The installed guard.js doesn't match $Ref ($actual, expected $expected). Removed it; if the hook is registered, Claude Code blocks every call until a good install."
+}
+Write-Host "Installed guard.js from $Ref ($commit) to $guardPath (verified: $actual)"
 
 $template = (Show-FromRef '.claude/hooks/managed-settings.template.json') | ConvertFrom-Json -AsHashtable
 $entry = $template.hooks.PreToolUse[0]
