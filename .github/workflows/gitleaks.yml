@@ -1,0 +1,55 @@
+# Server-side secret scan (AGENTS.md §5). It must pass before the owner merges.
+#
+# pull_request_target runs this file as it is on main, so a pull request can't weaken the
+# check that judges it. The pull request's content is only read, never run, and the token
+# is read-only, which keeps this trigger safe for a public repository.
+# The config is written here, and .gitleaksignore is taken from main's history, so a
+# pull request can't change either one.
+name: gitleaks
+
+on:
+  pull_request:  # TEMPORARY: lets this PR test the workflow before main has it; removed before merge
+  pull_request_target:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the code to scan (full history)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: scan
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install gitleaks 8.30.1 (official release, checksum verified)
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl -fsSL -o gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+
+      - name: Use the trusted config and ignore list
+        run: |
+          printf '[extend]\nuseDefault = true\n' > "$RUNNER_TEMP/gitleaks.toml"
+          mkdir "$RUNNER_TEMP/ignore"
+          if git -C scan cat-file -e refs/remotes/origin/main:.gitleaksignore 2>/dev/null; then
+            git -C scan show refs/remotes/origin/main:.gitleaksignore > "$RUNNER_TEMP/ignore/.gitleaksignore"
+          fi
+          # gitleaks also reads .gitleaksignore from the folder it scans; only main's copy counts.
+          rm -f scan/.gitleaksignore
+
+      - name: Scan the full history
+        run: >
+          "$RUNNER_TEMP/gitleaks" git scan
+          --redact --no-banner --ignore-gitleaks-allow
+          --config "$RUNNER_TEMP/gitleaks.toml"
+          --gitleaks-ignore-path "$RUNNER_TEMP/ignore"

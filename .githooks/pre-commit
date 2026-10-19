@@ -2,19 +2,53 @@
 # Blocks the commit if gitleaks finds a secret in the staged changes.
 # Also run by pre-merge-commit, so merge commits are scanned too.
 # Fails closed: no gitleaks, no commit.
-# Tested with gitleaks 8.30.1.
 # Inline "gitleaks:allow" comments are ignored. Exceptions go only in
 # .gitleaksignore, which only the owner edits.
+#
+# Nothing in the caller's environment can change the scan:
+# - only Git for Windows' own folders are on PATH (under Program Files, which only an
+#   administrator can change),
+# - the gitleaks binary must match the pinned official 8.30.1 build,
+# - GITLEAKS_* variables are removed and the config is always .githooks/gitleaks.toml.
+# After a gitleaks upgrade the owner updates the pin in a Critical-tier PR
+# (see docs/setup-git-hooks.md).
 
-hook=$(basename "$0")
+GITLEAKS_VERSION=8.30.1
+# SHA-256 of gitleaks.exe in the official gitleaks_8.30.1_windows_x64.zip.
+GITLEAKS_SHA256=17157e2ee8b76fc8b1d8bee607a250e34b8a8023c8bc81822d4b5ee4d78fcb7c
 
-if ! command -v gitleaks >/dev/null 2>&1; then
-  echo "$hook: gitleaks is not installed, so this commit is blocked." >&2
-  echo "Install gitleaks v8 (tested: 8.30.1) from https://github.com/gitleaks/gitleaks, then commit again." >&2
+unset -f gitleaks sha256sum sed cut dirname basename env 2>/dev/null
+hook=$(/usr/bin/basename "$0")
+config="$(/usr/bin/dirname "$0")/gitleaks.toml"
+
+block() {
+  echo "$hook: $1" >&2
   exit 1
+}
+
+# Find gitleaks with the caller's PATH, then use only Git for Windows' own folders
+# (gitleaks runs git itself; newer builds keep git in ucrt64, older ones in mingw64).
+gitleaks=$(command -v gitleaks 2>/dev/null)
+PATH=/ucrt64/bin:/mingw64/bin:/usr/bin:/bin
+export PATH
+
+case "$gitleaks" in
+  /*) ;;
+  *) block "gitleaks $GITLEAKS_VERSION is not installed, so this commit is blocked. Install it from https://github.com/gitleaks/gitleaks/releases, then commit again." ;;
+esac
+
+actual=$(/usr/bin/sha256sum "$gitleaks" | /usr/bin/cut -d' ' -f1)
+if [ "$actual" != "$GITLEAKS_SHA256" ]; then
+  block "gitleaks at $gitleaks doesn't match the pinned official $GITLEAKS_VERSION build, so this commit is blocked. If you upgraded gitleaks, the owner updates the pin (docs/setup-git-hooks.md)."
 fi
 
-if ! gitleaks git --pre-commit --staged --redact --no-banner --ignore-gitleaks-allow; then
+[ -f "$config" ] || block "$config is missing, so this commit is blocked."
+
+for name in $(/usr/bin/env | /usr/bin/sed -n 's/^\(GITLEAKS_[A-Za-z0-9_]*\)=.*/\1/p'); do
+  unset "$name"
+done
+
+if ! "$gitleaks" git --pre-commit --staged --redact --no-banner --ignore-gitleaks-allow --config "$config"; then
   echo "$hook: gitleaks reported a possible secret (or failed to run). Commit blocked." >&2
   echo "Stop. Don't edit around it. Report the file, line and gitleaks rule ID to the owner" >&2
   echo "(never the secret value), and wait until the owner says to continue." >&2
