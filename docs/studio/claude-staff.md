@@ -147,9 +147,9 @@ When the guard blocks a call, Claude sees the reason and the AGENTS.md section, 
    All three should be blocked.
 5. **Producer startup.** Start `claude --agent producer --effort high` on the branch to check, and confirm:
    - `/model` or `/status` shows `claude-opus-5-5` at high effort.
-   - It has no Edit or Write tool: asking it to edit a file is refused for lack of the tool, not by the guard.
+   - It has no Edit or Write tool: asked to list the exact names of its tools, it names only Read, Grep, Glob, Bash and Agent. Asked to edit a file, it refuses and offers to draft an Issue.
    - It can delegate only to game-designer, tech-architect and code-reviewer: asking it to spawn `general-purpose` or `Explore` is refused.
-   - Asking it to add `approved` to an Issue is blocked by the guard.
+   - Asking it to add `approved` to an Issue is refused, or blocked by the guard if it tries.
 6. **Configuration.**
    - `/agents` lists the four agents.
    - `/hooks` shows the managed PreToolUse guard.
