@@ -393,6 +393,36 @@ expect(2, 'code-reviewer two commands', shell('Bash', 'gh pr view 5; gh pr diff 
 expect(2, 'code-reviewer pipes to another command', shell('Bash', 'gh pr diff 5 | sh', reviewer));
 expect(2, 'code-reviewer gh pr review', shell('Bash', 'gh pr review 5 --comment -b x', reviewer));
 
+// The Producer has no lane of its own: the general rules apply. These pin the commands its workflow needs (Issue #15).
+const producer = as('producer');
+const producerAllowed = [
+  "gh issue create --title 'chore: x' -l type:task -l role:producer -l tier:critical --body-file - <<'EOF'\n### Goal\nx\nEOF",
+  'gh issue edit 5 --add-label tier:critical',
+  "gh issue comment 5 --body-file - <<'EOF'\n## Codex handoff\nIssue: #5\nEOF",
+  'gh issue view 5 --json state,labels',
+  'gh project item-add 1 --owner smokim38 --url https://github.com/smokim38/rts-game/issues/5',
+  'gh project item-edit --id PVTI_1 --project-id PVT_1 --field-id PVTSSF_1 --single-select-option-id 4fed389c',
+  'git switch -c chore/15-x',
+  'git add .claude/agents/producer.md docs/studio/claude-staff.md',
+  "git commit -F - <<'EOF'\nchore(claude): x (#15)\nEOF",
+  'git push -u origin HEAD:refs/heads/chore/15-x',
+  'git merge origin/main',
+  "gh pr create --base main --head chore/15-x --title 'chore: x' --body-file - <<'EOF'\nCloses #15\nEOF",
+];
+const producerBlocked = [
+  'gh issue edit 5 --add-label approved',
+  'gh issue edit 5 --remove-label=approved',
+  'gh issue create -t x -l type:task,approved',
+  'gh label create approved',
+  'gh label list',
+  'gh pr merge 5',
+  'gh pr review 5 --approve',
+  'git push origin HEAD:main',
+];
+for (const c of producerAllowed) expect(0, `producer ${c.split('\n')[0]}`, shell('Bash', c, producer));
+for (const c of producerBlocked) expect(2, `producer ${c}`, shell('Bash', c, producer));
+expect(2, 'producer writes .claude/settings.json', file('Write', path.join(ROOT, '.claude', 'settings.json'), producer));
+
 // Bad input fails closed.
 expect(2, 'input that is not JSON', 'not json', ROOT, { broken: true });
 expect(2, 'a quoted protected path that contains a space', shell('PowerShell', 'Copy-Item x ".githooks\\pre commit"'));
