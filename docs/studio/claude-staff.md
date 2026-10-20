@@ -21,7 +21,10 @@ What each one never does:
 
 The game-designer and tech-architect have no shell, so the Producer creates the branch, commits their docs and opens the PR (one Issue, one branch, one PR).
 
-Codex roles (gameplay-programmer, qa-test-engineer, tech-artist) get a `Codex handoff` comment on their Issue. The owner then starts the named Codex role. The comment never replaces the `approved` label, and the Issue body wins if the two disagree. Claude-written PRs get a read-only review prompt for Codex, which the owner runs.
+Codex roles (gameplay-programmer, qa-test-engineer, tech-artist) get a `Codex handoff` comment on their Issue. The owner then starts the named Codex role. The comment never replaces the `approved` label, and the Issue body wins if the two disagree. PRs are reviewed by tier (AGENTS.md §6):
+- At Standard and Critical tier, Claude-written PRs get a read-only review prompt for Codex, which the owner runs.
+- A Light-tier PR gets only the author's self-check.
+- An Owner-tier PR gets the owner's review.
 
 ### How to start the Producer
 From the repository root:
@@ -147,7 +150,11 @@ When the guard blocks a call, Claude sees the reason and the AGENTS.md section, 
    All three should be blocked.
 5. **Producer startup.** Start `claude --agent producer --effort high` on the branch to check, and confirm:
    - `/model` or `/status` shows `claude-opus-5-5` at high effort.
-   - It has no Edit or Write tool: asked to list the exact names of its tools, it names only Read, Grep, Glob, Bash and Agent. Asked to edit a file, it refuses and offers to draft an Issue.
+   - It has no Edit or Write tool. Check what Claude Code itself loads, not what the agent reports:
+     ```powershell
+     claude -p "Reply with OK." --agent producer --effort high --max-turns 1 --output-format stream-json --verbose | Select-Object -First 1
+     ```
+     The first line is the `init` event. Its `tools` list has Read, Grep, Glob, Bash and Agent, and no Edit, Write or NotebookEdit. Asked to edit a file, the session refuses.
    - It can delegate only to game-designer, tech-architect and code-reviewer: asking it to spawn `general-purpose` or `Explore` is refused.
    - Asking it to add `approved` to an Issue is refused, or blocked by the guard if it tries.
 6. **Configuration.**
