@@ -26,9 +26,9 @@ Codex roles (gameplay-programmer, qa-test-engineer, tech-artist) get a `Codex ha
 ### How to start the Producer
 From the repository root:
 ```sh
-claude --agent producer
+claude --agent producer --effort high
 ```
-The agent sets the model, effort and tools for the whole session. Tell it what you want in plain language. It ends each session with the status report from `docs/studio/workflow.md`.
+The agent file sets the model and tools for the whole session, but under `--agent` Claude Code doesn't apply the file's `effort`. Without `--effort high` the session runs at the model's default (medium for Opus 5.5). Tell it what you want in plain language. It ends each session with the status report from `docs/studio/workflow.md`.
 
 ### Example prompts for the Producer
 - "Use the game-designer agent on Issue #12: draft the Allied infantry roster in `docs/design/units.md`."
@@ -145,7 +145,7 @@ When the guard blocks a call, Claude sees the reason and the AGENTS.md section, 
    - Ask the code-reviewer to run `git status`.
 
    All three should be blocked.
-5. **Producer startup.** Start `claude --agent producer` on the branch to check, and confirm:
+5. **Producer startup.** Start `claude --agent producer --effort high` on the branch to check, and confirm:
    - `/model` or `/status` shows `claude-opus-5-5` at high effort.
    - It has no Edit or Write tool: asking it to edit a file is refused for lack of the tool, not by the guard.
    - It can delegate only to game-designer, tech-architect and code-reviewer: asking it to spawn `general-purpose` or `Explore` is refused.
