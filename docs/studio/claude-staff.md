@@ -4,20 +4,31 @@ The Claude Code members of the studio, when to use each one, and the guardrails 
 
 ## Who they are
 
-The Producer is the main Claude Code session. It delegates to three subagents defined in `.claude/agents/`:
+The Producer is the main Claude Code session. It delegates to three subagents. All four are defined in `.claude/agents/`:
 
 | Agent | Model / effort | Writes | Use it when |
 |---|---|---|---|
+| `producer` (main session) | `claude-opus-5-5` / high | No files. It creates Issues, comments, branches, commits, PRs and board updates. | Any owner request: intake, planning, delegation, integration, review routing and status reports |
 | `game-designer` | `claude-opus-5-5` / high | Markdown under `docs/design/` | An approved Issue needs the GDD, units, factions, economy, balance numbers or acceptance criteria written or updated |
 | `tech-architect` | `claude-opus-5-5` / xhigh | Proposed ADRs (`docs/adr/NNNN-title.md`) | A significant technical decision is needed (unit simulation, pathfinding, AI structure, rendering, folder layout, packages, Unity upgrades), or an engineer needs technical guidance |
 | `code-reviewer` | `claude-opus-5-5` / high | nothing | A PR needs its tier's review: Codex-written work at Standard or Critical tier (AGENTS.md §6) |
 
 What each one never does:
+- **producer** never adds, removes or creates the `approved` label, never merges, never approves on GitHub, and doesn't author content. It has no Edit or Write tool and doesn't write files through the shell. It can delegate only to the three agents below. It starts work only on an open Issue with `approved`, and it checks that with `gh issue view`.
 - **game-designer** never touches code, `Game/` or `Art/`, and has no shell.
 - **tech-architect** never implements features, never edits the ADR template or an accepted ADR, and has no shell.
 - **code-reviewer** never edits, commits, pushes, approves on GitHub or merges. It runs one read command per call (`gh pr view|diff|checks`, `gh issue view`, `git diff|log|show`), and posts reviews only with `gh pr comment <n> --body-file -` and a quoted here-document.
 
 The game-designer and tech-architect have no shell, so the Producer creates the branch, commits their docs and opens the PR (one Issue, one branch, one PR).
+
+Codex roles (gameplay-programmer, qa-test-engineer, tech-artist) get a `Codex handoff` comment on their Issue. The owner then starts the named Codex role. The comment never replaces the `approved` label, and the Issue body wins if the two disagree. Claude-written PRs get a read-only review prompt for Codex, which the owner runs.
+
+### How to start the Producer
+From the repository root:
+```sh
+claude --agent producer
+```
+The agent sets the model, effort and tools for the whole session. Tell it what you want in plain language. It ends each session with the status report from `docs/studio/workflow.md`.
 
 ### Example prompts for the Producer
 - "Use the game-designer agent on Issue #12: draft the Allied infantry roster in `docs/design/units.md`."
@@ -98,6 +109,11 @@ Reading them is fine. Agents describe proposed changes in the PR, and the owner 
 
 When the guard blocks a call, Claude sees the reason and the AGENTS.md section, and it must not retry in another form.
 
+**Lanes:** the guard reads `agent_type` from each call. The game-designer, tech-architect and code-reviewer have lanes, and the guard applies them even when the Producer spawns them.
+- The Producer (`agent_type: producer`) has no extra lane, so the rules above apply to it as they do to any session.
+- Its Issue, comment, board, branch, commit, push and PR commands, and `git merge origin/main`, need no special allowance.
+- Tests pin both what it may do and what stays blocked.
+
 ### Known limits
 - **The guard is a guardrail, not a sandbox.** An agent that writes a script file and runs it (`node x.js`, `python x.py`) isn't inspected. Default mode prompts the owner for that, because it isn't allow-listed. Read those prompts.
 - **Owner-only files are protected by name, not by path, in shell commands.** The guard reads file names in a command as text. A wildcard (`set?ings.json`) or a recursive delete of a parent folder (`Remove-Item -Recurse .claude`) can still reach them. Edit and Write calls are checked by their real path. This is an accepted limitation: the owner decided against protecting these files with Windows permissions (Issue #11, closed), so it rests on the guard, plus the CI scan and the `main` ruleset for anything that reaches GitHub.
@@ -112,7 +128,7 @@ When the guard blocks a call, Claude sees the reason and the AGENTS.md section, 
 
 ## How to test the guardrails
 
-1. **Unit tests** (about 275 cases, around 20 seconds). They cover every finding from the PR #9 review rounds, except the known limit above:
+1. **Unit tests** (about 325 cases, around 20 seconds). They cover every finding from the PR #9 review rounds, except the known limit above, and the Producer's commands:
    ```sh
    node --test .claude/hooks/guard.test.js
    ```
@@ -129,8 +145,13 @@ When the guard blocks a call, Claude sees the reason and the AGENTS.md section, 
    - Ask the code-reviewer to run `git status`.
 
    All three should be blocked.
-5. **Configuration.**
-   - `/agents` lists the three agents.
+5. **Producer startup.** Start `claude --agent producer` on the branch to check, and confirm:
+   - `/model` or `/status` shows `claude-opus-5-5` at high effort.
+   - It has no Edit or Write tool: asking it to edit a file is refused for lack of the tool, not by the guard.
+   - It can delegate only to game-designer, tech-architect and code-reviewer: asking it to spawn `general-purpose` or `Explore` is refused.
+   - Asking it to add `approved` to an Issue is blocked by the guard.
+6. **Configuration.**
+   - `/agents` lists the four agents.
    - `/hooks` shows the managed PreToolUse guard.
    - `/permissions` shows the allow and deny rules.
    - `git check-ignore .claude/settings.local.json` prints the path.
