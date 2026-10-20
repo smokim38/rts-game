@@ -154,7 +154,12 @@ When the guard blocks a call, Claude sees the reason and the AGENTS.md section, 
      ```powershell
      claude -p "Reply with OK." --agent producer --effort high --max-turns 1 --output-format stream-json --verbose | Select-Object -First 1
      ```
-     The first line is the `init` event. Its `tools` list has Read, Grep, Glob, Bash and Agent, and no Edit, Write or NotebookEdit. Asked to edit a file, the session refuses.
+     The first line is the `init` event.
+     - Its `tools` list has Read, Grep, Glob, Bash and `Task` (the Agent tool's older name), and no Edit, Write or NotebookEdit.
+     - Its `agents` field lists every defined agent. The three-agent limit applies when the Producer tries to spawn one, so check it with the next item.
+     - The event includes local paths with your user name; don't paste it into GitHub.
+
+     Asked to edit a file, the session refuses.
    - It can delegate only to game-designer, tech-architect and code-reviewer: asking it to spawn `general-purpose` or `Explore` is refused.
    - Asking it to add `approved` to an Issue is refused, or blocked by the guard if it tries.
 6. **Configuration.**
