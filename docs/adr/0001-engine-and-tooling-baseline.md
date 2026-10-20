@@ -15,7 +15,7 @@ The owner has already chosen the engine and tools, and the Unity project in `Gam
 Constraints:
 - Thousands of units at a smooth frame rate on a mid-range PC. The reference GPU is an RTX 3050 with 6 GB (AGENTS.md §4).
 - The team is AI agents who each work on one Issue at a time, so fast, predictable iteration matters more than peak tuning at this stage.
-- The repository is public. We prefer free tools and permissive licenses (AGENTS.md §5).
+- The repository is public. Adding any dependency remains governed by AGENTS.md §5: it must come from an official source under a permissive license (MIT, Apache-2.0, BSD or CC0), the owner is asked first, and the change is Critical tier. Recording the tools already in use doesn't change that rule.
 - Unity and package versions change only through an accepted ADR (AGENTS.md §4).
 
 This ADR records decisions that were already made. It is not a fresh evaluation, and it adds no package, setting or dependency.
@@ -53,7 +53,7 @@ The manifest also lists `com.unity.ide.rider`. This ADR doesn't add, remove or c
 - *Mono for development and IL2CPP for release builds:* That gives us two backends to build and test, with no measured need for the second one yet.
 
 **3D art**
-- *Autodesk Maya or 3ds Max:* Both need paid subscriptions. The owner chose Blender, and the tech-artist's export scripts target it.
+- *Autodesk Maya or 3ds Max:* Both need paid commercial licensing. The owner chose Blender, and the tech-artist's export scripts target it.
 - *A non-LTS Blender release (for example 5.3):* The next release replaces it within months, so export scripts would keep chasing API changes. LTS gives a stable target for two years ([Blender LTS][blender-lts]).
 
 **Code editor**
@@ -63,12 +63,12 @@ The manifest also lists `com.unity.ide.rider`. This ADR doesn't add, remove or c
 ## Consequences
 
 - **Upgrades need an ADR.** Upgrading Unity (including a 6000.3.x patch release) or any package needs a new accepted ADR (AGENTS.md §4). Reviewers check these versions against `ProjectVersion.txt` and `manifest.json`.
-- **IL2CPP triggers.** A Profiler-confirmed scripting bottleneck triggers an *evaluation* of IL2CPP in a new ADR, not an automatic switch. A target platform that requires IL2CPP is also a trigger: Unity says IL2CPP is "required on several platforms where Mono and JIT are not supported" ([scripting backends][backends]). That evaluation should measure both backends on the same development player build. It should also account for whatever the simulation-architecture ADR decides (for example, Burst-compiled code runs as native code under either backend).
+- **IL2CPP triggers.** A Profiler-confirmed scripting bottleneck triggers an *evaluation* of IL2CPP in a new ADR, not an automatic switch. A target platform that requires IL2CPP is also a trigger: Unity says IL2CPP is "required on several platforms where Mono and JIT are not supported" ([scripting backends][backends]). That evaluation should measure both backends on separate player builds with matching settings, one per backend. It should also account for whatever the simulation-architecture ADR decides (for example, Burst-compiled code runs as native code under either backend).
 - **Keep IL2CPP cheap to adopt.** Game code must not use `System.Reflection.Emit` or the `dynamic` keyword, because AOT can't support them ([scripting restrictions][aot]). Don't rely on reflection to reach code that nothing references directly, because code stripping can remove it.
 - **Out of scope.** The unit simulation architecture (for example DOTS/ECS or GameObjects) is left to a later ADR. So are the rendering approach for large unit counts and the `Game/Assets/` folder layout (AGENTS.md §2).
 - **Unity support window.** Unity 6.3 LTS support ends in December 2027 ([Unity 6 support][unity-support]). An ADR for the upgrade to a newer LTS is needed before then.
 - **Blender licensing.** Art made with Blender belongs to its creator. However, Blender says scripts that use its Python API must, "if published", be shared "under a GPL compliant license" ([Blender license][blender-license]). Export scripts in `Art/` are published in this public repo, and the repo has no LICENSE file yet. **The owner must choose the license for those scripts before the first one is merged.**
-- **VS Code licensing.** Microsoft's Unity extension is built on C# Dev Kit. C# Dev Kit is free for personal, academic and open-source use and for commercial teams of up to five developers. Teams of six or more need Visual Studio Professional or higher ([C# Dev Kit FAQ][devkit]). Recheck this if the human team grows.
+- **VS Code licensing.** Microsoft's Unity extension is built on C# Dev Kit ([C# Dev Kit FAQ][devkit]), which uses the same license model as Visual Studio ([C# Dev Kit announcement][devkit-launch]). Academic and open-source use is free. Other use, including commercial use, is free only for those who qualify under the Visual Studio Community license terms: individuals, and commercial teams of up to five developers per Microsoft's FAQ. Anyone who doesn't qualify needs an eligible Visual Studio subscription (Professional or higher) or another entitlement; the FAQ names GitHub Codespaces and Microsoft Dev Box ([C# Dev Kit FAQ][devkit]). Recheck this if the human team grows.
 - **Installing tools.** Editors and their extensions are local tools, not project packages. Installing them still follows AGENTS.md §5: ask first.
 - **Reversibility.** Changing the engine becomes impractical once content exists. Leaving URP would mean reworking shaders and materials. Switching the backend is a Player setting that is cheap to try but needs a full test pass. Changing Blender or VS Code is cheap.
 - **Follow-up Issues:**
@@ -85,3 +85,4 @@ The manifest also lists `com.unity.ide.rider`. This ADR doesn't add, remove or c
 [blender-license]: https://www.blender.org/about/license/
 [vscode-unity]: https://code.visualstudio.com/docs/other/unity
 [devkit]: https://code.visualstudio.com/docs/csharp/cs-dev-kit-faq
+[devkit-launch]: https://devblogs.microsoft.com/visualstudio/announcing-csharp-dev-kit-for-visual-studio-code/
