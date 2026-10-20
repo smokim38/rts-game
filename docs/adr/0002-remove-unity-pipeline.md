@@ -19,7 +19,7 @@ Investigation #22 found the following, and the owner accepted the finding:
 - **Nothing depends on it.** No other package requires it, and nothing in `Game/Assets/` or `Game/ProjectSettings/` references it (re-checked for this ADR).
 - **Editor automation server.** The package lets an outside client drive a running Editor over a local HTTP API ([package docs][docs], [Unity docs][unity-docs]). Its `Documentation~/connectivity.md` says the Editor server starts on its own on 127.0.0.1, ports 7800–7849, with a token in `Game/Library/Pipeline/.unity-pipeline-port`. It accepts commands including `eval` (run C#), `package_add` and `build`. Any local process that can read that token can run code in the Editor and add packages, outside the review and ask-first rules of AGENTS.md §5–6. *Assessed from the package documentation, not tested.*
 - **Build warning.** `Editor/BuildProcessors/PipelineRuntimeBuildProcessor.cs` logs a "Pipeline: No RuntimePipelineConfig asset found…" warning on Player builds. That would break the clean-console rule (AGENTS.md §4). *Inferred from the package source, not observed in a build.*
-- **Release builds don't include it.** Its runtime code compiles only under `UNITY_EDITOR || ENABLE_PROFILER || ENABLE_RUNTIME_PIPELINE`. Removing it doesn't change frame time, memory or behavior in a release Player.
+- **Ordinary release builds don't include it.** Its runtime assemblies and bundled Roslyn DLLs compile only under `UNITY_EDITOR || ENABLE_PROFILER || ENABLE_RUNTIME_PIPELINE`. So Unity leaves them out of a non-development Player build that isn't instrumented for the Profiler and doesn't set `ENABLE_RUNTIME_PIPELINE` ([runtime setup][runtime-setup]). A development build, a Profiler-instrumented build, or a build that sets that define can include them. Removing the package is therefore expected not to change frame time, memory or behavior in an ordinary release Player. *Expected from the package documentation, not measured.*
 
 ## Decision
 
@@ -40,12 +40,12 @@ Why this fits: the package is experimental and unsupported, was never approved, 
 ## Consequences
 
 - **Benefits.** This removes an unapproved dependency, an unreviewed way to run code in the Editor, and a likely build warning. Upgrades have two fewer packages to track.
-- **Tradeoff.** No tool can drive a running Editor from outside (open scenes, run code, build). No current Issue needs that.
+- **Tradeoff.** The project loses the Pipeline/Unity CLI route for controlling a running Editor (open scenes, run code, build). No current Issue needs that.
 - **Command-line testing is ordinary testing.** Running Unity's built-in test runner from the command line (`-batchmode -runTests`, with `-testPlatform` and `-testResults`) is a standard Unity feature from the Unity Test Framework (`com.unity.test-framework`, already in the manifest). It works independently of this package ([command-line tests][cli-tests]). Agents may do it under their approved Issues without an ADR.
 - **Editor control needs an ADR.** Re-adding this package needs a new accepted ADR. So does adopting any new integration that lets agents control the Editor, for example an Editor automation server such as Unity Pipeline/CLI, an MCP server, or custom automation scripts. That ADR must cover the dependency rules in AGENTS.md §5 (source, license, owner approval) and how access stays local and authenticated.
 - **Order.** #25 may start only after this ADR is merged.
 - **Checks for #25.** #25's acceptance criteria define the removal's checks. Note that `com.unity.nuget.mono-cecil` must stay in `packages-lock.json` at 1.11.6, because `com.unity.collections` 2.6.8 requires it, and that `Game/Library/Pipeline/` is local and untracked.
-- **Reversibility.** It is cheap to reverse: re-adding the package restores it, but that needs a new accepted ADR (above). Release builds never included its code, so neither direction changes what players get.
+- **Reversibility.** It is cheap to reverse: re-adding the package restores it, but that needs a new accepted ADR (above). Ordinary release builds (not development builds, not Profiler-instrumented, without `ENABLE_RUNTIME_PIPELINE`) leave out its runtime assemblies ([runtime setup][runtime-setup]), so neither direction is expected to change what players get. That is an expectation from the documentation, not a measured result.
 - **Follow-up Issues.**
   - #25: the removal.
   - Suggested: confirm whether Unity Hub's "Use Unity CLI" option adds this package to new projects. If it does, note in the setup docs to leave that option off.
@@ -53,5 +53,6 @@ Why this fits: the package is experimental and unsupported, was never approved, 
 [exp]: https://docs.unity3d.com/6000.3/Documentation/Manual/pack-exp.html
 [changelog]: https://docs.unity3d.com/Packages/com.unity.pipeline@0.8/changelog/CHANGELOG.html
 [docs]: https://docs.unity3d.com/Packages/com.unity.pipeline@0.8/manual/index.html
+[runtime-setup]: https://docs.unity3d.com/Packages/com.unity.pipeline@0.8/manual/runtime-setup.html
 [unity-docs]: https://docs.unity.com/en-us/unity-production-pipeline/local-tools-cli/unity-pipeline-package
 [cli-tests]: https://docs.unity3d.com/6000.3/Documentation/Manual/test-framework/run-tests-from-command-line.html
