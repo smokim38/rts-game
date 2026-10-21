@@ -9,8 +9,11 @@
 // .studio/worktrees/, and runs Codex unattended through `codex app-server`: workspace-write
 // (read-only for reviewer), on-request approvals answered by auto-review, never full access.
 // It refuses to start the turn unless Codex's own thread/start reply reports exactly those
-// settings and the role's model and effort, declines any approval request that reaches it
-// (auto-review didn't answer it), logs the run under .studio/logs/ and prints a short summary.
+// settings and the role's model and effort, stops if a later settings change or a model reroute
+// departs from them, declines any approval request that reaches it (auto-review didn't answer
+// it), logs the run under .studio/logs/ and prints a short summary.
+// Codex, git and gh run by absolute path from PATH entries outside the repository, never through
+// a shell, so a worktree's content can't stand in for them.
 // Codex only edits files; the Producer commits, pushes and opens the PR.
 // The role files are read from main on GitHub, so local edits can't change a role.
 // Node.js built-in modules only. Tests: node --test tools/codex-launch.test.js
@@ -106,7 +109,7 @@ function checkPrTarget(pr, issueNumber) {
   if (pr.baseRefName !== 'main') refuse(`PR #${pr.number} does not target main`);
   if (pr.headRepository?.nameWithOwner !== REPO) refuse(`PR #${pr.number} does not come from ${REPO}`);
   const closes = pr.closingIssuesReferences;
-  if (closes.totalCount !== 1 || closes.nodes[0]?.number !== issueNumber) {
+  if (closes.totalCount !== 1 || closes.nodes[0]?.number !== issueNumber || closes.nodes[0]?.repository?.nameWithOwner !== REPO) {
     refuse(`PR #${pr.number} must close exactly Issue #${issueNumber}`);
   }
   if (!SHA.test(pr.headRefOid)) refuse(`PR #${pr.number} has no usable head SHA`);
@@ -149,10 +152,44 @@ function checkRole(role, config) {
   return config;
 }
 
+// ---------- programs ----------
+
+const isFile = (p) => fs.statSync(p, { throwIfNoEntry: false })?.isFile() ?? false;
+
+// Absolute PATH entries outside the repository. Windows starts a bare program name from the
+// current folder before PATH, and worktrees hold PR content, so programs are looked up here.
+function pathDirs(env = process.env, root = ROOT) {
+  return (env.PATH ?? '').split(path.delimiter).filter((dir) => {
+    if (!path.isAbsolute(dir)) return false;
+    const rel = path.relative(root, dir);
+    return rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
+  });
+}
+
+function findProgram(name, { env = process.env, root = ROOT, platform = process.platform } = {}) {
+  const file = platform === 'win32' ? `${name}.exe` : name;
+  for (const dir of pathDirs(env, root)) if (isFile(path.join(dir, file))) return path.join(dir, file);
+  refuse(`${name} was not found on PATH`);
+}
+
+// Codex by absolute path: on Windows the npm package's entry script beside the `codex.cmd` shim,
+// run by this node without a shell; elsewhere the `codex` program.
+function codexCommand({ env = process.env, root = ROOT, platform = process.platform } = {}) {
+  if (platform !== 'win32') return { file: findProgram('codex', { env, root, platform }), args: [] };
+  for (const dir of pathDirs(env, root)) {
+    const entry = path.join(dir, 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
+    if (isFile(path.join(dir, 'codex.cmd')) && isFile(entry)) return { file: process.execPath, args: [entry] };
+  }
+  refuse('the Codex CLI (npm package @openai/codex) was not found on PATH');
+}
+
+const programs = {};
+const program = (name) => (programs[name] ??= findProgram(name));
+
 // ---------- GitHub and git ----------
 
 function gh(args, input) {
-  return execFileSync('gh', args, { cwd: ROOT, encoding: 'utf8', input, maxBuffer: 64 * 1024 * 1024 });
+  return execFileSync(program('gh'), args, { cwd: ROOT, encoding: 'utf8', input, maxBuffer: 64 * 1024 * 1024 });
 }
 
 const ISSUE_QUERY = `query($n: Int!) { repository(owner: "smokim38", name: "rts-game") { issue(number: $n) {
@@ -160,7 +197,7 @@ const ISSUE_QUERY = `query($n: Int!) { repository(owner: "smokim38", name: "rts-
   userContentEdits(first: 100) { totalCount nodes { editor { login } } } } } }`;
 const PR_QUERY = `query($n: Int!) { repository(owner: "smokim38", name: "rts-game") { pullRequest(number: $n) {
   number state baseRefName headRefOid headRepository { nameWithOwner }
-  closingIssuesReferences(first: 10) { totalCount nodes { number } } } } }`;
+  closingIssuesReferences(first: 10) { totalCount nodes { number repository { nameWithOwner } } } } } }`;
 
 const github = {
   issue: (n) => JSON.parse(gh(['api', 'graphql', '-f', `query=${ISSUE_QUERY}`, '-F', `n=${n}`])).data.repository.issue,
@@ -173,7 +210,7 @@ const github = {
 };
 
 function git(args, cwd = ROOT) {
-  return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
+  return execFileSync(program('git'), ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
 }
 
 const gitOk = (args, cwd) => {
@@ -185,25 +222,65 @@ const gitOk = (args, cwd) => {
   }
 };
 
-function ensureStudio() {
-  for (const dir of ['worktrees', 'logs', 'locks']) fs.mkdirSync(path.join(STUDIO, dir), { recursive: true });
-  const ignore = path.join(STUDIO, '.gitignore');
+function ensureStudio(studio = STUDIO) {
+  for (const dir of ['worktrees', 'logs', 'locks']) fs.mkdirSync(path.join(studio, dir), { recursive: true });
+  const ignore = path.join(studio, '.gitignore');
   if (!fs.existsSync(ignore)) fs.writeFileSync(ignore, '*\n');
 }
 
-// One WIP slot per engineer (workflow.md): a lock names the Issue that holds the slot until it closes.
-function takeSlot(lockDir, role, issueNumber, isOpen) {
-  const lock = path.join(lockDir, `${role}.json`);
-  if (fs.existsSync(lock)) {
-    const held = JSON.parse(fs.readFileSync(lock, 'utf8'));
-    if (held.issue !== issueNumber && isOpen(held.issue)) refuse(`the ${role} slot is held by open Issue #${held.issue}`);
+const alive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === 'EPERM';
   }
-  fs.writeFileSync(lock, `${JSON.stringify({ issue: issueNumber, since: new Date().toISOString() })}\n`);
-  return lock;
+};
+
+// An exclusive lock file holding this process's id. One left by a process that has ended is
+// taken over. Returns the function that releases it.
+function acquire(file) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      fs.writeFileSync(file, `${process.pid}\n`, { flag: 'wx' });
+      return () => fs.rmSync(file, { force: true });
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+    }
+    let pid;
+    try {
+      pid = Number(fs.readFileSync(file, 'utf8').trim());
+    } catch {
+      continue; // released in the meantime
+    }
+    if (!Number.isInteger(pid) || pid <= 0 || alive(pid)) refuse(`another launcher run holds ${path.basename(file)}; try again when it finishes`);
+    fs.rmSync(file, { force: true });
+  }
+  refuse(`another launcher run took ${path.basename(file)} first`);
 }
 
-function implementationWorktree(role, issue, branch) {
-  const dir = path.join(STUDIO, 'worktrees', `${issue.number}-${role}`);
+// One WIP slot per engineer (workflow.md): a lock names the Issue that holds the slot until it
+// closes. The check and the claim happen under the role's mutex, so two runs can't both claim it.
+function takeSlot(lockDir, role, issueNumber, isOpen) {
+  const release = acquire(path.join(lockDir, `${role}.mutex`));
+  try {
+    const lock = path.join(lockDir, `${role}.json`);
+    if (fs.existsSync(lock)) {
+      const held = JSON.parse(fs.readFileSync(lock, 'utf8'));
+      if (held.issue !== issueNumber && isOpen(held.issue)) refuse(`the ${role} slot is held by open Issue #${held.issue}`);
+    }
+    fs.writeFileSync(lock, `${JSON.stringify({ issue: issueNumber, since: new Date().toISOString() })}\n`);
+    return lock;
+  } finally {
+    release();
+  }
+}
+
+// The run's worktree: the Issue's branch for implementation roles, a PR checkout otherwise.
+const worktreeDir = (args, studio = STUDIO) =>
+  path.join(studio, 'worktrees', args.kind === 'implement' ? `${args.issue}-${args.role}` : `${args.role}-pr${args.pr}`);
+
+function implementationWorktree(dir, branch) {
   git(['fetch', '--quiet', 'origin']);
   if (fs.existsSync(dir)) {
     if (git(['rev-parse', '--abbrev-ref', 'HEAD'], dir) !== branch) refuse(`${path.relative(ROOT, dir)} is not on ${branch}`);
@@ -220,8 +297,7 @@ function implementationWorktree(role, issue, branch) {
   return dir;
 }
 
-function checkoutWorktree(role, pr, sha) {
-  const dir = path.join(STUDIO, 'worktrees', `${role}-pr${pr}`);
+function checkoutWorktree(dir, pr, sha) {
   git(['fetch', '--quiet', 'origin', 'main', sha]);
   if (fs.existsSync(dir)) git(['worktree', 'remove', '--force', dir]);
   git(['worktree', 'add', '--detach', dir, sha]);
@@ -377,12 +453,10 @@ function declineRequest(method) {
   return null;
 }
 
-function runCodex({ cwd, model, effort, sandbox, developerInstructions, prompt, outputSchema, log, timeoutMs = RUN_TIMEOUT_MS }) {
+// `command` is Codex's program and leading arguments (codexCommand); tests pass a fake server.
+function runCodex({ cwd, model, effort, sandbox, developerInstructions, prompt, outputSchema, log, timeoutMs = RUN_TIMEOUT_MS, command = codexCommand() }) {
   const expected = { cwd, model, effort, sandboxType: sandbox === 'read-only' ? 'readOnly' : 'workspaceWrite' };
-  const win = process.platform === 'win32';
-  // On Windows `codex` is an npm .cmd shim, which Node only starts through a shell. The command line is fixed text.
-  const opts = { cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true };
-  const child = win ? spawn('codex.cmd app-server', { ...opts, shell: true }) : spawn('codex', ['app-server'], opts);
+  const child = spawn(command.file, [...command.args, 'app-server'], { cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
   const run = { threadId: null, settings: null, reroutes: [], reviews: [], declined: [], subagents: [], items: {}, finalText: null, turn: null, stderr: '' };
   let nextId = 1;
   const pending = new Map();
@@ -426,6 +500,9 @@ function runCodex({ cwd, model, effort, sandbox, developerInstructions, prompt, 
       } else if (method === 'model/rerouted') {
         run.reroutes.push({ from: params.fromModel, to: params.toModel, reason: params.reason });
         log({ event: 'model-rerouted', ...run.reroutes.at(-1) });
+        if (params.toModel !== expected.model) {
+          finish(new Refused(`Codex rerouted the run to ${params.toModel} (${params.reason}); the role requires ${expected.model}, so nothing is posted`));
+        }
       } else if (method === 'item/autoApprovalReview/completed') {
         const review = { status: params.review?.status, risk: params.review?.riskLevel ?? null, action: params.action?.command ?? params.action?.program ?? params.action?.type };
         run.reviews.push(review);
@@ -531,28 +608,30 @@ async function main(argv) {
   if (args.kind === 'implement' && !labelsOf(issue).includes(`role:${args.role}`)) refuse(`Issue #${args.issue} is not labelled role:${args.role}`);
   const role = checkRole(args.role, parseRoleToml(github.roleFile(args.role)));
   ensureStudio();
-
+  const locks = path.join(STUDIO, 'locks');
+  const dir = worktreeDir(args);
+  // One run per worktree at a time, so a second run can't reuse or remove a checkout in use.
+  const releaseRun = acquire(path.join(locks, `${path.basename(dir)}.run`));
   let lock = null;
-  let branch = null;
-  let sha = null;
-  let dir;
-  const isOpen = (n) => github.issue(n)?.state === 'OPEN';
-  if (args.kind === 'implement') {
-    branch = branchName(issue);
-    lock = takeSlot(path.join(STUDIO, 'locks'), args.role, args.issue, isOpen);
-    dir = implementationWorktree(args.role, issue, branch);
-  } else {
-    sha = checkPrTarget(github.pr(args.pr), args.issue);
-    if (args.kind === 'qa') lock = takeSlot(path.join(STUDIO, 'locks'), args.role, args.issue, isOpen);
-    dir = checkoutWorktree(args.role, args.pr, sha);
-  }
-
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const logFile = path.join(STUDIO, 'logs', `${stamp}-${args.role}-${args.issue}.jsonl`);
-  const log = (entry) => fs.appendFileSync(logFile, `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`);
-  log({ event: 'start', role: args.role, issue: args.issue, pr: args.pr, sha, branch, requested: { model: role.model, effort: role.model_reasoning_effort } });
-
   try {
+    let branch = null;
+    let sha = null;
+    const isOpen = (n) => github.issue(n)?.state === 'OPEN';
+    if (args.kind === 'implement') {
+      branch = branchName(issue);
+      lock = takeSlot(locks, args.role, args.issue, isOpen);
+      implementationWorktree(dir, branch);
+    } else {
+      sha = checkPrTarget(github.pr(args.pr), args.issue);
+      if (args.kind === 'qa') lock = takeSlot(locks, args.role, args.issue, isOpen);
+      checkoutWorktree(dir, args.pr, sha);
+    }
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const logFile = path.join(STUDIO, 'logs', `${stamp}-${args.role}-${args.issue}.jsonl`);
+    const log = (entry) => fs.appendFileSync(logFile, `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`);
+    log({ event: 'start', role: args.role, issue: args.issue, pr: args.pr, sha, branch, requested: { model: role.model, effort: role.model_reasoning_effort } });
+
     const run = await runCodex({
       cwd: dir,
       model: role.model,
@@ -581,6 +660,7 @@ async function main(argv) {
     if (failure) throw failure;
   } finally {
     if (args.kind === 'qa' && lock) fs.rmSync(lock, { force: true });
+    releaseRun();
   }
 }
 
@@ -600,7 +680,13 @@ module.exports = {
   checkPrTarget,
   parseRoleToml,
   checkRole,
+  pathDirs,
+  findProgram,
+  codexCommand,
+  ensureStudio,
+  acquire,
   takeSlot,
+  worktreeDir,
   buildPrompt,
   defang,
   recordComment,

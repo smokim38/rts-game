@@ -200,6 +200,54 @@ const blockedBash = [
   'find . -okdir x {} ;',
   "LESSOPEN='|x %s' less AGENTS.md",
   'export LESSOPEN=x',
+  // PR #43 review: git options in attached, clustered and abbreviated forms
+  'git -ccore.fsmonitor=codex status',
+  'git -cuser.name=x status',
+  'git --config-env=core.pager=X log',
+  'git clone -ucodex . work',
+  'git clone -qu x . work',
+  'git clone -ccore.fsmonitor=x . work',
+  'git clone --conf=core.fsmonitor=x . work',
+  'git clone --upl=x . work',
+  'git clone --template=x . work',
+  'git init --templ=x work',
+  'git ls-remote -ux .',
+  'git ls-remote --upload-pack=x .',
+  'git fetch --upload=x origin',
+  'git archive --remote=x --exe=y HEAD',
+  'git rebase --exe=x main',
+  'git rebase -ix main',
+  'git log --outp=x',
+  'git diff --ext',
+  'git show --textc HEAD',
+  'git grep --open x',
+  'git grep -iO x',
+  'git difftool --extc=x',
+  'git maintenance start',
+  'git maintenance register',
+  'git lfs install',
+  // gh arguments passed on to git or ssh, and gh commands that start remote shells or other agents
+  'gh repo clone /dev/null work -- --upload-pack=codex',
+  'gh repo clone smokim38/rts-game work -- -c core.fsmonitor=x',
+  'gh repo fork smokim38/rts-game --clone -- --template=x',
+  'gh gist clone 1 x -- -u y',
+  'gh codespace ssh -- -o ProxyCommand=x',
+  'gh codespace list',
+  'gh copilot',
+  'gh agent-task create x',
+  // Codex and Claude by their package entry points, versions and environment variables
+  'node node_modules/@openai/codex/bin/codex.js --version',
+  'node node_modules/@anthropic-ai/claude-code/cli.js -p x',
+  'node C:/npm/node_modules/@openai/codex',
+  'npx @openai/codex@0.163.0 exec x',
+  'npx -y @anthropic-ai/claude-code@latest -p x',
+  'npx claude@latest -p x',
+  'npm exec --package=@openai/codex -- x',
+  'EDITOR=codex git commit',
+  'PAGER=claude git log',
+  'GH_BROWSER=codex gh browse',
+  'export VISUAL=codex',
+  'env EDITOR="claude --x" git commit',
 ];
 
 const blockedPowerShell = [
@@ -260,6 +308,15 @@ const blockedPowerShell = [
   'Start-Process codex',
   'claude -p x',
   "$env:LESSOPEN = '|x %s'",
+  // PR #43 review
+  'git -ccore.fsmonitor=codex status',
+  'git clone -ucodex . work',
+  'gh repo clone x y -- --upload-pack=codex',
+  'gh codespace ssh',
+  'node node_modules/@openai/codex/bin/codex.js --version',
+  "& node 'C:\\Program Files\\nodejs\\node_modules\\@anthropic-ai\\claude-code\\cli.js' -p x",
+  "$env:EDITOR = 'codex'; git commit",
+  "$env:PAGER='claude'; git log",
 ];
 
 const allowedBash = [
@@ -333,6 +390,20 @@ const allowedBash = [
   'echo claude',
   'git symbolic-ref HEAD',
   'rg --hidden x docs',
+  // PR #43 review: the stricter option checks keep ordinary commands working
+  'git clone https://github.com/smokim38/rts-game.git work',
+  'git clone --depth 1 https://github.com/smokim38/rts-game.git work',
+  'git -C . status',
+  'git log --oneline --decorate',
+  'git diff --exit-code',
+  'git diff --no-ext-diff',
+  'git rebase origin/main',
+  'git maintenance run --task=gc',
+  'git lfs ls-files',
+  'gh repo clone smokim38/rts-game work',
+  'rg "@openai/codex" docs',
+  'git commit -m "docs: Codex-Run is a trailer"',
+  'node --test tools/codex-launch.test.js',
 ];
 
 const allowedPowerShell = [
@@ -445,6 +516,7 @@ const OTHER_SHA = 'b'.repeat(40);
 const marker = (type, result, { vendor, pr = 7, sha = SHA } = {}) =>
   `<!-- studio-record v1 type=${type} pr=${pr} sha=${sha} result=${result}${vendor ? ` vendor=${vendor}` : ''} -->`;
 const postRecord = (first, rest = 'Review text', n = 7) => `gh pr comment ${n} --body-file - <<'EOF'\n${first}\n${rest}\nEOF`;
+const approvalLine = ({ pr = 7, sha = SHA, reply = 'approved', date = '2026-10-21' } = {}) => `Owner approval for PR #${pr} at ${sha}: "${reply}" (Producer session, ${date})`;
 expect(0, 'code-reviewer posts its verdict record', shell('Bash', postRecord(marker('verdict', 'approve', { vendor: 'claude' })), reviewer));
 expect(0, 'code-reviewer posts request-changes', shell('Bash', postRecord(marker('verdict', 'request-changes', { vendor: 'claude' })), reviewer));
 expect(2, 'code-reviewer posts a codex verdict', shell('Bash', postRecord(marker('verdict', 'approve', { vendor: 'codex' })), reviewer));
@@ -468,6 +540,7 @@ const producerAllowed = [
   "gh pr comment 7 --body 'Merging after the gate passes.'",
   postRecord(marker('owner-approval', 'approved'), `Owner approval for PR #7 at ${SHA}: "approved" (Producer session, 2026-10-21)`),
   'gh issue view 5 --json state,author,body,labels',
+  `gh api graphql -f query='query { repository(owner: "smokim38", name: "rts-game") { issue(number: 5) { userContentEdits(first: 100) { totalCount nodes { editor { login } } } } } }'`,
   'gh project item-add 1 --owner smokim38 --url https://github.com/smokim38/rts-game/issues/5',
   'gh project item-edit --id PVTI_1 --project-id PVT_1 --field-id PVTSSF_1 --single-select-option-id 4fed389c',
   'git switch -c chore/15-x',
@@ -552,6 +625,16 @@ const producerBlocked = [
   'gh pr comment 7 -F approval.md',
   'gh pr comment 7 --editor',
   `git status; gh pr comment 7 --body 'x'`,
+  // Owner-approval records must quote the reply and its date for this PR and SHA
+  postRecord(marker('owner-approval', 'approved')),
+  postRecord(marker('owner-approval', 'approved'), approvalLine({ sha: OTHER_SHA })),
+  postRecord(marker('owner-approval', 'approved'), approvalLine({ pr: 8 })),
+  postRecord(marker('owner-approval', 'approved'), approvalLine({ reply: 'looks fine' })),
+  postRecord(marker('owner-approval', 'approved'), approvalLine({ date: 'today' })),
+  // PR #43 review: git and gh routes to other programs
+  'git -C .studio/worktrees/5-gameplay-programmer -ccore.fsmonitor=x status',
+  'git clone -ux . work',
+  'gh repo clone smokim38/rts-game work -- --upload-pack=x',
 ];
 for (const c of producerAllowed) expect(0, `producer ${c.split('\n')[0]}`, shell('Bash', c, producer));
 for (const c of producerBlocked) expect(2, `producer ${c.split('\n').join(' ⏎ ')}`, shell('Bash', c, producer));
@@ -580,7 +663,8 @@ const comment = (body, { author = 'smokim38', edited = false } = {}) => ({
   edited,
   createdAt: new Date(Date.UTC(2026, 9, 21) + 1000 * clock++).toISOString(),
 });
-const rec = (type, result, opts) => comment(`${marker(type, result, opts)}\nx`);
+const rec =(type, result, opts) => comment(`${marker(type, result, opts)}\n${type === 'owner-approval' ? approvalLine(opts) : 'x'}`);
+const closes = (...numbers) => numbers.map((number) => ({ number, repo: 'smokim38/rts-game' }));
 const codexCommit = { sha: 'c1', message: `feat(units): x (#5)\n\nCodex-Run: ${RUN_ID}`, parents: ['p0'] };
 const claudeCommit = { sha: 'c2', message: 'docs: x (#5)', parents: ['c1'] };
 const gitleaks = (conclusion, id = 1, status = 'completed') => ({ id, name: 'gitleaks', status, conclusion, app: 'github-actions' });
@@ -588,7 +672,7 @@ const gitleaks = (conclusion, id = 1, status = 'completed') => ({ id, name: 'git
 // A Standard, Codex-written Game/ change with a Claude Approve and QA pass: allowed as is.
 function fixture(o = {}) {
   return {
-    pr: { state: 'OPEN', base: 'main', head: SHA, body: 'Closes #5\nTier: Standard\n', changedFiles: 1, commitCount: 1, closes: [5], ...o.pr },
+    pr: { state: 'OPEN', base: 'main', head: SHA, body: 'Closes #5\nTier: Standard\n', changedFiles: 1, commitCount: 1, closes: closes(5), ...o.pr },
     issue: { state: 'OPEN', author: 'smokim38', body: AUTHORISED, labels: ['type:feature', 'tier:standard'], editors: [], ...o.issue },
     files: o.files ?? [{ path: 'Game/Assets/Scripts/Units/Selection.cs', previous: null }],
     commits: o.commits ?? [codexCommit],
@@ -768,6 +852,51 @@ gate(2, 'Light without a self-check', MERGE, fixture({
 }));
 gate(2, 'no Tier: line in the PR body', MERGE, fixture({ pr: { body: 'Closes #5\n' } }));
 
+// PR #43 review: only Markdown, and text and images under docs/, count as docs.
+const lightDocs = (files) => fixture({
+  pr: { body: 'Closes #5\nTier: Light\nself-check done\n', changedFiles: files.length },
+  issue: { labels: ['type:docs', 'tier:light'] },
+  files: files.map((p) => ({ path: p, previous: null })),
+  commits: [claudeCommit],
+  comments: [],
+});
+gate(0, 'Light with Markdown and an image under docs/', MERGE, lightDocs(['docs/studio/workflow.md', 'docs/images/board.png']));
+for (const p of ['docs/build.rb', 'docs/build.lua', 'docs/tools/run', 'docs/x.yml', 'requirements.txt', 'CMakeLists.txt']) {
+  gate(2, `Light with ${p}`, MERGE, lightDocs(['docs/studio/workflow.md', p]));
+}
+
+// PR #43 review: `Codex-Run:` counts only as a trailer, and anywhere else blocks.
+const commitWith = (message) => ({ sha: 'c9', message, parents: ['p0'] });
+gate(0, 'a Codex-Run trailer among other trailers', MERGE, fixture({
+  commits: [commitWith(`feat(units): x (#5)\n\nBody.\n\nCodex-Run: ${RUN_ID}\nCo-Authored-By: x <x@example.invalid>`)],
+}));
+gate(2, 'Codex-Run in prose, followed by another paragraph', MERGE, fixture({
+  commits: [commitWith('docs: x (#5)\n\nCodex-Run: sample\n\nMore prose.')],
+  comments: [rec('verdict', 'approve', { vendor: 'claude' }), rec('qa', 'pass')],
+}));
+gate(2, 'Codex-Run in prose cannot turn Claude work into Codex work', MERGE, fixture({
+  commits: [commitWith('docs: x (#5)\n\nSee the example:\nCodex-Run: sample\nin the docs.')],
+}));
+gate(2, 'Codex-Run as the subject', MERGE, fixture({ commits: [commitWith(`Codex-Run: ${RUN_ID}`)] }));
+gate(2, 'two Codex-Run trailers', MERGE, fixture({ commits: [commitWith(`feat: x (#5)\n\nCodex-Run: ${RUN_ID}\nCodex-Run: ${RUN_ID}`)] }));
+gate(2, 'Codex-Run both in the body and as a trailer', MERGE, fixture({
+  commits: [commitWith(`feat: x (#5)\n\nCodex-Run: sample\n\nCodex-Run: ${RUN_ID}`)],
+}));
+
+// PR #43 review: an owner-approval record quotes the owner's reply and its date for this PR and SHA.
+const perimeterWith = (approval) => fixture({
+  pr: { body: 'Closes #5\nTier: Critical\n' },
+  issue: { labels: ['type:task', 'tier:critical'] },
+  files: [{ path: 'AGENTS.md', previous: null }],
+  commits: [claudeCommit],
+  comments: [rec('verdict', 'approve', { vendor: 'codex' }), comment(`${marker('owner-approval', 'approved')}\n${approval}`)],
+});
+gate(0, 'an owner approval quoting a longer reply', MERGE, perimeterWith(approvalLine({ reply: 'Approved, go ahead "now"' })));
+gate(2, 'an owner approval with only the marker', MERGE, perimeterWith(''));
+gate(2, 'an owner approval for another SHA in its text', MERGE, perimeterWith(approvalLine({ sha: OTHER_SHA })));
+gate(2, 'an owner approval whose reply does not say approved', MERGE, perimeterWith(approvalLine({ reply: 'not yet' })));
+gate(2, 'an owner approval without a date', MERGE, perimeterWith(approvalLine({ date: 'yesterday' })));
+
 // Checks.
 gate(2, 'gitleaks pending', MERGE, fixture({ runs: [gitleaks(null, 1, 'in_progress')] }));
 gate(2, 'gitleaks failed', MERGE, fixture({ runs: [gitleaks('failure')] }));
@@ -785,8 +914,11 @@ gate(2, 'the head moved', MERGE, fixture({ pr: { head: OTHER_SHA } }));
 gate(2, 'a closed PR', MERGE, fixture({ pr: { state: 'CLOSED' } }));
 gate(2, 'a PR on another base', MERGE, fixture({ pr: { base: 'release' } }));
 gate(2, 'no linked Issue', MERGE, fixture({ pr: { body: 'Tier: Standard\n', closes: [] } }));
-gate(2, 'two linked Issues', MERGE, fixture({ pr: { body: 'Closes #5\nCloses #6\nTier: Standard\n', closes: [5, 6] } }));
-gate(2, 'the body and GitHub disagree on the Issue', MERGE, fixture({ pr: { body: 'Closes #6\nTier: Standard\n', closes: [5] } }));
+gate(2, 'two linked Issues', MERGE, fixture({ pr: { body: 'Closes #5\nCloses #6\nTier: Standard\n', closes: closes(5, 6) } }));
+gate(2, 'the body and GitHub disagree on the Issue', MERGE, fixture({ pr: { body: 'Closes #6\nTier: Standard\n', closes: closes(5) } }));
+gate(2, 'the closing reference is an Issue with the same number in another repository', MERGE, fixture({
+  pr: { closes: [{ number: 5, repo: 'someone/rts-game' }] },
+}));
 gate(2, 'the Issue was opened by another account', MERGE, fixture({ issue: { author: 'someone' } }));
 gate(2, 'the Issue has no owner instruction', MERGE, fixture({ issue: { body: '### Goal\nx\n' } }));
 gate(2, 'the Issue’s owner instruction has no date', MERGE, fixture({ issue: { body: '### Owner instruction\n> do x\n' } }));
@@ -834,6 +966,12 @@ test('GitHub layer: fewer check runs than the total throws', async () => {
 test('GitHub layer: an edited comment is marked', async () => {
   const [c] = await ghReplies({ 'comments(first:100': [commentPage([{ ...node, lastEditedAt: '2026-10-21T00:01:00Z' }], 1)] }).comments(7);
   assert.strictEqual(c.edited, true);
+});
+test('GitHub layer: closing references keep their repository', async () => {
+  const pr = { state: 'OPEN', baseRefName: 'main', headRefOid: SHA, body: '', changedFiles: 1, commits: { totalCount: 1 },
+    closingIssuesReferences: { totalCount: 1, nodes: [{ number: 5, repository: { nameWithOwner: 'someone/other' } }] } };
+  const got = await ghReplies({ 'closingIssuesReferences': { data: { repository: { pullRequest: pr } } } }).pullRequest(7);
+  assert.deepStrictEqual(got.closes, [{ number: 5, repo: 'someone/other' }]);
 });
 test('GitHub layer: a failed gh call throws', async () => {
   await assert.rejects(guard.makeGitHub(async () => { throw new Error('HTTP 502'); }).issue(5));

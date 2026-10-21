@@ -28,10 +28,11 @@ Codex roles (gameplay-programmer, qa-test-engineer, tech-artist, and the read-on
 
 ### The Codex launcher
 `tools/codex-launch.js` (Node.js built-ins only; tests: `node --test tools/codex-launch.test.js`):
-1. Checks the inputs (fixed roles; `qa-test-engineer` and `reviewer` also need a PR), the authority rule (open, opened by `smokim38`, an `### Owner instruction` with a quote and a date, no body edits by other accounts) and the role's WIP slot.
+1. Checks the inputs (fixed roles; `qa-test-engineer` and `reviewer` also need a PR), the authority rule (open, opened by `smokim38`, an `### Owner instruction` with a quote and a date, no body edits by other accounts) and the role's WIP slot. Lock files under `.studio/locks/` that name the launcher's process make the slot claim atomic and allow one run per worktree at a time. A lock left by a process that has ended is taken over.
 2. Reads the role file from `main` on GitHub, so a local edit can't change a role's model, effort or instructions.
 3. Prepares a worktree under `.studio/worktrees/` (git-ignored): the Issue's branch for implementation roles, or a detached checkout of the PR's exact head for QA and review.
-4. Runs Codex unattended through `codex app-server`: `workspace-write` (`read-only` for `reviewer`), approval policy `on-request`, approvals reviewer `auto_review`, the role's model and effort. Before the turn starts, it checks Codex's own thread/start reply reports exactly these settings, and stops if any differ, including later in the run. Any approval request that reaches the launcher (auto-review didn't answer it) is declined. The launcher never approves anything.
+4. Runs Codex unattended through `codex app-server`: `workspace-write` (`read-only` for `reviewer`), approval policy `on-request`, approvals reviewer `auto_review`, the role's model and effort. Before the turn starts, it checks Codex's own thread/start reply reports exactly these settings, and stops if any differ. Later in the run, a settings change that departs from them, or a reroute to another model, also stops the run, and nothing is posted. Codex reports `auto_review` under its legacy name `guardian_subagent` in some versions, and the launcher accepts both. Any approval request that reaches the launcher (auto-review didn't answer it) is declined. The launcher never approves anything.
+   - Codex, git and gh run by absolute path, from absolute PATH entries outside the repository, and never through a shell. On Windows the launcher runs the npm package's entry script (`@openai/codex/bin/codex.js`) with node, because Windows would otherwise look for a program in the worktree, which holds PR content, before PATH.
 5. Logs the run under `.studio/logs/`: the settings Codex reported, model reroutes, subagents, every auto-review decision, commands and file changes.
 6. Prints a short summary. For QA and review runs, it posts the record for the commit it checked out.
 
@@ -96,17 +97,21 @@ Reading them is fine. Agents describe proposed changes in the PR, and the owner 
 - Bare or implicit pushes, force pushes, deletions, and pushes to other remotes are blocked.
 
 **git:**
-- any config change: `git -c`, `--config-env`, config writes, and `GIT_*` environment variables
+- any config change: `git -c` (also attached, `-ckey=value`), `--config-env`, config writes, `GIT_*` environment variables, and commands that write the global config (`git maintenance` other than `run`, `git lfs install|uninstall`)
 - remote changes: only `git remote -v`, `git remote get-url` and `git remote show` are allowed
 - aliases and non-built-in git commands
-- forms that run other programs: `rebase -x`, `bisect run`, `submodule foreach`, `--ext-diff`, `--upload-pack`
+- forms that run other programs: `rebase -x`, `bisect run`, `submodule foreach`, `--ext-diff`, `--textconv`, `--upload-pack`, `--receive-pack`, `--exec`, `ls-remote -u`, `difftool -x`, `grep -O`
+- `git clone` and `git init` with `-c`, `-u`, `--config` or `--template` (a template installs git hooks)
 - `git diff|log|show --output`
+- Options are matched in every form git accepts: attached values (`-ux`), clusters (`-qu x`) and abbreviated long options (`--upl=x`).
 
 **gh:**
 - `gh pr merge` in every form except the Producer's merge form (below), any `gh label` command, `gh pr review --approve`, and editing or deleting comments. Combined short flags are read the way gh reads them (`-iX PUT` is `-i -X PUT`).
-- record markers (`studio-record`) in comments, except a `verdict` record with `vendor=claude` from the code-reviewer and an `owner-approval` record from the Producer, each as the first line of a single comment
+- record markers (`studio-record`) in comments, except a `verdict` record with `vendor=claude` from the code-reviewer and an `owner-approval` record from the Producer, each as the first line of a single comment. An owner-approval record also needs its second line, quoting the owner's reply and its date (workflow.md).
 - `gh auth` and `gh secret`, repository settings, and gh config, alias and extension changes
 - aliases and extensions
+- arguments after `--`, which gh passes on to git or ssh (`gh repo clone … -- --upload-pack=x`)
+- `gh codespace`, `gh copilot` and `gh agent-task`, which open remote shells or start other AI agents
 - any `gh api` call that writes:
   - non-GET methods and fields that read files (`--input`, `=@file`)
   - GraphQL, except a literal read query
@@ -123,8 +128,9 @@ Reading them is fine. Agents describe proposed changes in the PR, and the owner 
 - setting `GITLEAKS_*`, `GIT_*` or `PATH` in any form the guard knows: assignments, `export`, `$env:`, the PowerShell `Env:` drive and Environment provider, `setx`, registry changes, and new PowerShell drives
 
 **Codex, Claude and indirect execution (every session):**
-- `codex` by any name or path (`codex.exe`, `codex.js`, `@openai/codex`, `npx codex`), except through the Producer's launcher form
-- nested Claude sessions (`claude …`), so no session can act as the Producer
+- `codex` by any name or path (`codex.exe`, `codex.js`, `codex@<version>`, `npx codex`), and the `@openai/codex` package by any path, except through the Producer's launcher form
+- nested Claude sessions (`claude …`, `claude@<version>`, the `@anthropic-ai/claude-code` package by any path), so no session can act as the Producer
+- an assignment or option that names either program (`EDITOR=codex git commit`, `PAGER=claude git log`)
 - the launcher itself, for anyone but the Producer
 - read-command options that run other programs: `rg --pre` and `--pre-glob`, `find -exec`, `-execdir`, `-ok` and `-okdir`, and setting `LESSOPEN` or `LESSCLOSE`
 - rewriting refs: `git update-ref`, `git replace` and `git symbolic-ref` writes
@@ -136,7 +142,7 @@ When the guard blocks a call, Claude sees the reason and the AGENTS.md section, 
 **The Producer (`agent_type: producer`):**
 - Its shell runs only `git`, `gh` and `cd` to the repository root, with no wrappers, variable assignments, file redirects or other programs. It reads files with its Read, Grep and Glob tools. All the general rules above still apply.
 - Its comments are a literal `--body` or a quoted here-document, so the guard can read them. `--body-file <path>`, `--editor` and `--web` are blocked.
-- **The merge form**, as a call of its own: `gh pr merge <n> --repo smokim38/rts-game --squash --delete-branch --match-head-commit <40-hex sha>`. Before allowing it, the guard asks GitHub (read-only, the fixed repository, every page) and blocks unless the AGENTS.md §6 merge gate holds. A failed or incomplete lookup blocks.
+- **The merge form**, as a call of its own: `gh pr merge <n> --repo smokim38/rts-game --squash --delete-branch --match-head-commit <40-hex sha>`. Before allowing it, the guard asks GitHub (read-only, the fixed repository, every page) and blocks unless the AGENTS.md §6 merge gate holds. A failed or incomplete lookup blocks. The linked Issue's labels and body edits are read in one page of 100 each, so an Issue with more than 100 of either blocks the merge.
 - **The launcher form**, as a call of its own from the repository root: `node tools/codex-launch.js <role> <issue> [<pr>]`. Before allowing it, the guard checks that `tools/codex-launch.js` is a real file under the project root (no symlink or junction) and that its git blob hash matches the file on `main`, fetched from the GitHub API. It never trusts a local ref such as `origin/main`.
 - Tests pin both what it may do and what stays blocked. The GitHub lookups are stubbed in the tests.
 

@@ -185,7 +185,7 @@ Reviews cost usage, so we spend them where the risk is. The Producer sets the ti
 
 **Minimum tiers.** The tier that counts is the highest of the Issue's label, the PR's `Tier:` line and these floors, so relabelling can't lower the bar:
 - Standard if the PR changes anything under `Game/`, `Art/` or `tools/`, or any script or shader. A code comment fix is Standard.
-- Light only if the PR changes docs only.
+- Light only if the PR changes docs only: Markdown, or text files and images under `docs/`.
 - Critical for `docs/adr/` and for anything in the security perimeter.
 
 **Protected paths:** `.githooks/`, `.claude/`, `.codex/`, `.github/`, `AGENTS.md`, `CLAUDE.md`, `.gitattributes`, `.gitleaksignore`

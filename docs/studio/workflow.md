@@ -31,7 +31,10 @@ Rules that follow from the handbook:
 | Standard | An Approve from the other vendor: Codex work → Claude `code-reviewer`; Claude work → the launcher's Codex `reviewer`; mixed work → both |
 | Critical | As Standard, in depth, plus an owner-approval record for security-perimeter PRs |
 
-Who wrote what comes from the commit trailers: the Producer commits launcher output with a `Codex-Run: <run id>` trailer, and every other commit counts as Claude work. Merge commits from `main` don't count.
+- "Docs only" means every changed file is Markdown, or a text file or image under `docs/`. Any other file, including a script under `docs/`, makes the PR at least Standard.
+- An owner-approval record is needed whenever the Issue's tier label or the PR's `Tier:` line says Owner, even if the tier that counts ends up higher, and for every security-perimeter PR.
+
+Who wrote what comes from the commit trailers: the Producer commits launcher output with a `Codex-Run: <run id>` trailer in the commit's final trailer block, and every other commit counts as Claude work. A `Codex-Run:` line anywhere else in a commit message, or more than one, blocks the merge, because the author is unclear. Merge commits from `main` don't count.
 
 There is one consolidated review per round, with a verdict of Approve, Request changes or Escalate. Two rounds at most. After that the Producer takes it to the owner and moves the card to Blocked (AGENTS.md §6).
 
@@ -62,6 +65,14 @@ Review, QA and owner-approval evidence lives in PR comments from `smokim38` whos
 | `verdict` (with `vendor=claude` or `vendor=codex`) | `approve`, `request-changes`, `escalate` | `code-reviewer` (claude) or the launcher's `reviewer` run (codex) |
 | `qa` | `pass`, `fail` | the launcher's `qa-test-engineer` run |
 | `owner-approval` | `approved` | the Producer, quoting the owner's reply and its date |
+
+An owner-approval record's second line must be exactly:
+
+```text
+Owner approval for PR #<n> at <40-hex sha>: "<the owner's reply, which says approved>" (Producer session, <YYYY-MM-DD>)
+```
+
+with the same PR and SHA as its marker.
 
 - Only the newest record of each type (and vendor) for the head SHA counts. A newer `request-changes`, `escalate` or `fail` overrides an older pass.
 - A record with a malformed first line, one edited after posting, or one that names another PR blocks the merge. Never edit or delete a record; post a new one.
@@ -112,7 +123,7 @@ A `type:spike` Issue is time-boxed research. Its output is a written finding (a 
 
 ## WIP limit
 
-Each engineer (gameplay-programmer, qa-test-engineer, tech-artist) has **one WIP slot**: at most one open assigned Issue at a time. The launcher enforces it with a lock per role under `.studio/locks/`, which frees when the Issue closes. For qa-test-engineer, a QA check fills the slot until its result is posted. If an engineer is blocked, the Producer resolves the blocker or asks the owner; the engineer doesn't start a second Issue. Fixes requested by review or QA belong to the same Issue, so they never need a second one.
+Each engineer (gameplay-programmer, qa-test-engineer, tech-artist) has **one WIP slot**: at most one open assigned Issue at a time. The launcher enforces it with a lock per role under `.studio/locks/`, which frees when the Issue closes. The slot is checked and claimed atomically, so two launcher runs can't both take it. For qa-test-engineer, a QA check fills the slot until its result is posted. If an engineer is blocked, the Producer resolves the blocker or asks the owner; the engineer doesn't start a second Issue. Fixes requested by review or QA belong to the same Issue, so they never need a second one.
 
 ## Merge policy
 
@@ -121,6 +132,8 @@ The Producer merges with exactly `gh pr merge <n> --repo smokim38/rts-game --squ
 - [ ] The latest `gitleaks` check on `<sha>` succeeded, and every other latest check succeeded, was neutral or was skipped.
 - [ ] The evidence for the tier that counts is recorded for `<sha>` (Review, above), with no newer blocking record.
 - [ ] PRs that change `Game/` have a `QA: pass` record for `<sha>`.
+
+Every lookup reads all pages, except the linked Issue's labels and body edits, which are read up to 100 each. An Issue with more than 100 of either blocks the merge.
 
 The guard can't check the rest, so the Producer does before merging:
 - [ ] Profiler numbers are included if a hot path changed (AGENTS.md §4).
