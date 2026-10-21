@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         This repository is **public**: no secrets, tokens or personal information.
-        Only the owner adds the `approved` label. Until then this Issue is a suggestion, not work (see `docs/studio/workflow.md`).
+        Labels never authorise work. A suggestion becomes work only when the owner asks the Producer for it, and the Producer records that instruction in the Issue (see `docs/studio/workflow.md`).
   - type: textarea
     id: goal
     attributes:

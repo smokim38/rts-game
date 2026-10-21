@@ -102,9 +102,6 @@ const blockedBash = [
   // gh
   'gh pr merge 5 --squash',
   'gh label list',
-  'gh issue edit 5 --add-label "bug,approved"',
-  'gh pr edit 5 --remove-label=approved',
-  'gh issue create --title t --label approved',
   'gh api repos/o/r/issues/5/labels -f "labels[]=approved"',
   'gh api repos/o/r/pulls/5/merge -X PUT',
   "gh api graphql -f query='mutation { addLabelsToLabelable }'",
@@ -142,8 +139,6 @@ const blockedBash = [
   'gh api repos/o/r/pulls/5/merge -XPUT',
   'gh api repos/o/r/pulls/5/merge -iX=PUT',
   'gh api repos/o/r/issues/5/labels --raw-field=labels[]=approved',
-  'gh issue create -t t -wl approved',
-  'gh issue create -lapproved -t t',
   'gh pr review 5 -ca',
   // Round 2: remotes, whatever comes before the action
   'git remote -v set-url origin https://github.com/example/other.git',
@@ -182,6 +177,29 @@ const blockedBash = [
   "bash -c 'g\\it push'",
   "bash -c 'git-push --force'",
   "sh -c '/usr/bin/git push -f'",
+  // Issue #42: every session, any role or none: Codex, nested Claude sessions, the launcher,
+  // hand-written refs and read commands that run other programs
+  'codex',
+  'codex exec "fix the bug"',
+  'C:/tools/codex.exe --version',
+  'npx codex',
+  'xargs codex',
+  'nohup codex exec x',
+  'claude --agent producer -p x',
+  "bash -c 'codex exec x'",
+  'node tools/codex-launch.js gameplay-programmer 5',
+  'git update-ref refs/remotes/origin/main HEAD',
+  'git replace HEAD~1 HEAD',
+  'git symbolic-ref HEAD refs/heads/x',
+  'git symbolic-ref -d HEAD',
+  'rg --pre=handoff x AGENTS.md',
+  'rg --pre handoff x AGENTS.md',
+  "rg --pre-glob '*.md' x docs",
+  'find . -exec x {} ;',
+  'find . -name "*.md" -execdir x {} +',
+  'find . -okdir x {} ;',
+  "LESSOPEN='|x %s' less AGENTS.md",
+  'export LESSOPEN=x',
 ];
 
 const blockedPowerShell = [
@@ -236,6 +254,12 @@ const blockedPowerShell = [
   'icacls .gitleaksignore /reset',
   'Get-Content x 2>&1 > .gitleaksignore',
   'git log > $out',
+  // Issue #42
+  'codex exec x',
+  '& "C:\\Program Files\\nodejs\\codex.cmd" exec x',
+  'Start-Process codex',
+  'claude -p x',
+  "$env:LESSOPEN = '|x %s'",
 ];
 
 const allowedBash = [
@@ -293,6 +317,22 @@ const allowedBash = [
   'git status 2>/dev/null',
   'cat .gitleaksignore 2>&1 | head -5',
   'echo git push --force',
+  // Issue #42: labels no longer authorise anything, so `approved` is an ordinary label
+  'gh issue edit 5 --add-label "bug,approved"',
+  'gh pr edit 5 --remove-label=approved',
+  'gh issue create --title t --label approved',
+  'gh issue create -t t -wl approved',
+  'gh issue create -lapproved -t t',
+  // Issue #42: names of Codex, Claude and the launcher as data, not as programs
+  'rg codex docs',
+  'cat .codex/agents/reviewer.toml',
+  'ls tools/codex-launch.js',
+  'node --test tools/codex-launch.test.js',
+  'git log --grep codex',
+  'git commit -m "docs: explain how claude starts codex"',
+  'echo claude',
+  'git symbolic-ref HEAD',
+  'rg --hidden x docs',
 ];
 
 const allowedPowerShell = [
@@ -392,36 +432,460 @@ expect(2, 'code-reviewer git diff --no-index', shell('Bash', 'git diff --no-inde
 expect(2, 'code-reviewer two commands', shell('Bash', 'gh pr view 5; gh pr diff 5', reviewer));
 expect(2, 'code-reviewer pipes to another command', shell('Bash', 'gh pr diff 5 | sh', reviewer));
 expect(2, 'code-reviewer gh pr review', shell('Bash', 'gh pr review 5 --comment -b x', reviewer));
+expect(2, 'code-reviewer codex', shell('Bash', 'codex exec x', reviewer));
+expect(2, 'code-reviewer C:/…/codex.exe', shell('Bash', 'C:/tools/codex.exe exec x', reviewer));
+expect(2, 'code-reviewer claude', shell('Bash', 'claude --agent producer -p x', reviewer));
+expect(2, 'code-reviewer rg --pre', shell('Bash', 'rg --pre=handoff x AGENTS.md', reviewer));
+expect(2, 'code-reviewer find -exec', shell('Bash', 'find . -exec x {} ;', reviewer));
+expect(2, 'code-reviewer git update-ref', shell('Bash', 'git update-ref refs/remotes/origin/main HEAD', reviewer));
 
-// The Producer has no lane of its own: the general rules apply. These pin the commands its workflow needs (Issue #15).
+// Records (Issue #42): who may post which marker.
+const SHA = 'a'.repeat(40);
+const OTHER_SHA = 'b'.repeat(40);
+const marker = (type, result, { vendor, pr = 7, sha = SHA } = {}) =>
+  `<!-- studio-record v1 type=${type} pr=${pr} sha=${sha} result=${result}${vendor ? ` vendor=${vendor}` : ''} -->`;
+const postRecord = (first, rest = 'Review text', n = 7) => `gh pr comment ${n} --body-file - <<'EOF'\n${first}\n${rest}\nEOF`;
+expect(0, 'code-reviewer posts its verdict record', shell('Bash', postRecord(marker('verdict', 'approve', { vendor: 'claude' })), reviewer));
+expect(0, 'code-reviewer posts request-changes', shell('Bash', postRecord(marker('verdict', 'request-changes', { vendor: 'claude' })), reviewer));
+expect(2, 'code-reviewer posts a codex verdict', shell('Bash', postRecord(marker('verdict', 'approve', { vendor: 'codex' })), reviewer));
+expect(2, 'code-reviewer posts a QA record', shell('Bash', postRecord(marker('qa', 'pass')), reviewer));
+expect(2, 'code-reviewer posts an owner-approval record', shell('Bash', postRecord(marker('owner-approval', 'approved')), reviewer));
+expect(2, 'code-reviewer record names another PR', shell('Bash', postRecord(marker('verdict', 'approve', { vendor: 'claude', pr: 8 })), reviewer));
+expect(2, 'code-reviewer record not on the first line', shell('Bash', postRecord('## Review', marker('verdict', 'approve', { vendor: 'claude' })), reviewer));
+expect(2, 'code-reviewer two markers', shell('Bash', postRecord(marker('verdict', 'approve', { vendor: 'claude' }), marker('qa', 'pass')), reviewer));
+expect(2, 'code-reviewer malformed marker', shell('Bash', postRecord('<!-- studio-record v1 type=verdict pr=7 sha=abc123 result=approve vendor=claude -->'), reviewer));
+expect(2, 'no-role session posts a verdict record', shell('Bash', postRecord(marker('verdict', 'approve', { vendor: 'claude' }))));
+expect(2, 'no-role session posts a record in --body', shell('Bash', `gh pr comment 7 --body '${marker('qa', 'pass')}'`));
+
+// The Producer (Issue #42): git, gh, `cd` to the root and the launcher form only. These pin the commands its workflow needs.
 const producer = as('producer');
+const ROOT_SLASHES = ROOT.replace(/\\/g, '/');
 const producerAllowed = [
   "gh issue create --title 'chore: x' -l type:task -l role:producer -l tier:critical --body-file - <<'EOF'\n### Goal\nx\nEOF",
   'gh issue edit 5 --add-label tier:critical',
-  "gh issue comment 5 --body-file - <<'EOF'\n## Codex handoff\nIssue: #5\nEOF",
-  'gh issue view 5 --json state,labels',
+  'gh issue edit 5 --add-label approved',
+  "gh issue comment 5 --body-file - <<'EOF'\n## Status\nIssue: #5\nEOF",
+  "gh pr comment 7 --body 'Merging after the gate passes.'",
+  postRecord(marker('owner-approval', 'approved'), `Owner approval for PR #7 at ${SHA}: "approved" (Producer session, 2026-10-21)`),
+  'gh issue view 5 --json state,author,body,labels',
   'gh project item-add 1 --owner smokim38 --url https://github.com/smokim38/rts-game/issues/5',
   'gh project item-edit --id PVTI_1 --project-id PVT_1 --field-id PVTSSF_1 --single-select-option-id 4fed389c',
   'git switch -c chore/15-x',
+  'git switch main',
+  'git pull',
   'git add .claude/agents/producer.md docs/studio/claude-staff.md',
   "git commit -F - <<'EOF'\nchore(claude): x (#15)\nEOF",
+  "git -C .studio/worktrees/5-gameplay-programmer commit -F - <<'EOF'\nfeat(units): x (#5)\n\nCodex-Run: 01a15cc0-aff6-76e0-8a63-4f6d48357e8f\nEOF",
+  'git -C .studio/worktrees/5-gameplay-programmer status',
   'git push -u origin HEAD:refs/heads/chore/15-x',
   'git merge origin/main',
   "gh pr create --base main --head chore/15-x --title 'chore: x' --body-file - <<'EOF'\nCloses #15\nEOF",
+  'git status 2>/dev/null',
+  'git log --oneline -5 2>&1',
+  'git status && git log -1',
+  `cd ${ROOT_SLASHES}`,
+  `cd ${ROOT_SLASHES} && git status`,
+  'cd .',
 ];
 const producerBlocked = [
-  'gh issue edit 5 --add-label approved',
-  'gh issue edit 5 --remove-label=approved',
-  'gh issue create -t x -l type:task,approved',
   'gh label create approved',
   'gh label list',
   'gh pr merge 5',
   'gh pr review 5 --approve',
   'git push origin HEAD:main',
+  // Every merge form but the exact one
+  'gh pr merge 7 --squash',
+  `gh pr merge 7 --repo smokim38/rts-game --squash --delete-branch --match-head-commit ${SHA} --admin`,
+  `gh pr merge 7 --repo smokim38/rts-game --squash --delete-branch --match-head-commit ${SHA} --auto`,
+  `gh pr merge 7 --repo smokim38/rts-game --merge --delete-branch --match-head-commit ${SHA}`,
+  `gh pr merge 7 --repo smokim38/rts-game --rebase --delete-branch --match-head-commit ${SHA}`,
+  `gh pr merge 7 --repo smokim38/rts-game --squash --match-head-commit ${SHA}`,
+  `gh pr merge 7 --repo smokim38/rts-game --squash --delete-branch --match-head-commit ${SHA.slice(0, 12)}`,
+  `gh pr merge 7 --repo smokim38/rts-game --squash --delete-branch --match-head-commit ${SHA.toUpperCase()}`,
+  `gh pr merge 7 --repo smokim38/rts-game --squash --delete-branch --match-head-commit=${SHA}`,
+  `gh pr merge 7 --squash --delete-branch --match-head-commit ${SHA}`,
+  `gh pr merge 7 --repo someone/rts-game --squash --delete-branch --match-head-commit ${SHA}`,
+  `gh pr merge 7 -R smokim38/rts-game --squash --delete-branch --match-head-commit ${SHA}`,
+  `gh pr merge 7 --squash --repo smokim38/rts-game --delete-branch --match-head-commit ${SHA}`,
+  `gh pr merge --repo smokim38/rts-game --squash --delete-branch --match-head-commit ${SHA}`,
+  `gh pr merge x7 --repo smokim38/rts-game --squash --delete-branch --match-head-commit ${SHA}`,
+  `gh  pr merge 7 --repo smokim38/rts-game --squash --delete-branch --match-head-commit ${SHA}`,
+  `git status && gh pr merge 7 --repo smokim38/rts-game --squash --delete-branch --match-head-commit ${SHA}`,
+  `gh pr merge 7 --repo smokim38/rts-game --squash --delete-branch --match-head-commit ${SHA}; git status`,
+  `gh pr merge 7 --repo smokim38/rts-game --squash --delete-branch --match-head-commit ${SHA}\ngit status`,
+  `gh pr merge $(echo 7) --repo smokim38/rts-game --squash --delete-branch --match-head-commit ${SHA}`,
+  `gh api repos/smokim38/rts-game/pulls/7/merge -X PUT -f sha=${SHA}`,
+  // Every launcher form but the exact ones, and every other way to run a program
+  'node tools/codex-launch.js gameplay-programmer 5 6',
+  'node tools/codex-launch.js qa-test-engineer 5',
+  'node tools/codex-launch.js producer 5',
+  'node tools/codex-launch.js gameplay-programmer x',
+  'node ./tools/codex-launch.js gameplay-programmer 5',
+  `node ${ROOT_SLASHES}/tools/codex-launch.js gameplay-programmer 5`,
+  'node tools/codex-launch.js gameplay-programmer 5; git status',
+  'node tools/codex-launch.js gameplay-programmer 5 > out.txt',
+  'node tools/handoff.js',
+  'node -e "1"',
+  'pwsh -File x.ps1',
+  './x.sh',
+  'C:/tools/codex.exe exec x',
+  '.studio/worktrees/5-gameplay-programmer/git.cmd status',
+  'rg --pre=handoff x AGENTS.md',
+  'cat AGENTS.md',
+  'ls',
+  'echo hi',
+  'FOO=1 gh issue list',
+  'git status > out.txt',
+  'gh issue view 5 < in.txt',
+  'cd docs',
+  'cd ..',
+  'cd .studio/worktrees/5-gameplay-programmer',
+  'echo "$(git status)"',
+  // Records: only owner-approval, only readable bodies
+  postRecord(marker('verdict', 'approve', { vendor: 'claude' })),
+  postRecord(marker('verdict', 'approve', { vendor: 'codex' })),
+  postRecord(marker('qa', 'pass')),
+  postRecord(marker('owner-approval', 'approved', { pr: 8 })),
+  `gh issue comment 7 --body-file - <<'EOF'\n${marker('owner-approval', 'approved')}\nEOF`,
+  `gh pr comment 7 --body-file - <<EOF\n${marker('owner-approval', 'approved')}\nEOF`,
+  'gh pr comment 7 --body-file approval.md',
+  'gh pr comment 7 -F approval.md',
+  'gh pr comment 7 --editor',
+  `git status; gh pr comment 7 --body 'x'`,
 ];
 for (const c of producerAllowed) expect(0, `producer ${c.split('\n')[0]}`, shell('Bash', c, producer));
-for (const c of producerBlocked) expect(2, `producer ${c}`, shell('Bash', c, producer));
+for (const c of producerBlocked) expect(2, `producer ${c.split('\n').join(' ⏎ ')}`, shell('Bash', c, producer));
+expect(0, 'producer PowerShell git', shell('PowerShell', 'git status; git log -3', producer));
+expect(2, 'producer PowerShell assignment', shell('PowerShell', '$x = git status', producer));
+expect(2, 'producer PowerShell Get-Content', shell('PowerShell', 'Get-Content AGENTS.md', producer));
+expect(2, 'producer PowerShell call operator', shell('PowerShell', '& node tools/codex-launch.js gameplay-programmer 5', producer));
 expect(2, 'producer writes .claude/settings.json', file('Write', path.join(ROOT, '.claude', 'settings.json'), producer));
+for (const role of [undefined, 'code-reviewer', 'game-designer', 'tech-architect']) {
+  const merge = `gh pr merge 7 --repo smokim38/rts-game --squash --delete-branch --match-head-commit ${SHA}`;
+  expect(2, `${role ?? 'no role'} uses the exact merge form`, shell('Bash', merge, role ? as(role) : {}));
+  expect(2, `${role ?? 'no role'} uses the exact launcher form`, shell('Bash', 'node tools/codex-launch.js gameplay-programmer 5', role ? as(role) : {}));
+}
+
+// ---------- Merge gate and launcher check (Issue #42), with GitHub stubbed ----------
+const guard = require('./guard.js');
+
+const MERGE = `gh pr merge 7 --repo smokim38/rts-game --squash --delete-branch --match-head-commit ${SHA}`;
+const LAUNCH = 'node tools/codex-launch.js gameplay-programmer 5';
+const RUN_ID = '01a15cc0-aff6-76e0-8a63-4f6d48357e8f';
+const AUTHORISED = '### Goal\nx\n\n### Owner instruction\n> Add box selection.\n\nGiven by the owner in the Producer session on 2026-10-21.\n';
+let clock = 0;
+const comment = (body, { author = 'smokim38', edited = false } = {}) => ({
+  author,
+  body,
+  edited,
+  createdAt: new Date(Date.UTC(2026, 9, 21) + 1000 * clock++).toISOString(),
+});
+const rec = (type, result, opts) => comment(`${marker(type, result, opts)}\nx`);
+const codexCommit = { sha: 'c1', message: `feat(units): x (#5)\n\nCodex-Run: ${RUN_ID}`, parents: ['p0'] };
+const claudeCommit = { sha: 'c2', message: 'docs: x (#5)', parents: ['c1'] };
+const gitleaks = (conclusion, id = 1, status = 'completed') => ({ id, name: 'gitleaks', status, conclusion, app: 'github-actions' });
+
+// A Standard, Codex-written Game/ change with a Claude Approve and QA pass: allowed as is.
+function fixture(o = {}) {
+  return {
+    pr: { state: 'OPEN', base: 'main', head: SHA, body: 'Closes #5\nTier: Standard\n', changedFiles: 1, commitCount: 1, closes: [5], ...o.pr },
+    issue: { state: 'OPEN', author: 'smokim38', body: AUTHORISED, labels: ['type:feature', 'tier:standard'], editors: [], ...o.issue },
+    files: o.files ?? [{ path: 'Game/Assets/Scripts/Units/Selection.cs', previous: null }],
+    commits: o.commits ?? [codexCommit],
+    comments: o.comments ?? [rec('verdict', 'approve', { vendor: 'claude' }), rec('qa', 'pass')],
+    runs: o.runs ?? [gitleaks('success')],
+    statuses: o.statuses ?? [],
+    fromMain: o.fromMain ?? true,
+    blob: o.blob,
+    fail: o.fail,
+  };
+}
+function stub(f) {
+  const reply = (name, value) => async () => {
+    if (f.fail === name) throw new Error(`${name} lookup failed`);
+    return value;
+  };
+  return {
+    pullRequest: reply('pullRequest', f.pr),
+    issue: reply('issue', f.issue),
+    comments: reply('comments', f.comments),
+    commits: reply('commits', f.commits),
+    files: reply('files', f.files),
+    checkRuns: reply('checkRuns', f.runs),
+    statuses: reply('statuses', f.statuses),
+    isAncestorOfMain: reply('isAncestorOfMain', f.fromMain),
+    launcherBlob: reply('launcherBlob', f.blob),
+  };
+}
+
+// Runs the whole guard in this process with a stubbed GitHub, as the Producer by default.
+function gate(code, label, command, f, { root = ROOT, cwd = root, role = 'producer', gh = stub(f) } = {}) {
+  test(`${code === 2 ? 'blocks' : 'allows'}: gate: ${label}`, async () => {
+    const saved = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = root;
+    try {
+      const input = { tool_name: 'Bash', tool_input: { command }, cwd, agent_type: role };
+      if (code === 0) await guard.checkAsync(input, gh);
+      else await assert.rejects(guard.checkAsync(input, gh), (err) => err instanceof guard.Blocked && !/could not check/.test(err.message));
+    } finally {
+      process.env.CLAUDE_PROJECT_DIR = saved;
+    }
+  });
+}
+
+// Allowed at each tier, with full evidence.
+gate(0, 'Standard, Codex-written Game/ change with a Claude Approve and QA pass', MERGE, fixture());
+gate(0, 'Light, docs only, with a self-check', MERGE, fixture({
+  pr: { body: 'Closes #5\nTier: Light\nHow tested: self-check, re-read the page\n' },
+  issue: { labels: ['type:docs', 'tier:light'] },
+  files: [{ path: 'docs/studio/workflow.md', previous: null }],
+  commits: [claudeCommit],
+  comments: [],
+}));
+gate(0, 'Owner, design doc with an owner-approval record', MERGE, fixture({
+  pr: { body: 'Closes #5\nTier: Owner\n' },
+  issue: { labels: ['type:docs', 'tier:owner'] },
+  files: [{ path: 'docs/design/units.md', previous: null }],
+  commits: [claudeCommit],
+  comments: [rec('owner-approval', 'approved')],
+}));
+gate(0, 'Standard, Claude-written tool script with a Codex Approve', MERGE, fixture({
+  files: [{ path: 'tools/setup-board.ps1', previous: null }],
+  commits: [claudeCommit],
+  comments: [rec('verdict', 'approve', { vendor: 'codex' })],
+}));
+gate(0, 'Critical, mixed authors, an ADR with both Approves', MERGE, fixture({
+  pr: { body: 'Closes #5\nTier: Critical\n', commitCount: 2 },
+  issue: { labels: ['type:docs', 'tier:critical'] },
+  files: [{ path: 'docs/adr/0004-flow-fields.md', previous: null }],
+  commits: [codexCommit, claudeCommit],
+  comments: [rec('verdict', 'approve', { vendor: 'codex' }), rec('verdict', 'approve', { vendor: 'claude' })],
+}));
+gate(0, 'security perimeter with a Codex Approve and the owner’s approval', MERGE, fixture({
+  pr: { body: 'Closes #5\nTier: Critical\n' },
+  issue: { labels: ['type:task', 'tier:critical'] },
+  files: [{ path: '.claude/agents/producer.md', previous: null }],
+  commits: [claudeCommit],
+  comments: [rec('verdict', 'approve', { vendor: 'codex' }), rec('owner-approval', 'approved')],
+}));
+gate(0, 'a merge of main into the branch does not count as Claude work', MERGE, fixture({
+  pr: { commitCount: 2 },
+  commits: [codexCommit, { sha: 'm1', message: "Merge remote-tracking branch 'origin/main'", parents: ['c1', 'main1'] }],
+}));
+gate(0, 'an older failed gitleaks run with a newer success', MERGE, fixture({ runs: [gitleaks('failure', 1), gitleaks('success', 2)] }));
+gate(0, 'other checks neutral or skipped', MERGE, fixture({
+  runs: [gitleaks('success'), { id: 3, name: 'lint', status: 'completed', conclusion: 'neutral', app: 'github-actions' }, { id: 4, name: 'docs', status: 'completed', conclusion: 'skipped', app: 'github-actions' }],
+}));
+gate(0, 'a newer Approve after an older request-changes', MERGE, fixture({
+  comments: [rec('verdict', 'request-changes', { vendor: 'claude' }), rec('verdict', 'approve', { vendor: 'claude' }), rec('qa', 'pass')],
+}));
+gate(0, 'markers from other accounts are ignored', MERGE, fixture({
+  comments: [rec('verdict', 'approve', { vendor: 'claude' }), rec('qa', 'pass'), comment(`${marker('qa', 'fail')}\nx`, { author: 'someone' })],
+}));
+
+// Missing or overridden evidence.
+gate(2, 'no Claude verdict for Codex work', MERGE, fixture({ comments: [rec('qa', 'pass')] }));
+gate(2, 'a same-vendor verdict only', MERGE, fixture({ comments: [rec('verdict', 'approve', { vendor: 'codex' }), rec('qa', 'pass')] }));
+gate(2, 'no QA record for a Game/ change', MERGE, fixture({ comments: [rec('verdict', 'approve', { vendor: 'claude' })] }));
+gate(2, 'records for another SHA', MERGE, fixture({
+  comments: [rec('verdict', 'approve', { vendor: 'claude', sha: OTHER_SHA }), rec('qa', 'pass', { sha: OTHER_SHA })],
+}));
+gate(2, 'a newer request-changes after an Approve', MERGE, fixture({
+  comments: [rec('verdict', 'approve', { vendor: 'claude' }), rec('qa', 'pass'), rec('verdict', 'request-changes', { vendor: 'claude' })],
+}));
+gate(2, 'a newer escalate after an Approve', MERGE, fixture({
+  comments: [rec('verdict', 'approve', { vendor: 'claude' }), rec('qa', 'pass'), rec('verdict', 'escalate', { vendor: 'claude' })],
+}));
+gate(2, 'a newer QA fail after a pass', MERGE, fixture({
+  comments: [rec('verdict', 'approve', { vendor: 'claude' }), rec('qa', 'pass'), rec('qa', 'fail')],
+}));
+gate(2, 'the records come from another account', MERGE, fixture({
+  comments: [comment(`${marker('verdict', 'approve', { vendor: 'claude' })}\nx`, { author: 'someone' }), comment(`${marker('qa', 'pass')}\nx`, { author: 'someone' })],
+}));
+gate(2, 'a malformed record', MERGE, fixture({
+  comments: [rec('verdict', 'approve', { vendor: 'claude' }), rec('qa', 'pass'), comment('<!-- studio-record v1 type=qa pr=7 sha=abc result=pass -->')],
+}));
+gate(2, 'a record with two markers', MERGE, fixture({
+  comments: [rec('qa', 'pass'), comment(`${marker('verdict', 'approve', { vendor: 'claude' })}\n${marker('qa', 'pass')}`)],
+}));
+gate(2, 'an edited record', MERGE, fixture({
+  comments: [comment(`${marker('verdict', 'approve', { vendor: 'claude' })}\nx`, { edited: true }), rec('qa', 'pass')],
+}));
+gate(2, 'a record that names another PR', MERGE, fixture({
+  comments: [rec('verdict', 'approve', { vendor: 'claude' }), rec('qa', 'pass'), rec('verdict', 'approve', { vendor: 'claude', pr: 8 })],
+}));
+gate(2, 'mixed authors with only one vendor’s Approve', MERGE, fixture({
+  pr: { commitCount: 2 },
+  commits: [codexCommit, claudeCommit],
+}));
+gate(2, 'a merge commit that is not from main counts as Claude work', MERGE, fixture({
+  pr: { commitCount: 2 },
+  commits: [codexCommit, { sha: 'm1', message: 'Merge branch x', parents: ['c1', 'x1'] }],
+  fromMain: false,
+}));
+gate(2, 'the perimeter without the owner’s approval', MERGE, fixture({
+  pr: { body: 'Closes #5\nTier: Critical\n' },
+  issue: { labels: ['type:task', 'tier:critical'] },
+  files: [{ path: 'AGENTS.md', previous: null }],
+  commits: [claudeCommit],
+  comments: [rec('verdict', 'approve', { vendor: 'codex' })],
+}));
+gate(2, 'a rename out of the perimeter without the owner’s approval', MERGE, fixture({
+  files: [{ path: 'docs/studio/old-hook.md', previous: '.githooks/pre-commit' }],
+  commits: [claudeCommit],
+  comments: [rec('verdict', 'approve', { vendor: 'codex' })],
+}));
+gate(2, 'a rename into the perimeter without the owner’s approval', MERGE, fixture({
+  files: [{ path: '.github/workflows/x.yml', previous: 'docs/x.yml' }],
+  commits: [claudeCommit],
+  comments: [rec('verdict', 'approve', { vendor: 'codex' })],
+}));
+gate(2, 'an Owner-tier Issue without the owner’s approval', MERGE, fixture({
+  pr: { body: 'Closes #5\nTier: Owner\n' },
+  issue: { labels: ['type:docs', 'tier:owner'] },
+  files: [{ path: 'docs/design/units.md', previous: null }],
+  commits: [claudeCommit],
+  comments: [],
+}));
+gate(2, 'a relabelled Light Issue still needs review for a Game/ change', MERGE, fixture({
+  pr: { body: 'Closes #5\nTier: Light\nself-check done\n' },
+  issue: { labels: ['type:task', 'tier:light'] },
+  comments: [rec('qa', 'pass')],
+}));
+gate(2, 'Light with a code file', MERGE, fixture({
+  pr: { body: 'Closes #5\nTier: Light\nself-check done\n' },
+  issue: { labels: ['type:docs', 'tier:light'] },
+  files: [{ path: 'docs/tools/build.js', previous: null }],
+  commits: [claudeCommit],
+  comments: [],
+}));
+gate(2, 'Light without a self-check', MERGE, fixture({
+  pr: { body: 'Closes #5\nTier: Light\n' },
+  issue: { labels: ['type:docs', 'tier:light'] },
+  files: [{ path: 'docs/studio/workflow.md', previous: null }],
+  commits: [claudeCommit],
+  comments: [],
+}));
+gate(2, 'no Tier: line in the PR body', MERGE, fixture({ pr: { body: 'Closes #5\n' } }));
+
+// Checks.
+gate(2, 'gitleaks pending', MERGE, fixture({ runs: [gitleaks(null, 1, 'in_progress')] }));
+gate(2, 'gitleaks failed', MERGE, fixture({ runs: [gitleaks('failure')] }));
+gate(2, 'gitleaks skipped', MERGE, fixture({ runs: [gitleaks('skipped')] }));
+gate(2, 'gitleaks neutral', MERGE, fixture({ runs: [gitleaks('neutral')] }));
+gate(2, 'gitleaks cancelled', MERGE, fixture({ runs: [gitleaks('cancelled')] }));
+gate(2, 'no gitleaks check', MERGE, fixture({ runs: [] }));
+gate(2, 'a gitleaks check from another app only', MERGE, fixture({ runs: [{ ...gitleaks('success'), app: 'someone-else' }] }));
+gate(2, 'an older success with a newer gitleaks failure', MERGE, fixture({ runs: [gitleaks('success', 1), gitleaks('failure', 2)] }));
+gate(2, 'another check failed', MERGE, fixture({ runs: [gitleaks('success'), { id: 3, name: 'tests', status: 'completed', conclusion: 'failure', app: 'github-actions' }] }));
+gate(2, 'a commit status failed', MERGE, fixture({ statuses: [{ context: 'ci/x', state: 'failure' }] }));
+
+// The PR and its Issue.
+gate(2, 'the head moved', MERGE, fixture({ pr: { head: OTHER_SHA } }));
+gate(2, 'a closed PR', MERGE, fixture({ pr: { state: 'CLOSED' } }));
+gate(2, 'a PR on another base', MERGE, fixture({ pr: { base: 'release' } }));
+gate(2, 'no linked Issue', MERGE, fixture({ pr: { body: 'Tier: Standard\n', closes: [] } }));
+gate(2, 'two linked Issues', MERGE, fixture({ pr: { body: 'Closes #5\nCloses #6\nTier: Standard\n', closes: [5, 6] } }));
+gate(2, 'the body and GitHub disagree on the Issue', MERGE, fixture({ pr: { body: 'Closes #6\nTier: Standard\n', closes: [5] } }));
+gate(2, 'the Issue was opened by another account', MERGE, fixture({ issue: { author: 'someone' } }));
+gate(2, 'the Issue has no owner instruction', MERGE, fixture({ issue: { body: '### Goal\nx\n' } }));
+gate(2, 'the Issue’s owner instruction has no date', MERGE, fixture({ issue: { body: '### Owner instruction\n> do x\n' } }));
+gate(2, 'the Issue was edited by another account', MERGE, fixture({ issue: { editors: ['smokim38', 'someone'] } }));
+gate(2, 'the Issue is closed', MERGE, fixture({ issue: { state: 'CLOSED' } }));
+
+// Lookups.
+for (const name of ['pullRequest', 'issue', 'comments', 'commits', 'files', 'checkRuns', 'statuses']) {
+  gate(2, `the ${name} lookup fails`, MERGE, fixture({ fail: name }));
+}
+gate(2, 'a lookup that never answers', MERGE, fixture(), { gh: { ...stub(fixture()), comments: () => new Promise(() => {}) } });
+
+// The real GitHub layer, fed by a stub `gh`: incomplete or broken replies throw.
+function ghReplies(replies) {
+  return guard.makeGitHub(async (args) => {
+    const key = Object.keys(replies).find((k) => args.join(' ').includes(k));
+    if (key === undefined) throw new Error(`unexpected gh call: ${args.join(' ')}`);
+    return JSON.stringify(replies[key]);
+  });
+}
+const commentPage = (nodes, totalCount, hasNextPage = false) => ({
+  data: { repository: { pullRequest: { comments: { totalCount, pageInfo: { hasNextPage, endCursor: null }, nodes } } } },
+});
+const node = { author: { login: 'smokim38' }, body: 'x', createdAt: '2026-10-21T00:00:00Z', lastEditedAt: null, includesCreatedEdit: false };
+test('GitHub layer: reads every comment page', async () => {
+  const got = await ghReplies({ 'comments(first:100': [commentPage([node], 2, true), commentPage([node], 2)] }).comments(7);
+  assert.strictEqual(got.length, 2);
+});
+test('GitHub layer: a truncated comment list throws', async () => {
+  await assert.rejects(ghReplies({ 'comments(first:100': [commentPage([node], 2)] }).comments(7));
+});
+test('GitHub layer: a last page that says more follow throws', async () => {
+  await assert.rejects(ghReplies({ 'comments(first:100': [commentPage([node, node], 2, true)] }).comments(7));
+});
+test('GitHub layer: fewer files than the PR reports throws', async () => {
+  await assert.rejects(ghReplies({ '/files': [[{ filename: 'a.md' }]] }).files(7, 2));
+});
+test('GitHub layer: more than 3000 files throws', async () => {
+  const many = Array.from({ length: 3001 }, (_, i) => ({ filename: `f${i}.md` }));
+  await assert.rejects(ghReplies({ '/files': [many] }).files(7, 3001));
+});
+test('GitHub layer: fewer check runs than the total throws', async () => {
+  await assert.rejects(ghReplies({ 'check-runs': [{ total_count: 2, check_runs: [gitleaks('success')] }] }).checkRuns(SHA));
+});
+test('GitHub layer: an edited comment is marked', async () => {
+  const [c] = await ghReplies({ 'comments(first:100': [commentPage([{ ...node, lastEditedAt: '2026-10-21T00:01:00Z' }], 1)] }).comments(7);
+  assert.strictEqual(c.edited, true);
+});
+test('GitHub layer: a failed gh call throws', async () => {
+  await assert.rejects(guard.makeGitHub(async () => { throw new Error('HTTP 502'); }).issue(5));
+});
+test('GitHub layer: queries the fixed repository on github.com', async () => {
+  const calls = [];
+  const gh = guard.makeGitHub(async (args) => {
+    calls.push(args);
+    return JSON.stringify({ sha: 'f'.repeat(40) });
+  });
+  await gh.launcherBlob();
+  assert.deepStrictEqual(calls[0].slice(0, 4), ['api', 'repos/smokim38/rts-game/contents/tools/codex-launch.js?ref=main', '--hostname', 'github.com']);
+});
+
+// The launcher: only the copy merged on GitHub's main may run, from the repository root.
+const LAUNCHER = path.join(ROOT, 'tools', 'codex-launch.js');
+const mainBlob = guard.blobSha(fs.readFileSync(LAUNCHER));
+gate(0, 'the launcher, unchanged from main', LAUNCH, fixture({ blob: mainBlob }));
+gate(0, 'the QA launcher form', 'node tools/codex-launch.js qa-test-engineer 5 7', fixture({ blob: mainBlob }));
+gate(0, 'the reviewer launcher form', 'node tools/codex-launch.js reviewer 5 7', fixture({ blob: mainBlob }));
+gate(0, 'the launcher with LF line endings on main', LAUNCH, fixture({
+  blob: guard.blobSha(Buffer.from(fs.readFileSync(LAUNCHER, 'latin1').replace(/\r\n/g, '\n'), 'latin1')),
+}));
+gate(2, 'a modified launcher', LAUNCH, fixture({ blob: 'f'.repeat(40) }));
+gate(2, 'the launcher lookup fails', LAUNCH, fixture({ blob: mainBlob, fail: 'launcherBlob' }));
+gate(2, 'the launcher from another folder', LAUNCH, fixture({ blob: mainBlob }), { cwd: path.join(ROOT, 'docs') });
+gate(2, 'the launcher as another role', LAUNCH, fixture({ blob: mainBlob }), { role: 'code-reviewer' });
+
+// A project whose tools folder is a junction to a copy of the real launcher.
+const linked = tempDir();
+const realTools = tempDir();
+fs.copyFileSync(LAUNCHER, path.join(realTools, 'codex-launch.js'));
+fs.symlinkSync(realTools, path.join(linked, 'tools'), 'junction');
+test.after(() => {
+  for (const dir of [linked, realTools]) fs.rmSync(dir, { recursive: true, force: true });
+});
+gate(2, 'a launcher reached through a junction', LAUNCH, fixture({ blob: mainBlob }), { root: linked });
+
+// A rewritten local origin/main can't vouch for a modified launcher: the guard asks GitHub.
+const rewritten = tempDir();
+const identity = { GIT_AUTHOR_NAME: 'test', GIT_AUTHOR_EMAIL: 'test@example.invalid', GIT_COMMITTER_NAME: 'test', GIT_COMMITTER_EMAIL: 'test@example.invalid' };
+const git = (...args) => execFileSync('git', ['-C', rewritten, ...args], { stdio: 'pipe', env: { ...process.env, ...identity } });
+git('init', '-q');
+fs.mkdirSync(path.join(rewritten, 'tools'));
+fs.writeFileSync(path.join(rewritten, 'tools', 'codex-launch.js'), "'use strict';\n// a launcher that starts Codex with other settings\n");
+git('add', 'tools/codex-launch.js');
+git('commit', '-q', '-m', 'modified launcher');
+// Done here, outside the guard, as a route the guard can't see would do it.
+git('update-ref', 'refs/remotes/origin/main', 'HEAD');
+test.after(() => fs.rmSync(rewritten, { recursive: true, force: true }));
+expect(2, 'producer git update-ref refs/remotes/origin/main HEAD', shell('Bash', 'git update-ref refs/remotes/origin/main HEAD', { cwd: rewritten, ...producer }), rewritten);
+gate(2, 'a modified launcher that matches a rewritten local origin/main', LAUNCH, fixture({ blob: mainBlob }), { root: rewritten });
 
 // Bad input fails closed.
 expect(2, 'input that is not JSON', 'not json', ROOT, { broken: true });

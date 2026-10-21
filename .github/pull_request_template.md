@@ -1,7 +1,7 @@
 <!--
 Rules: AGENTS.md §3 and §8, and docs/studio/workflow.md.
-One approved Issue, one branch, one PR. Aim for under ~400 changed lines (not counting .meta and generated files).
-Only the owner merges. This repo is public: no secrets or personal info.
+One authorised Issue, one branch, one PR. Aim for under ~400 changed lines (not counting .meta and generated files).
+Only the Producer merges, through the merge gate (AGENTS.md §6). This repo is public: no secrets or personal info.
 -->
 
 Closes #<issue>

@@ -2,61 +2,81 @@
 
 How work moves through the studio day to day. This page adds detail to [AGENTS.md](../../AGENTS.md) and never overrides it. If the two disagree, the handbook wins: raise the conflict with the Producer.
 
+The owner talks only to the Producer: ideas, changes, answers and "approved". Everything else runs autonomously inside the rules and the guard.
+
 ## Lifecycle
 
 | # | Step | Who | Board |
 |---|---|---|---|
-| 1 | Has an idea or request | Owner | — |
-| 2 | Drafts an Issue from a form in `.github/ISSUE_TEMPLATE/`, and applies the `role:*`, `type:*` and `tier:*` labels at intake (AGENTS.md §3) and the Size field | Producer | Backlog |
-| 3 | Reads the Issue and adds the `approved` label | Owner | — |
-| 4 | Confirms the labels and Size (a tier may only be raised), checks Ready (below), assigns the agent | Producer | Ready |
-| 5 | Works on one branch with one PR (`<type>/<issue>-<short-name>`), and reports to the Producer when the PR is open | Assigned agent | In progress → In review |
-| 6 | Cross-vendor review by tier (below) | Reviewer | In review |
-| 7 | QA check, for gameplay features only (below) | qa-test-engineer | In review |
-| 8 | Merges the PR | Owner | — |
-| 9 | Closes the Issue, checks the board, reports to the owner | Producer | Done |
+| 1 | Has an idea, a change or an answer, and tells the Producer | Owner | — |
+| 2 | Restates it, then drafts the Issue from a form in `.github/ISSUE_TEMPLATE/`, with an `### Owner instruction` section (the owner's words and the date), the `role:*`, `type:*` and `tier:*` labels and the Size field | Producer | Backlog |
+| 3 | Checks Ready (below) and that the Issue is authorised (AGENTS.md §3), then assigns the agent: a Claude subagent, or a Codex role through the launcher | Producer | Ready → In progress |
+| 4 | Works on one branch with one PR (`<type>/<issue>-<short-name>`). For Codex, the Producer commits the launcher's output and opens the PR | Assigned agent, Producer | In progress → In review |
+| 5 | Cross-vendor review by tier (below) | Reviewer | In review |
+| 6 | QA check, for PRs that change anything under `Game/` (below) | qa-test-engineer | In review |
+| 7 | Merges through the merge gate (below), or asks the owner first for Owner-tier and security-perimeter PRs | Producer | — |
+| 8 | Closes the Issue, checks the board, tells the owner what changed in the game and how to try it | Producer | Done |
 
 Rules that follow from the handbook:
-- The owner approves the Issue *as written*. After `approved`, the Producer may set labels and fields but must not change the goal or the acceptance criteria. A scope change goes back to the owner for approval.
-- The Producer may raise a tier after approval. Lowering a tier after approval needs the owner.
-- Nobody starts work before step 4. An Issue without `approved` is only a suggestion (AGENTS.md §3).
+- An Issue's goal and acceptance criteria are frozen once work starts. A scope change goes back to the owner, and the Producer records the owner's answer in the Issue as a new owner instruction.
+- The Producer may raise a tier. Lowering a tier needs the owner, and the minimum tiers (AGENTS.md §6) apply anyway.
+- Nobody starts work on an Issue that isn't authorised. Bug reports and suggestions from staff are only suggestions until the owner asks the Producer for them.
 
-### Review (step 6)
+### Review (step 5)
 
-| Tier | Reviewer |
+| Tier | Evidence the merge gate needs |
 |---|---|
-| Light | No agent review. The author self-checks. |
-| Owner | The owner, plus an agent only if the owner asks |
-| Standard | One reviewer from the other vendor: Codex work → Claude `code-reviewer`; Claude work → Codex |
-| Critical | The other vendor, in depth. The owner reads the review before merging. |
+| Light (docs only) | The author's self-check, noted in the PR. No agent review. |
+| Owner | An owner-approval record: the owner said "approved" in the Producer session |
+| Standard | An Approve from the other vendor: Codex work → Claude `code-reviewer`; Claude work → the launcher's Codex `reviewer`; mixed work → both |
+| Critical | As Standard, in depth, plus an owner-approval record for security-perimeter PRs |
 
-There is one consolidated review per round, with a verdict of Approve, Request changes or Escalate. Two rounds at most. After that the Producer escalates to the owner and moves the card to Blocked (AGENTS.md §6).
+Who wrote what comes from the commit trailers: the Producer commits launcher output with a `Codex-Run: <run id>` trailer, and every other commit counts as Claude work. Merge commits from `main` don't count.
+
+There is one consolidated review per round, with a verdict of Approve, Request changes or Escalate. Two rounds at most. After that the Producer takes it to the owner and moves the card to Blocked (AGENTS.md §6).
 
 **Every verdict names the commit SHA it reviewed.** An Approve covers that commit only. Any later push, including fixes after a QA failure, needs a new review of the new head, and that review counts as a round.
 
-### QA (step 7)
+### QA (step 6)
 
-For `type:feature` Issues that change gameplay, the Producer asks `qa-test-engineer` to check the PR once the review approves it. The card stays in In review. QA needs no separate tracking Issue, but the check takes the QA engineer's one WIP slot until it posts its result, and the Issue stays in the author's slot too. QA:
-- runs the relevant tests and a performance check on the PR's head commit
-- posts a PR comment starting with `QA: pass` or `QA: fail`, followed by the SHA it tested and what it ran
+Every PR that changes anything under `Game/` needs a `QA: pass` record for its head commit, whatever the labels say. The Producer runs `node tools/codex-launch.js qa-test-engineer <issue> <pr>` once the review approves. The launcher checks out the PR's exact head commit, and the record names that commit. If the PR moves while QA runs, the new head has no QA record and can't merge. The check takes the QA engineer's one WIP slot until its result is posted. QA:
+- runs the relevant tests and a performance check on that commit
 - never fixes code itself (AGENTS.md §1)
 
 When QA fails:
-1. **Failures within the Issue's acceptance criteria:** QA lists each one in its `QA: fail` comment. That comment is the bug report, and these failures don't need a new Issue. The Producer moves the card back to In progress, and the same author fixes them on the same branch under the same Issue.
-2. After the fix, the PR is reviewed again (step 6, a new round) and QA checks again, both on the new head.
-3. **Bugs outside the Issue** (pre-existing, unrelated, or needing new scope): QA files them as new Issues with the bug form. They aren't work until the owner adds `approved`, and they don't block this PR unless the owner says so.
+1. **Failures within the Issue's acceptance criteria:** the `QA: fail` record lists each one. That record is the bug report, and these failures don't need a new Issue. The Producer moves the card back to In progress, and the same author fixes them on the same branch under the same Issue.
+2. After the fix, the PR is reviewed again (step 5, a new round) and QA checks again, both on the new head.
+3. **Bugs outside the Issue** (pre-existing, unrelated, or needing new scope): the Producer drafts them as suggestions with the bug form. They become work only when the owner asks for them, and they don't block this PR unless the owner says so.
 4. If a fix needs a change to the goal or the acceptance criteria, the Producer asks the owner first (see the rules above).
+
+### Records
+
+Review, QA and owner-approval evidence lives in PR comments from `smokim38` whose first line is exactly:
+
+```text
+<!-- studio-record v1 type=<verdict|qa|owner-approval> pr=<n> sha=<40-hex> result=<value> [vendor=<claude|codex>] -->
+```
+
+| Type | Results | Posted by |
+|---|---|---|
+| `verdict` (with `vendor=claude` or `vendor=codex`) | `approve`, `request-changes`, `escalate` | `code-reviewer` (claude) or the launcher's `reviewer` run (codex) |
+| `qa` | `pass`, `fail` | the launcher's `qa-test-engineer` run |
+| `owner-approval` | `approved` | the Producer, quoting the owner's reply and its date |
+
+- Only the newest record of each type (and vendor) for the head SHA counts. A newer `request-changes`, `escalate` or `fail` overrides an older pass.
+- A record with a malformed first line, one edited after posting, or one that names another PR blocks the merge. Never edit or delete a record; post a new one.
+- The guard stops the Producer from posting verdict or QA records, and stops everyone else from posting owner-approval records.
 
 ## Definition of Ready
 
 An Issue moves to **Ready** only when it has all of these:
 - [ ] a goal (one or two sentences)
 - [ ] testable acceptance criteria
+- [ ] an `### Owner instruction` section with the owner's words and the date, and no body edits by another account
 - [ ] a `role:*` label (exactly one)
 - [ ] a `type:*` label (exactly one)
 - [ ] a `tier:*` label (exactly one)
 - [ ] the Size field: S (under a day), M (one or two days) or L (bigger; consider splitting)
-- [ ] the `approved` label, added by the owner
 - [ ] any protected path it touches named explicitly (AGENTS.md §6)
 
 ## Definition of Done
@@ -69,8 +89,8 @@ A GitHub user Project owned by `smokim38` and linked to this repository. The own
 
 | Status | Meaning | Moved by | When |
 |---|---|---|---|
-| Backlog | Drafted, not yet approved or not yet Ready | Producer | when the Issue is created |
-| Ready | Meets Definition of Ready and is waiting for an agent | Producer | after `approved` and the Ready check |
+| Backlog | Drafted, not yet Ready | Producer | when the Issue is created |
+| Ready | Meets Definition of Ready and is waiting for an agent | Producer | after the Ready check |
 | In progress | An agent is working on its branch | Producer | when the Producer assigns the agent, or when review or QA sends the PR back |
 | In review | A PR is open and under review or QA | Producer | when the agent reports the PR |
 | Blocked | Waiting on a decision, another Issue or an outside fix | Producer | when an agent reports `blocked` or `needs decision` |
@@ -85,40 +105,59 @@ A GitHub user Project owned by `smokim38` and linked to this repository. The own
 | Type | `type:feature`, `type:bug`, `type:task`, `type:spike`, `type:docs`, `type:art` | Exactly one per Issue |
 | Role | `role:producer`, `role:game-designer`, `role:tech-architect`, `role:code-reviewer`, `role:gameplay-programmer`, `role:qa-test-engineer`, `role:tech-artist` | Exactly one per Issue: who does the work |
 | Tier | `tier:light`, `tier:owner`, `tier:standard`, `tier:critical` | Exactly one per Issue (AGENTS.md §6) |
-| Approval | `approved` | **Owner only.** Agents never add, remove or create it. |
+
+Labels never authorise work; the `### Owner instruction` section does (AGENTS.md §3). The old `approved` label has no meaning any more.
 
 A `type:spike` Issue is time-boxed research. Its output is a written finding (a comment or a doc), not production code.
 
 ## WIP limit
 
-Each engineer (gameplay-programmer, qa-test-engineer, tech-artist) has **one WIP slot**: at most one open assigned Issue at a time. An Issue in In progress, In review or Blocked counts. For qa-test-engineer, a QA check on a PR also fills the slot until its result is posted. We start with one gameplay-programmer. If an engineer is blocked, the Producer resolves the blocker or asks the owner; the engineer doesn't start a second Issue. Fixes requested by review or QA belong to the same Issue, so they never need a second one.
+Each engineer (gameplay-programmer, qa-test-engineer, tech-artist) has **one WIP slot**: at most one open assigned Issue at a time. The launcher enforces it with a lock per role under `.studio/locks/`, which frees when the Issue closes. For qa-test-engineer, a QA check fills the slot until its result is posted. If an engineer is blocked, the Producer resolves the blocker or asks the owner; the engineer doesn't start a second Issue. Fixes requested by review or QA belong to the same Issue, so they never need a second one.
 
 ## Merge policy
 
-The owner merges every PR. Agents never merge (AGENTS.md §0). The Producer asks the owner to merge only when all of these are true:
-- [ ] The PR says `Closes #<n>`, and Issue `<n>` has `approved`.
-- [ ] The PR's tier matches the Issue's tier label (or is higher).
-- [ ] The review for the PR's tier covers the **current head commit**, with no open must-fix items:
-  - Light: the author's self-check is noted in the PR. There is no agent review (AGENTS.md §6).
-  - Owner: the owner has reviewed it.
-  - Standard: an **Approve** from the other vendor that names the head SHA.
-  - Critical: an in-depth **Approve** from the other vendor that names the head SHA, ready for the owner to read.
-- [ ] Gameplay features have a `QA: pass` comment that names the head SHA.
-- [ ] The local gitleaks hook ran on every commit. CI checks are green once CI exists.
+The Producer merges with exactly `gh pr merge <n> --repo smokim38/rts-game --squash --delete-branch --match-head-commit <sha>`, as a call of its own. The guard checks GitHub first and blocks the merge unless (AGENTS.md §6):
+- [ ] The PR is open on `main`, its head is `<sha>`, and it closes exactly one authorised Issue.
+- [ ] The latest `gitleaks` check on `<sha>` succeeded, and every other latest check succeeded, was neutral or was skipped.
+- [ ] The evidence for the tier that counts is recorded for `<sha>` (Review, above), with no newer blocking record.
+- [ ] PRs that change `Game/` have a `QA: pass` record for `<sha>`.
+
+The guard can't check the rest, so the Producer does before merging:
 - [ ] Profiler numbers are included if a hot path changed (AGENTS.md §4).
 - [ ] Only in-scope files changed, with `.meta` files included. Protected paths changed only if the Issue names them.
 - [ ] The PR is under ~400 changed lines, or the PR says why not.
 
-## Producer status report
+**Owner-tier and security-perimeter PRs** wait for the owner. The Producer explains the change in plain language, and once the owner replies "approved" in its session, posts the owner-approval record quoting that reply and its date, then merges. For a guard change, it also tells the owner to reinstall the guard (`tools/install-claude-guard.ps1`).
 
-At the end of every Producer session, the Producer gives the owner this report in plain language:
+`--match-head-commit` makes GitHub refuse the merge if anyone pushed after the checks, so the merged commit is always the reviewed one.
+
+## Escalation
+
+The Producer escalates to the owner only:
+- feature or design decisions, and changes to scope, goals or acceptance criteria
+- Owner-tier and security-perimeter approvals
+- anything the guard or Codex auto-review denies twice
+
+These are immediate stops, always reported to the owner at once:
+- a secret that turns up anywhere (AGENTS.md §5)
+- a PR still not approved after the second review round (AGENTS.md §6)
+
+"Denied twice": after a denial, the Producer may try one different approach that follows the rules. It never retries the denied operation in another form. If that approach is also denied, it escalates with both attempts and the reasons.
+
+## Reporting to the owner
+
+The owner hears about features, not implementation. Implementation detail stays in Issues and PRs.
+- **Done:** what changed in the game and how to try it, with the PR link for anyone who wants detail.
+- **Questions:** feature-level and answerable without reading code, at most three at a time, each with a recommendation.
+
+At the end of every Producer session:
 
 ```text
 Status report: <date>
-Done:          #<n> <title> (PR #<n> merged)
-In progress:   #<n> <title>, <agent>, <one-line state>
-Blocked:       #<n> <title>, blocked on <what>, next step <who/what>
-Needs owner:   <decision or action>, with a link and a recommendation
+Done:          <feature>: what changed in the game, how to try it (PR #<n>)
+In progress:   <feature>, <one-line state>
+Blocked:       <feature>, blocked on <what>, next step <who/what>
+Needs owner:   <decision or approval>, with a recommendation
 ```
 
 Write "none" on a line with nothing to report. "In progress" covers the Ready, In progress and In review cards, so every card outside Backlog and Done appears exactly once.

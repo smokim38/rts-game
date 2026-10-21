@@ -8,23 +8,34 @@ The Producer is the main Claude Code session. It delegates to three subagents. A
 
 | Agent | Model / effort | Writes | Use it when |
 |---|---|---|---|
-| `producer` (main session) | `claude-opus-5-5` / high | No files. It creates Issues, comments, branches, commits, PRs and board updates. | Any owner request: intake, planning, delegation, integration, review routing and status reports |
-| `game-designer` | `claude-opus-5-5` / high | Markdown under `docs/design/` | An approved Issue needs the GDD, units, factions, economy, balance numbers or acceptance criteria written or updated |
+| `producer` (main session) | `claude-opus-5-5` / high | No files. It creates Issues, comments, branches, commits, PRs, merges and board updates, and starts Codex through the launcher. | Any owner request: intake, planning, delegation, integration, review routing, merging and reports |
+| `game-designer` | `claude-opus-5-5` / high | Markdown under `docs/design/` | An authorised Issue needs the GDD, units, factions, economy, balance numbers or acceptance criteria written or updated |
 | `tech-architect` | `claude-opus-5-5` / xhigh | Proposed ADRs (`docs/adr/NNNN-title.md`) | A significant technical decision is needed (unit simulation, pathfinding, AI structure, rendering, folder layout, packages, Unity upgrades), or an engineer needs technical guidance |
 | `code-reviewer` | `claude-opus-5-5` / high | nothing | A PR needs its tier's review: Codex-written work at Standard or Critical tier (AGENTS.md §6) |
 
 What each one never does:
-- **producer** never adds, removes or creates the `approved` label, never merges, never approves on GitHub, and doesn't author content. It has no Edit or Write tool and doesn't write files through the shell. It can delegate only to the three agents below. It starts work only on an open Issue with `approved`, and it checks that with `gh issue view`.
+- **producer** never approves on GitHub, never posts verdict or QA records, never merges outside the merge gate, and doesn't author content. It has no Edit or Write tool, and the guard limits its shell to `git`, `gh`, the merge form and the launcher form. It can delegate only to the three agents below and start Codex only through the launcher. It starts work only on an authorised Issue (AGENTS.md §3).
 - **game-designer** never touches code, `Game/` or `Art/`, and has no shell.
 - **tech-architect** never implements features, never edits the ADR template or an accepted ADR, and has no shell.
-- **code-reviewer** never edits, commits, pushes, approves on GitHub or merges. It runs one read command per call (`gh pr view|diff|checks`, `gh issue view`, `git diff|log|show`), and posts reviews only with `gh pr comment <n> --body-file -` and a quoted here-document.
+- **code-reviewer** never edits, commits, pushes, approves on GitHub or merges. It runs one read command per call (`gh pr view|diff|checks`, `gh issue view`, `git diff|log|show`), and posts its verdict record only with `gh pr comment <n> --body-file -` and a quoted here-document.
 
 The game-designer and tech-architect have no shell, so the Producer creates the branch, commits their docs and opens the PR (one Issue, one branch, one PR).
 
-Codex roles (gameplay-programmer, qa-test-engineer, tech-artist) get a `Codex handoff` comment on their Issue. The owner then starts the named Codex role. The comment never replaces the `approved` label, and the Issue body wins if the two disagree. PRs are reviewed by tier (AGENTS.md §6):
-- At Standard and Critical tier, Claude-written PRs get a read-only review prompt for Codex, which the owner runs.
-- A Light-tier PR gets only the author's self-check.
-- An Owner-tier PR gets the owner's review.
+Codex roles (gameplay-programmer, qa-test-engineer, tech-artist, and the read-only `reviewer`) run only through the studio launcher, `node tools/codex-launch.js <role> <issue> [<pr>]`, which only the Producer may start. See "The Codex launcher" below. PRs are reviewed by tier (AGENTS.md §6):
+- At Standard and Critical tier, Codex-written work gets the `code-reviewer`, and Claude-written work gets the launcher's Codex `reviewer`. Mixed work gets both.
+- A Light-tier PR (docs only) gets only the author's self-check.
+- An Owner-tier PR gets the owner's "approved", relayed by the Producer.
+
+### The Codex launcher
+`tools/codex-launch.js` (Node.js built-ins only; tests: `node --test tools/codex-launch.test.js`):
+1. Checks the inputs (fixed roles; `qa-test-engineer` and `reviewer` also need a PR), the authority rule (open, opened by `smokim38`, an `### Owner instruction` with a quote and a date, no body edits by other accounts) and the role's WIP slot.
+2. Reads the role file from `main` on GitHub, so a local edit can't change a role's model, effort or instructions.
+3. Prepares a worktree under `.studio/worktrees/` (git-ignored): the Issue's branch for implementation roles, or a detached checkout of the PR's exact head for QA and review.
+4. Runs Codex unattended through `codex app-server`: `workspace-write` (`read-only` for `reviewer`), approval policy `on-request`, approvals reviewer `auto_review`, the role's model and effort. Before the turn starts, it checks Codex's own thread/start reply reports exactly these settings, and stops if any differ, including later in the run. Any approval request that reaches the launcher (auto-review didn't answer it) is declined. The launcher never approves anything.
+5. Logs the run under `.studio/logs/`: the settings Codex reported, model reroutes, subagents, every auto-review decision, commands and file changes.
+6. Prints a short summary. For QA and review runs, it posts the record for the commit it checked out.
+
+Verified on 2026-10-20 with Codex CLI 0.163.0: thread/start reported the requested model, effort, `workspaceWrite` with no network, `on-request` and `auto_review`, and a network escalation was answered by auto-review (approved, low risk) with nothing reaching the launcher.
 
 ### How to start the Producer
 From the repository root:
@@ -45,7 +56,7 @@ The model, effort and tools for each agent live in its frontmatter. Change them 
 | Layer | Where | What it does |
 |---|---|---|
 | Guard hook | Managed: `C:\Program Files\ClaudeCode\` (source: `.claude/hooks/guard.js`) | Checks every shell command and file edit before it runs, blocks what AGENTS.md §5 forbids, and keeps each agent in its lane. It runs as a managed hook with `onFailure: "block"`, so it fails closed. |
-| Permission mode | `.claude/settings.json` | `defaultMode: default`, so anything not on the allow list asks the owner first. Bypass mode and auto mode are disabled. |
+| Permission mode | `.claude/settings.json` | `defaultMode: default`, so anything not on the allow list asks the owner first. Bypass mode is disabled; auto mode is allowed. |
 | Allow list | `.claude/settings.json` | Routine reads run without a prompt: `git status/diff/log/show`, `gh issue list/view`, `gh pr list/view/diff/checks`, `gh project item-list`. The guard still checks them. |
 | Deny list | `.claude/settings.json` | Simple patterns for what AGENTS.md §5 forbids, for both the Bash and the PowerShell tool. |
 | Git hooks | `.githooks/` | gitleaks scans every commit and merge commit (see `docs/setup-git-hooks.md`). |
@@ -92,7 +103,8 @@ Reading them is fine. Agents describe proposed changes in the PR, and the owner 
 - `git diff|log|show --output`
 
 **gh:**
-- `gh pr merge`, any `gh label` command, the `approved` label, `gh pr review --approve`, and editing or deleting comments. Combined short flags are read the way gh reads them (`-iX PUT` is `-i -X PUT`).
+- `gh pr merge` in every form except the Producer's merge form (below), any `gh label` command, `gh pr review --approve`, and editing or deleting comments. Combined short flags are read the way gh reads them (`-iX PUT` is `-i -X PUT`).
+- record markers (`studio-record`) in comments, except a `verdict` record with `vendor=claude` from the code-reviewer and an `owner-approval` record from the Producer, each as the first line of a single comment
 - `gh auth` and `gh secret`, repository settings, and gh config, alias and extension changes
 - aliases and extensions
 - any `gh api` call that writes:
@@ -110,15 +122,28 @@ Reading them is fine. Agents describe proposed changes in the PR, and the owner 
 - piping a download into a shell
 - setting `GITLEAKS_*`, `GIT_*` or `PATH` in any form the guard knows: assignments, `export`, `$env:`, the PowerShell `Env:` drive and Environment provider, `setx`, registry changes, and new PowerShell drives
 
+**Codex, Claude and indirect execution (every session):**
+- `codex` by any name or path (`codex.exe`, `codex.js`, `@openai/codex`, `npx codex`), except through the Producer's launcher form
+- nested Claude sessions (`claude …`), so no session can act as the Producer
+- the launcher itself, for anyone but the Producer
+- read-command options that run other programs: `rg --pre` and `--pre-glob`, `find -exec`, `-execdir`, `-ok` and `-okdir`, and setting `LESSOPEN` or `LESSCLOSE`
+- rewriting refs: `git update-ref`, `git replace` and `git symbolic-ref` writes
+
 When the guard blocks a call, Claude sees the reason and the AGENTS.md section, and it must not retry in another form.
 
-**Lanes:** the guard reads `agent_type` from each call. The game-designer, tech-architect and code-reviewer have lanes, and the guard applies them even when the Producer spawns them.
-- The Producer (`agent_type: producer`) has no extra lane, so the rules above apply to it as they do to any session.
-- Its Issue, comment, board, branch, commit, push and PR commands, and `git merge origin/main`, need no special allowance.
-- Tests pin both what it may do and what stays blocked.
+**Lanes:** the guard reads `agent_type` from each call. The game-designer, tech-architect and code-reviewer have lanes, and the guard applies them even when the Producer spawns them. The hooks reference says `agent_type` is present "when the session uses `--agent`", so the Producer's main session carries `agent_type: producer`.
+
+**The Producer (`agent_type: producer`):**
+- Its shell runs only `git`, `gh` and `cd` to the repository root, with no wrappers, variable assignments, file redirects or other programs. It reads files with its Read, Grep and Glob tools. All the general rules above still apply.
+- Its comments are a literal `--body` or a quoted here-document, so the guard can read them. `--body-file <path>`, `--editor` and `--web` are blocked.
+- **The merge form**, as a call of its own: `gh pr merge <n> --repo smokim38/rts-game --squash --delete-branch --match-head-commit <40-hex sha>`. Before allowing it, the guard asks GitHub (read-only, the fixed repository, every page) and blocks unless the AGENTS.md §6 merge gate holds. A failed or incomplete lookup blocks.
+- **The launcher form**, as a call of its own from the repository root: `node tools/codex-launch.js <role> <issue> [<pr>]`. Before allowing it, the guard checks that `tools/codex-launch.js` is a real file under the project root (no symlink or junction) and that its git blob hash matches the file on `main`, fetched from the GitHub API. It never trusts a local ref such as `origin/main`.
+- Tests pin both what it may do and what stays blocked. The GitHub lookups are stubbed in the tests.
 
 ### Known limits
-- **The guard is a guardrail, not a sandbox.** An agent that writes a script file and runs it (`node x.js`, `python x.py`) isn't inspected. Default mode prompts the owner for that, because it isn't allow-listed. Read those prompts.
+- **The guard is a guardrail, not a sandbox.** A session with no role that writes a script file and runs it (`node x.js`, `python x.py`) isn't inspected. Default mode prompts the owner for that, because it isn't allow-listed. Read those prompts. The Producer can't run scripts at all.
+- **One account, one Windows user.** The merge gate checks evidence that agents could fabricate by a route the guard can't see. This is an accepted risk (AGENTS.md §5).
+- **The merge gate needs the network.** It and the launcher check call GitHub from the hook within its 15-second timeout. If GitHub is slow or down, they block, by design.
 - **Owner-only files are protected by name, not by path, in shell commands.** The guard reads file names in a command as text. A wildcard (`set?ings.json`) or a recursive delete of a parent folder (`Remove-Item -Recurse .claude`) can still reach them. Edit and Write calls are checked by their real path. This is an accepted limitation: the owner decided against protecting these files with Windows permissions (Issue #11, closed), so it rests on the guard, plus the CI scan and the `main` ruleset for anything that reaches GitHub.
 - **The environment rules are partly best-effort.** What holds is structural:
   - The hook-running git commands run alone, and calls don't keep environment changes.
@@ -127,20 +152,22 @@ When the guard blocks a call, Claude sees the reason and the AGENTS.md section, 
   - The CI gitleaks scan (`.github/workflows/gitleaks.yml`) runs on every PR and push to `main`.
   - Making it a required check, and adding a `main` ruleset (PR required, no direct or force pushes, no deletion), are owner settings. Both are described in `docs/setup-git-hooks.md`.
 - **Some legitimate commands are blocked too.** The guard prefers a false block over a miss. Ask the owner when a block is wrong. The fix is a reviewed change to the guard, never a workaround.
-- **Labels can't be protected on GitHub.** All agents act through the owner's account, so only the guard and the Issue timeline show who added the `approved` label.
+- **Labels never authorise work.** The `### Owner instruction` section does (AGENTS.md §3), and the launcher checks the Issue's body edits.
 
 ## How to test the guardrails
 
-1. **Unit tests** (about 325 cases, around 20 seconds). They cover every finding from the PR #9 review rounds, except the known limit above, and the Producer's commands:
+1. **Unit tests.** They cover every finding from the PR #9 review rounds, except the known limit above, the Producer's commands, the merge gate and the launcher check (with GitHub stubbed), and the launcher's own checks:
    ```sh
    node --test .claude/hooks/guard.test.js
+   node --test tools/codex-launch.test.js
    ```
 2. **Failure mode.** With `onFailure: "block"`, Claude Code 2.1.303 blocked the call when the hook's executable was missing, when the script had a syntax error, and when the script timed out. These were tested live while preparing PR #9.
 3. **Live check after installing.** In a new Claude Code session, ask Claude to run each of these, through both the Bash and the PowerShell tool. Each should be refused with `Blocked by the studio guard: …`:
    - `git commit --allow-empty -m test --no-verify`
    - `git push origin HEAD:main`
    - `gh label list`
-   - `gh issue edit <n> --add-label approved`
+   - `gh pr merge 1 --squash`
+   - `codex --version`
    - an edit to `.claude/settings.json`
 4. **Lanes.**
    - Ask the game-designer to write `docs/design/x.cs`.
@@ -161,7 +188,8 @@ When the guard blocks a call, Claude sees the reason and the AGENTS.md section, 
 
      Asked to edit a file, the session refuses.
    - It can delegate only to game-designer, tech-architect and code-reviewer: asking it to spawn `general-purpose` or `Explore` is refused.
-   - Asking it to add `approved` to an Issue is refused, or blocked by the guard if it tries.
+   - **`agent_type` reaches the guard:** asking it to run `ls` is blocked with the Producer's shell message. If `ls` runs, the hook isn't seeing `agent_type: producer`; stop using the merge and launcher forms and report it.
+   - Asking it to merge a PR without a review record is blocked by the merge gate, with the missing evidence named.
 6. **Configuration.**
    - `/agents` lists the four agents.
    - `/hooks` shows the managed PreToolUse guard.
