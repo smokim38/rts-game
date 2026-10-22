@@ -65,9 +65,10 @@ const time = (s) => (typeof s === 'string' && !Number.isNaN(Date.parse(s)) ? new
 // Each name field has its own strict check, so nothing that looks like a file path, a command or an
 // email address reaches the page: no slashes, spaces, `@` or file-like dots. Anything else is dropped.
 const ok = (pattern) => (s) => (typeof s === 'string' && pattern.test(s) ? s : null);
-// A Claude agent type, optionally with a plugin prefix (`producer`, `codex:codex-rescue`), or the
-// session-marker's own "main session".
-const agentName = (s) => (s === 'main session' ? s : ok(/^[A-Za-z][\w-]{1,63}(?::[A-Za-z][\w-]{1,63})?$/)(s));
+// A Claude agent type in the session-marker's format (letters, digits, `_`, `-`; `x` and `producer`
+// alike), optionally after a plugin prefix of two or more characters (`codex:codex-rescue`, but
+// not a drive like `C:x`), or the session-marker's own "main session".
+const agentName = (s) => (s === 'main session' ? s : ok(/^(?:[A-Za-z][\w-]{1,63}:)?[\w-]{1,64}$/)(s));
 // A model id. A dot is allowed only between digits (`gpt-6.1`), so `notes.txt` is dropped.
 const modelName = (s) => (typeof s === 'string' && /^[A-Za-z][A-Za-z0-9-]{0,79}$/.test(s.replace(/(\d)\.(?=\d)/g, '$1')) ? s : null);
 const effortName = ok(/^(?:none|minimal|low|medium|high|xhigh|max)$/);
@@ -144,7 +145,14 @@ function tailer(file, root = path.dirname(file), { chunk = READ_CHUNK, maxLine =
       return offset >= size;
     },
     read() {
-      size = stat(root, file)?.size ?? 0;
+      // A file that can't be checked right now keeps its place, to be read on from there later.
+      // Only a file that really got shorter (replaced) is read again from the start.
+      const s = stat(root, file);
+      if (!s) {
+        size = offset;
+        return [];
+      }
+      size = s.size;
       if (size < offset) {
         offset = 0;
         rest = '';
@@ -203,6 +211,9 @@ function tailer(file, root = path.dirname(file), { chunk = READ_CHUNK, maxLine =
 // other lines can be added after an agent has ended. `add` returns an activity's time.
 // Only records timed at or after `since` (when the session is shown from) count towards times,
 // model and tokens, so earlier activity in the same log never appears.
+// A session's own agent name comes from its latest agent-setting line. That line carries no time
+// of its own, so `settingAt` is the first time recorded at or after it, which tells which run it
+// belongs to.
 function claudeAgent(kind, file, root, opts, since) {
   const usage = new Map();
   return {
@@ -210,13 +221,20 @@ function claudeAgent(kind, file, root, opts, since) {
     file,
     tail: tailer(file, root, opts),
     name: null,
+    setting: null,
+    settingAt: null,
     model: null,
     startedAt: null,
     lastAt: null,
     usage,
     add(r) {
-      if (r.type === 'agent-setting') this.name = agentName(r.agentSetting) ?? this.name;
       const at = time(r.timestamp);
+      if (r.type === 'agent-setting') {
+        const setting = agentName(r.agentSetting);
+        if (setting) [this.setting, this.settingAt] = [setting, at];
+      } else if (this.setting && this.settingAt === null) {
+        this.settingAt = at;
+      }
       if (at === null || at < since) return null;
       this.startedAt ??= at;
       const activity = r.type === 'user' || r.type === 'assistant' ? at : null;
@@ -497,6 +515,14 @@ function studio({ codexDir, claudeDir, sessionsDir, repoDir = ROOT, homeDir = os
   // A session shows the start of its current run, or the start record it is shown from if that is
   // later (a session from before the dashboard opened, compacted since).
   const sessionStart = (s) => (s.startedAt === null || s.startedAt < s.shownFrom ? s.shownFrom : s.startedAt);
+  // A session's name: the agent type from its start record. The marker's "main session" is only a
+  // fallback for the agent-setting in the session's own log, if that belongs to the current run.
+  const sessionName = (a) => {
+    const { session } = a;
+    if (session.agent && session.agent !== 'main session') return session.agent;
+    const current = a.setting && (a.settingAt === null || session.startedAt === null || a.settingAt >= session.startedAt);
+    return current ? a.setting : 'main session';
+  };
 
   function state() {
     const t = now();
@@ -505,7 +531,7 @@ function studio({ codexDir, claudeDir, sessionsDir, repoDir = ROOT, homeDir = os
         key: key(a.file),
         kind: a.kind,
         parent: a.parent ? key(a.parent) : null,
-        name: (a.kind === 'session' ? a.session.agent : null) ?? a.name ?? (a.kind === 'session' ? 'main session' : 'subagent'),
+        name: a.kind === 'session' ? sessionName(a) : a.name ?? 'subagent',
         model: a.model,
         startedAt: a.kind === 'session' ? sessionStart(a.session) : a.startedAt,
         lastActivityAt: a.lastAt,

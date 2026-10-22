@@ -23,7 +23,10 @@ It uses Node.js only: no packages, and the page loads nothing from the internet.
   - **Only record times decide.** Whether an agent appears depends only on the times in its records. It never depends on when a log was read, on file times, or on a log that couldn't be read at first. Lines added after an agent ended, such as the record the launcher posts, never bring it back.
   - "Last activity" is the time of the last message.
 - **Claude:** each session, with its subagents under it. Each row shows:
-  - the name: the agent type for a session started with `--agent` (such as `producer`) or for a subagent, otherwise "main session"
+  - the name:
+    - the agent type for a session started with `--agent` (such as `producer`) or for a subagent
+    - otherwise the agent named in the session's own log for its current run
+    - otherwise "main session"
   - the model, the start time and the last activity time. A session that was already open shows the start record it appeared from, such as its compaction.
   - the state:
     - **running**: a session is running from its start record until an end record from the same Claude Code process, or until that process is gone. Both records are written by the session hooks (#50, `docs/studio/claude-staff.md`).

@@ -899,6 +899,81 @@ test('a shown session and its subagents count only activity since the session is
   }
 });
 
+test('a record file that briefly cannot be checked keeps its place and the session its state', () => {
+  const f = folders();
+  const statSync = fs.statSync;
+  let failing = false;
+  try {
+    fs.statSync = (file, ...rest) => {
+      if (failing && String(file).endsWith('s.jsonl')) throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' });
+      return statSync(file, ...rest);
+    };
+    // The tailer reads on from where it was, not from the start.
+    const file = path.join(f.base, 's.jsonl');
+    fs.writeFileSync(file, '{"a":1}\n');
+    const tail = D.tailer(file);
+    assert.deepStrictEqual(tail.read(), [{ a: 1 }]);
+    failing = true;
+    assert.deepStrictEqual(tail.read(), []);
+    failing = false;
+    fs.appendFileSync(file, '{"b":2}\n');
+    assert.deepStrictEqual(tail.read(), [{ b: 2 }]);
+
+    // A finished session doesn't come back when its old start record could be read again.
+    const live = new Set([961]);
+    sessionLog(f, 's', [record('s', 'start', 961, 'qa-lead', later(1))]);
+    const watch = D.studio({ ...f.dirs, alive: (pid) => live.has(pid) });
+    watch.poll();
+    live.delete(961);
+    watch.poll();
+    assert.deepStrictEqual(byName(watch.state()), { 'qa-lead': 'finished' });
+    failing = true;
+    watch.poll();
+    failing = false;
+    live.add(961);
+    watch.poll();
+    assert.deepStrictEqual(byName(watch.state()), { 'qa-lead': 'finished' });
+  } finally {
+    fs.statSync = statSync;
+    f.done();
+  }
+});
+
+test("a session's own agent name for its current run replaces the marker's main session", () => {
+  const f = folders();
+  try {
+    const live = new Set([process.pid, 972]);
+    // Started without --agent, but its log names the Producer for this run.
+    sessionLog(f, 'p', [record('p', 'start', process.pid, 'main session', later(1))]);
+    fs.writeFileSync(path.join(f.claudeDir, 'p.jsonl'), jsonl([{ type: 'agent-setting', agentSetting: 'producer', sessionId: 'p' }, prompt(later(2))]));
+    // Named in an earlier run only, then resumed: the earlier name doesn't count.
+    sessionLog(f, 'q', [record('q', 'start', 971, 'main session', later(1)), record('q', 'end', 971, 'main session', later(2)), record('q', 'start', 972, 'main session', later(3))]);
+    fs.writeFileSync(path.join(f.claudeDir, 'q.jsonl'), jsonl([{ type: 'agent-setting', agentSetting: 'tech-architect', sessionId: 'q' }, prompt(later(1.5)), prompt(later(4))]));
+    const watch = D.studio({ ...f.dirs, alive: (pid) => live.has(pid) });
+    watch.poll();
+    assert.deepStrictEqual(byName(watch.state()), { producer: 'running', 'main session': 'running' });
+    // A name in its current run does count.
+    fs.appendFileSync(path.join(f.claudeDir, 'q.jsonl'), jsonl([{ type: 'agent-setting', agentSetting: 'qa-lead', sessionId: 'q' }, prompt(later(5))]));
+    watch.poll();
+    assert.deepStrictEqual(byName(watch.state()), { producer: 'running', 'qa-lead': 'running' });
+  } finally {
+    f.done();
+  }
+});
+
+test('one-letter agent names are accepted, paths and commands still are not', () => {
+  const f = folders();
+  try {
+    const names = { a: 'x', b: '7', c: 'C:x', d: 'a/b', e: 'rm x', f: 'codex:codex-rescue' };
+    for (const [id, agent] of Object.entries(names)) sessionLog(f, id, [record(id, 'start', process.pid, agent, later(1))]);
+    const watch = D.studio({ ...f.dirs });
+    watch.poll();
+    assert.deepStrictEqual(watch.state().claude.map((a) => a.name).sort(), ['7', 'codex:codex-rescue', 'main session', 'main session', 'main session', 'x']);
+  } finally {
+    f.done();
+  }
+});
+
 test('known sessions are still checked when their records cannot be listed or are gone', () => {
   const f = folders();
   try {
