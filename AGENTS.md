@@ -87,7 +87,7 @@ Never edit or commit `Game/Library/`, `Game/Temp/`, `Game/Logs/`, `Game/UserSett
 ## 4. Engineering standards
 
 **Unity**
-- Use Unity 6000.3.23f1 with URP. Don't upgrade Unity or packages without an accepted ADR.
+- Use Unity 6000.3.23f1 with URP. Don't upgrade Unity, or upgrade or remove packages, without an accepted ADR. This covers every package in `Game/Packages/manifest.json`, including ones a Unity template added. Packages that Unity drops from `packages-lock.json` only because a removed package pulled them in are covered by the same ADR.
 - Every asset has a `.meta` file. Add, move, rename and delete them together, and never hand-write GUIDs.
 - Prefer working through Unity (and later the Unity MCP tools) over hand-editing `.unity` or `.prefab` YAML.
 - Don't have two agents edit the same scene at once. Prefer prefabs and ScriptableObjects so work doesn't collide.

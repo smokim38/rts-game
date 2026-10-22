@@ -10,7 +10,7 @@ The Producer is the main Claude Code session. It delegates to three subagents. A
 |---|---|---|---|
 | `producer` (main session) | `claude-opus-5-5` / high | No files. It creates Issues, comments, branches, commits, PRs, merges and board updates, and starts Codex through the launcher. | Any owner request: intake, planning, delegation, integration, review routing, merging and reports |
 | `game-designer` | `claude-opus-5-5` / high | Markdown under `docs/design/` | An authorised Issue needs the GDD, units, factions, economy, balance numbers or acceptance criteria written or updated |
-| `tech-architect` | `claude-opus-5-5` / xhigh | Proposed ADRs (`docs/adr/NNNN-title.md`) | A significant technical decision is needed (unit simulation, pathfinding, AI structure, rendering, folder layout, packages, Unity upgrades), or an engineer needs technical guidance |
+| `tech-architect` | `claude-opus-5-5` / xhigh | Proposed ADRs (`docs/adr/NNNN-title.md`) | A significant technical decision is needed (unit simulation, pathfinding, AI structure, rendering, folder layout, packages, package removals, Unity upgrades), or an engineer needs technical guidance |
 | `code-reviewer` | `claude-opus-5-5` / high | nothing | A PR needs its tier's review: Codex-written work at Standard or Critical tier (AGENTS.md §6) |
 
 What each one never does:
