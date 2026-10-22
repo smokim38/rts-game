@@ -1,0 +1,14 @@
+Copyright (C) 2026 smokim38. All rights reserved.
+
+No license is offered for the owner's work except as listed below, per
+[ADR 0003](docs/adr/0003-repository-licensing.md).
+
+| Part | License (SPDX) | Others may |
+|---|---|---|
+| Python scripts (`.py`) in `Art/` that carry `# SPDX-License-Identifier: GPL-3.0-or-later` | `GPL-3.0-or-later`; see [Art/LICENSE](Art/LICENSE) | use, study, change, share and sell them, if they pass them on with source under the same license |
+| Game code (`Game/`), `.blend` sources, exported art, docs, tools and everything else the owner made | All rights reserved; no license offered | nothing beyond what GitHub's Terms of Service and applicable law allow |
+| Third-party content (Unity packages, dependencies) | Its own license, unchanged | what that license allows |
+
+`Art/LICENSE` covers only the `.py` scripts in `Art/` that carry
+`# SPDX-License-Identifier: GPL-3.0-or-later`. `.blend` files and other
+owner-made content in `Art/` stay all rights reserved.
