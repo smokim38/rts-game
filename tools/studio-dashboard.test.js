@@ -147,9 +147,9 @@ test('Claude: sessions run from their start record until their end record or the
     sessionLog(f, 'gone', [record('gone', 'start', 103)]);
     fs.writeFileSync(at('untracked.jsonl'), jsonl([prompt(), ...reply('u1', usage(5, 5, 5, 5))]));
     // A session from before the dashboard opened, compacted since: a second start record from the
-    // same process shows it, and its run still began at the first.
-    const first = ago(600e3).toISOString();
-    sessionLog(f, 'compacted', [record('compacted', 'start', 104, 'art-lead', first), record('compacted', 'start', 104, 'art-lead')]);
+    // same process shows it, with that start's time.
+    const compactedAt = new Date().toISOString();
+    sessionLog(f, 'compacted', [record('compacted', 'start', 104, 'art-lead', ago(600e3).toISOString()), record('compacted', 'start', 104, 'art-lead', compactedAt)]);
 
     const w = watch();
     w.poll();
@@ -161,7 +161,7 @@ test('Claude: sessions run from their start record until their end record or the
     assert.strictEqual(producer.model, 'claude-opus-5-5');
     assert.strictEqual(designer.parent, producer.key);
     assert.deepStrictEqual(designer.tokens, { input: 3, output: 2, cache: 1, total: 6 });
-    assert.strictEqual(s.claude.find((a) => a.name === 'art-lead').startedAt, first);
+    assert.strictEqual(s.claude.find((a) => a.name === 'art-lead').startedAt, compactedAt);
 
     // A reply still being written counts only once it is complete; a malformed line is skipped.
     const [block, ...more] = reply('m3', usage(100, 0, 0, 0));
@@ -868,6 +868,56 @@ test('startup: a session that started before the dashboard is shown from its res
     const s = watch.state();
     assert.deepStrictEqual(byName(s), { 'qa-lead': 'running', 'ops-lead': 'running' });
     assert.strictEqual(s.claude.find((a) => a.name === 'qa-lead').startedAt, at(5));
+    assert.strictEqual(s.claude.find((a) => a.name === 'ops-lead').startedAt, at(3));
+  } finally {
+    f.done();
+  }
+});
+
+test('a shown session and its subagents count only activity since the session is shown from', () => {
+  const f = folders();
+  try {
+    const base = Date.now();
+    const at = (s) => new Date(base + s * 1000).toISOString();
+    // Running since before the dashboard opened, with earlier activity in its log and a subagent's.
+    sessionLog(f, 's', [record('s', 'start', process.pid, 'producer', at(-600)), record('s', 'start', process.pid, 'producer', at(1))]);
+    fs.writeFileSync(path.join(f.claudeDir, 's.jsonl'), jsonl([prompt(at(-500)), ...reply('h1', usage(999, 999, 999, 999), at(-500)), prompt(at(2)), ...reply('n1', usage(2, 0, 0, 0), at(2))]));
+    const subs = path.join(f.claudeDir, 's', 'subagents');
+    fs.mkdirSync(subs, { recursive: true });
+    fs.writeFileSync(path.join(subs, 'agent-a.jsonl'), jsonl([prompt(at(-400)), ...reply('h2', usage(888, 888, 888, 888), at(-400)), prompt(at(3)), ...reply('n2', usage(3, 0, 0, 0), at(3))]));
+    fs.writeFileSync(path.join(subs, 'agent-a.meta.json'), JSON.stringify({ agentType: 'game-designer', finished: false }));
+    const watch = D.studio({ ...f.dirs, now: () => base });
+    watch.poll();
+    watch.poll();
+    const s = watch.state();
+    const session = s.claude.find((a) => a.name === 'producer');
+    const subagent = s.claude.find((a) => a.name === 'game-designer');
+    assert.deepStrictEqual([session.tokens.total, session.startedAt, session.lastActivityAt], [2, at(1), at(2)]);
+    assert.deepStrictEqual([subagent.tokens.total, subagent.startedAt, subagent.lastActivityAt, subagent.state], [3, at(3), at(3), 'running']);
+  } finally {
+    f.done();
+  }
+});
+
+test('known sessions are still checked when their records cannot be listed or are gone', () => {
+  const f = folders();
+  try {
+    const live = new Set([951, 952]);
+    sessionLog(f, 'a', [record('a', 'start', 951, 'qa-lead', later(1))]);
+    sessionLog(f, 'b', [record('b', 'start', 952, 'ops-lead', later(1))]);
+    const watch = D.studio({ ...f.dirs, alive: (pid) => live.has(pid) });
+    watch.poll();
+    assert.deepStrictEqual(byName(watch.state()), { 'qa-lead': 'running', 'ops-lead': 'running' });
+    // One record file disappears, then its process exits.
+    fs.rmSync(path.join(f.sessionsDir, 'b.jsonl'));
+    live.delete(952);
+    watch.poll();
+    assert.deepStrictEqual(byName(watch.state()), { 'qa-lead': 'running', 'ops-lead': 'finished' });
+    // The whole records folder can't be listed any more, then the other process exits.
+    fs.renameSync(f.sessionsDir, `${f.sessionsDir}-moved`);
+    live.delete(951);
+    watch.poll();
+    assert.deepStrictEqual(byName(watch.state()), { 'qa-lead': 'finished', 'ops-lead': 'finished' });
   } finally {
     f.done();
   }

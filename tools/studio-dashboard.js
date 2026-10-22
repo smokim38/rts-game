@@ -201,7 +201,9 @@ function tailer(file, root = path.dirname(file), { chunk = READ_CHUNK, maxLine =
 // block, all with the same message id and usage, so usage counts once per message id.
 // Only messages (user and assistant records, tool results included) count as activity, because
 // other lines can be added after an agent has ended. `add` returns an activity's time.
-function claudeAgent(kind, file, root, opts) {
+// Only records timed at or after `since` (when the session is shown from) count towards times,
+// model and tokens, so earlier activity in the same log never appears.
+function claudeAgent(kind, file, root, opts, since) {
   const usage = new Map();
   return {
     kind,
@@ -213,11 +215,12 @@ function claudeAgent(kind, file, root, opts) {
     lastAt: null,
     usage,
     add(r) {
-      const at = time(r.timestamp);
-      if (at) this.startedAt ??= at;
-      const activity = at !== null && (r.type === 'user' || r.type === 'assistant') ? at : null;
-      if (activity && (!this.lastAt || activity > this.lastAt)) this.lastAt = activity;
       if (r.type === 'agent-setting') this.name = agentName(r.agentSetting) ?? this.name;
+      const at = time(r.timestamp);
+      if (at === null || at < since) return null;
+      this.startedAt ??= at;
+      const activity = r.type === 'user' || r.type === 'assistant' ? at : null;
+      if (activity && (!this.lastAt || activity > this.lastAt)) this.lastAt = activity;
       if (r.type === 'assistant' && r.message && typeof r.message === 'object') {
         this.model = modelName(r.message.model) ?? this.model;
         const u = r.message.usage;
@@ -389,7 +392,8 @@ function studio({ codexDir, claudeDir, sessionsDir, repoDir = ROOT, homeDir = os
     const ms = Date.parse(s);
     return !Number.isNaN(ms) && ms >= started;
   };
-  const claudeOf = (kind, file, extra) => Object.assign(claudeAgent(kind, file, claudeDir, opts), { parent: null, info: null, session: null, finished: false }, extra);
+  // A session and its subagents count only activity from when the session is shown from.
+  const claudeOf = (kind, file, extra) => Object.assign(claudeAgent(kind, file, claudeDir, opts, extra.session.shownFrom), { parent: null, info: null, finished: false }, extra);
   let behind = false;
   // Reads one chunk and notes whether more is waiting.
   const drain = (tail, onRecord) => {
@@ -408,8 +412,6 @@ function studio({ codexDir, claudeDir, sessionsDir, repoDir = ROOT, homeDir = os
       drain(session.tail, (r) => {
         if (session.add(r) && session.shownFrom === null && after(r.at)) session.shownFrom = time(r.at);
       });
-      // Once its process is gone the session stays finished, even if the id is reused later.
-      if (session.open && !session.gone && !alive(session.pid)) session.gone = true;
       const file = path.join(claudeDir, `${id}.jsonl`);
       if (!claude.has(file) && session.shownFrom !== null) claude.set(file, claudeOf('session', file, { session }));
     }
@@ -437,10 +439,10 @@ function studio({ codexDir, claudeDir, sessionsDir, repoDir = ROOT, homeDir = os
           const info = path.join(subDir, `${s.slice(0, -'.jsonl'.length)}.meta.json`);
           subagents.set(file, (agent = claudeOf('subagent', file, { parent: parent.file, info, session })));
         }
+        // `add` returns a message's time only from when the session is shown from.
         let active = false;
         drain(agent.tail, (r) => {
-          const at = agent.add(r);
-          if (at && at >= session.shownFrom) active = true;
+          if (agent.add(r)) active = true;
         });
         readInfo(agent);
         if (active) claude.set(file, agent);
@@ -468,6 +470,11 @@ function studio({ codexDir, claudeDir, sessionsDir, repoDir = ROOT, homeDir = os
     // An allowed folder that leads elsewhere isn't read. It is checked on every poll, so a folder
     // replaced by a link later is refused too.
     if (expected(repoDir, sessionsDir)) pollSessions();
+    // Every known session's process is checked, even when its records can't be listed or read.
+    // Once its process is gone the session stays finished, even if the id is reused later.
+    for (const session of sessions.values()) {
+      if (session.open && !session.gone && !alive(session.pid)) session.gone = true;
+    }
     if (expected(homeDir, claudeDir)) {
       const shownBefore = new Set(claude.keys());
       pollSubagents();
@@ -487,6 +494,10 @@ function studio({ codexDir, claudeDir, sessionsDir, repoDir = ROOT, homeDir = os
   // do something new.
   const current = (a) => a.kind === 'session' || (a.lastAt !== null && (a.session.startedAt === null || a.lastAt >= a.session.startedAt));
 
+  // A session shows the start of its current run, or the start record it is shown from if that is
+  // later (a session from before the dashboard opened, compacted since).
+  const sessionStart = (s) => (s.startedAt === null || s.startedAt < s.shownFrom ? s.shownFrom : s.startedAt);
+
   function state() {
     const t = now();
     const agents = [...claude.values()]
@@ -496,7 +507,7 @@ function studio({ codexDir, claudeDir, sessionsDir, repoDir = ROOT, homeDir = os
         parent: a.parent ? key(a.parent) : null,
         name: (a.kind === 'session' ? a.session.agent : null) ?? a.name ?? (a.kind === 'session' ? 'main session' : 'subagent'),
         model: a.model,
-        startedAt: (a.kind === 'session' ? a.session.startedAt : null) ?? a.startedAt,
+        startedAt: a.kind === 'session' ? sessionStart(a.session) : a.startedAt,
         lastActivityAt: a.lastAt,
         // A subagent can't outlive its session, or the run it belonged to.
         state: a.session.running && !a.finished && current(a) ? 'running' : 'finished',
