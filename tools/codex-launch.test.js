@@ -255,12 +255,12 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', (l
     if (scenario === 'approval') send({ id: 99, method: 'item/commandExecution/requestApproval', params: { command: 'x' } });
     if (scenario === 'exit') process.exit(3);
     if (scenario === 'agents') {
-      // Helper h1 is spawned asking for gpt-mini/low, runs as gpt-mini-r/high, and completes three
-      // times: after its first task, after more work (interacted), and after input sent to it.
-      // h2 is spawned and never reported again. The prompt and messages are planted to check they
-      // never reach the log.
-      const call = (tool, status, receivers, states) => ({ type: 'collabAgentToolCall', id: 'c-' + tool, tool, senderThreadId: 't1', receiverThreadIds: receivers, status, agentsStates: states, prompt: 'PLANTED-PROMPT', model: 'gpt-mini', reasoningEffort: 'low' });
-      const activity = (kind) => ({ type: 'subAgentActivity', id: 'a-' + kind, kind, agentThreadId: 'h1', agentPath: 'root/worker', model: 'gpt-mini-r', reasoningEffort: 'high' });
+      // Helper h1 is spawned asking for gpt-mini/low, runs as gpt-mini-r/high, and completes four
+      // times: after its first task, after more work (interacted), after input sent to it, and
+      // after more input whose call is reported again once h1 has finished. h2 is spawned and
+      // never reported again. The prompt and messages are planted to check they never reach the log.
+      const call = (tool, status, receivers, states, id = 'c-' + tool) => ({ type: 'collabAgentToolCall', id, tool, senderThreadId: 't1', receiverThreadIds: receivers, status, agentsStates: states, prompt: 'PLANTED-PROMPT', model: 'gpt-mini', reasoningEffort: 'low' });
+      const activity = (kind, id = 'a-' + kind) => ({ type: 'subAgentActivity', id, kind, agentThreadId: 'h1', agentPath: 'root/worker', model: 'gpt-mini-r', reasoningEffort: 'high' });
       const tokens = (thread, total, window) => note('thread/tokenUsage/updated', { threadId: thread, turnId: 'u9', tokenUsage: {
         total: { inputTokens: total - 5, cachedInputTokens: 2, cacheWriteInputTokens: 0, outputTokens: 5, reasoningOutputTokens: 1, totalTokens: total },
         last: { inputTokens: 1, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0, totalTokens: 2 }, modelContextWindow: window } });
@@ -276,6 +276,12 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', (l
       // Input sent to h1, with a stale state from before it, then a wait that sees it complete.
       item('item/completed', call('sendInput', 'completed', ['h1'], { h1: { status: 'completed' } }));
       item('item/completed', call('wait', 'completed', ['h1'], { h1: { status: 'completed', message: 'PLANTED-MESSAGE' } }));
+      // More input: the call is reported when it starts, h1 finishes, and then the same call is
+      // reported as completed. That repeat must not resume h1 again.
+      item('item/started', call('sendInput', 'inProgress', ['h1'], {}, 'c-send-2'));
+      tokens('h1', 40, 1000);
+      item('item/completed', activity('completed', 'a-completed-2'));
+      item('item/completed', call('sendInput', 'completed', ['h1'], {}, 'c-send-2'));
       // The root thread reports some counts and leaves the rest out.
       note('thread/tokenUsage/updated', { threadId: 't1', turnId: 'u1', tokenUsage: { total: { inputTokens: 1000, outputTokens: 200, totalTokens: 1200 }, last: null, modelContextWindow: null } });
       done('{"ok":true}');
@@ -336,7 +342,8 @@ test('runCodex: the whole app-server flow, failing closed', async () => {
     const h1 = { scenario: 'agents', threadId: 'h1', name: 'root/worker', model: 'gpt-mini-r', effort: 'high', status: null };
     const h1Ended = (total) => ({ scenario: 'agents', event: 'helper-ended', threadId: 'h1', status: 'completed', tokens: counts(total) });
     // h1's life, in order: the spawn's requested model and effort, then the name and the model and
-    // effort Codex resolved, then three completions with the work in between logged as resumes.
+    // effort Codex resolved, then four completions with the work in between logged as resumes, and no resume from the
+    // repeated call report (h1 doesn't end with the run).
     assert.deepStrictEqual(logged.filter((e) => e.threadId === 'h1' && e.event.startsWith('helper-')), [
       { scenario: 'agents', event: 'helper-started', threadId: 'h1', name: null, model: 'gpt-mini', effort: 'low', status: null },
       { ...h1, event: 'helper-updated' },
@@ -345,6 +352,8 @@ test('runCodex: the whole app-server flow, failing closed', async () => {
       h1Ended(25),
       { ...h1, event: 'helper-resumed' },
       h1Ended(25),
+      { ...h1, event: 'helper-resumed' },
+      h1Ended(40),
     ]);
     const h1End = logged.findLastIndex((e) => e.event === 'helper-ended' && e.threadId === 'h1');
     assert.ok(at((e) => e.event === 'helper-started' && e.threadId === 'h1') < h1End && h1End < at((e) => e.event === 'end'), 'a helper is logged as started before it ends, and both before the run ends');
@@ -355,12 +364,12 @@ test('runCodex: the whole app-server flow, failing closed', async () => {
     assert.deepStrictEqual(logged.find((e) => e.event === 'helper-ended' && e.threadId === 'h2'), { scenario: 'agents', event: 'helper-ended', threadId: 'h2', status: 'run-ended', tokens: null });
     const totals = logged.find((e) => e.event === 'run-tokens');
     assert.deepStrictEqual(totals.total, { input: 1000, cachedInput: null, cacheWrite: null, output: 200, reasoningOutput: null, total: 1200 });
-    assert.deepStrictEqual(totals.helpers, [{ threadId: 'h1', total: counts(25) }, { threadId: 'h2', total: null }]);
+    assert.deepStrictEqual(totals.helpers, [{ threadId: 'h1', total: counts(40) }, { threadId: 'h2', total: null }]);
     assert.ok(at((e) => e.event === 'run-tokens') < at((e) => e.event === 'end'));
     assert.ok(!JSON.stringify(logged).includes('PLANTED'), 'no prompt or message text in the log');
     const text = summary(agents);
     assert.match(text, /^Tokens: 1200 total \(input 1000, cached \?, output 200\)$/m);
-    assert.match(text, /^Helper agent root\/worker \(gpt-mini-r \/ high, completed\): 25 total \(input 20, cached 2, output 5\)$/m);
+    assert.match(text, /^Helper agent root\/worker \(gpt-mini-r \/ high, completed\): 40 total \(input 35, cached 2, output 5\)$/m);
     assert.match(text, /^Helper agent h2 \(gpt-mini \/ low, run-ended\): not reported$/m);
     // A run where Codex reports no tokens.
     assert.match(summary(ok), /^Tokens: not reported$/m);

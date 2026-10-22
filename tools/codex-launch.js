@@ -550,7 +550,15 @@ function runCodex({ cwd, model, effort, sandbox, developerInstructions, prompt, 
     log({ event: 'helper-ended', threadId, status: helper.status, tokens: run.tokens[threadId] ?? null });
   };
   // A helper that finished can be given more work; it is logged as resumed and ends again later.
-  const helperResumed = (threadId) => {
+  // Codex reports an item when it starts and again when it completes, so each item resumes a
+  // helper at most once: a repeat can't undo a completion reported in between.
+  const resumedBy = new Set();
+  const helperResumed = (threadId, itemId) => {
+    if (typeof itemId === 'string') {
+      const key = `${itemId}\n${threadId}`;
+      if (resumedBy.has(key)) return;
+      resumedBy.add(key);
+    }
     const helper = run.helpers[threadId];
     if (ended || !helper?.status) return;
     helper.status = null;
@@ -559,13 +567,13 @@ function runCodex({ cwd, model, effort, sandbox, developerInstructions, prompt, 
   const trackHelpers = (item) => {
     if (item.type === 'subAgentActivity') {
       helperStarted(item.agentThreadId, { name: item.agentPath, model: item.model, effort: item.reasoningEffort }, true);
-      if (item.kind === 'started' || item.kind === 'interacted') helperResumed(item.agentThreadId);
+      if (item.kind === 'started' || item.kind === 'interacted') helperResumed(item.agentThreadId, item.id);
       if (item.kind === 'completed' || item.kind === 'interrupted') helperEnded(item.agentThreadId, item.kind);
     } else if (item.type === 'collabAgentToolCall') {
       if (item.tool === 'spawnAgent') for (const id of item.receiverThreadIds ?? []) helperStarted(id, { model: item.model, effort: item.reasoningEffort });
       for (const [id, state] of Object.entries(item.agentsStates ?? {})) if (HELPER_DONE.has(state?.status)) helperEnded(id, state.status);
       // Work sent to a helper resumes it, after any (possibly stale) states in the same call.
-      if (HELPER_WORK.has(item.tool)) for (const id of item.receiverThreadIds ?? []) helperResumed(id);
+      if (HELPER_WORK.has(item.tool)) for (const id of item.receiverThreadIds ?? []) helperResumed(id, item.id);
     }
   };
 
