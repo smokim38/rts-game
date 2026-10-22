@@ -14,16 +14,18 @@ const ROOT = path.resolve(__dirname, '..', '..');
 const TEMPLATE = path.join(__dirname, 'managed-settings.template.json');
 
 // Issue #65: standalone, local-only diagnostic; no git/gh or fixture writes.
-// Run: node .claude/hooks/guard.test.js --repro-65
+// Owner runs: node .claude/hooks/guard.test.js --repro-65 (blocked for Producer).
 // Observed on Windows, Node v24.20.0, Git Bash 5.3.15(2)-release:
 // native -c input of 8,186 characters survives; 8,187 becomes 8,186.
-// A quoted eval wrapper then loses its closing quote (exit 2, unmatched ').
+// A quoted eval wrapper usually loses its closing quote (exit 2, unmatched ').
+// A cut just after an escaped apostrophe can instead return partial output (0).
 // This models the reported error, not Claude Code's uninspected implementation.
 // stdin preserves the same script. Neither the guard nor Claude Code is involved
 // in those Bash calls. Re-run after upstream updates; a fixed Bash is also valid.
 if (process.argv.includes('--repro-65')) {
   const guard = require('./guard.js');
   const quote = (s) => "'" + s.replaceAll("'", "'\\''") + "'";
+  const budget = (s) => Buffer.byteLength(s) + 3 * (s.match(/'/g) ?? []).length;
   const local = (body) => `cat <<'REPRO_65_END'\n${body}REPRO_65_END\n`;
   const post = (body) => `gh issue comment 65 --repo smokim38/rts-game --body-file - <<'REPRO_65_END'\n${body}REPRO_65_END\n`;
   const allowed = (command) => {
@@ -41,11 +43,35 @@ if (process.argv.includes('--repro-65')) {
     assert.ifError(result.error);
     return result;
   };
+  const report = (t, label, result, body) => {
+    if (result.status === 2 && /unexpected EOF while looking for matching/.test(result.stderr)) {
+      assert.strictEqual(result.stdout, '', 'the local reader must not run');
+      t.diagnostic(`${label}: exit 2; ${result.stderr.trim()}`);
+    } else {
+      assert.strictEqual(result.status, 0, result.stderr);
+      if (result.stdout !== body) {
+        assert.ok(result.stdout.length > 0 && result.stdout.length < body.length);
+        assert.match(result.stderr, /here-document.*delimited by end-of-file/);
+        t.diagnostic(`${label}: exit 0, partial body (${result.stdout.length}/${body.length} characters); ${result.stderr.trim()}`);
+      } else {
+        assert.strictEqual(result.stderr, '');
+        t.diagnostic(`${label}: exit 0, exact body`);
+      }
+    }
+  };
 
   test('Issue #65: native -c boundary, with no here-document or special body characters', (t) => {
     const version = bash('printf %s "$BASH_VERSION"');
     assert.strictEqual(version.status, 0, version.stderr);
     t.diagnostic(`Node ${process.version}, ${process.platform}, Bash ${version.stdout}`);
+    if (process.platform === 'win32') {
+      const found = spawnSync('where.exe', ['bash'], { encoding: 'utf8' });
+      assert.ifError(found.error);
+      assert.strictEqual(found.status, 0, found.stderr);
+      // Report only the resolved executable, with any Windows user name redacted.
+      const resolved = found.stdout.trim().split(/\r?\n/)[0].replace(/(\\Users\\)[^\\]+/ig, '$1<redacted>');
+      t.diagnostic(`spawnSync('bash') resolves to ${resolved}`);
+    }
     const prefix = 'printf %s ${#BASH_EXECUTION_STRING}\n#';
     for (const size of [8186, 8187, 9000, 25000]) {
       const script = prefix + 'x'.repeat(size - prefix.length);
@@ -81,41 +107,48 @@ if (process.argv.includes('--repro-65')) {
         }
         const direct = bash(script);
         const result = bash(wrapped);
-        if (result.status === 2 && /unexpected EOF while looking for matching/.test(result.stderr)) {
-          assert.strictEqual(result.stdout, '', 'the local reader must not run');
-          assert.strictEqual(direct.status, 0, direct.stderr);
-          assert.notStrictEqual(direct.stdout, body);
-          assert.match(direct.stderr, /here-document/);
-          t.diagnostic(`guard allowed ${Buffer.byteLength(command)} bytes unchanged; -c lost ${body.length - direct.stdout.length} body characters; quoted wrapper: ${result.stderr.trim()}; stdin exact`);
-        } else {
-          assert.strictEqual(result.status, 0, result.stderr);
-          assert.strictEqual(result.stderr, '');
-          assert.strictEqual(result.stdout, body);
-          assert.strictEqual(direct.status, 0, direct.stderr);
-          assert.strictEqual(direct.stderr, '');
-          assert.strictEqual(direct.stdout, body);
-          t.diagnostic('Long -c input survived on this installation; external failure not reproduced.');
-        }
+        t.diagnostic(`guard allowed ${Buffer.byteLength(command)} bytes unchanged; stdin exact`);
+        report(t, 'plain -c', direct, body);
+        report(t, 'quoted wrapper -c', result, body);
       });
     }
   }
 
-  test('Issue #65: numbered calls under 1,024 UTF-8 bytes preserve all text', () => {
-    for (const row of ["'".repeat(59) + '\n', '"'.repeat(59) + '\n', "Don't run `code` | [x] \"quotes\" … × – μ ≈ \\path\n"]) {
-      const chunks = Array(40).fill(row.repeat(10));
-      let received = '';
-      for (const [index, chunk] of chunks.entries()) {
-        const heading = `Part ${index + 1}/${chunks.length}\n\n`;
-        const body = heading + chunk;
-        assert.ok(Buffer.byteLength(post(body)) <= 1024);
-        allowed(post(body));
-        const result = bash(`eval ${quote(local(body))}`);
+  test('Issue #65: wrapper cut after an escaped apostrophe may also return exit 0', (t) => {
+    const header = local('').slice(0, -'REPRO_65_END\n'.length);
+    const prefix = `eval '${header.replaceAll("'", "'\\''")}`;
+    // At 8,186 characters the outer quote is closed and the escaped apostrophe is complete.
+    const body = 'x'.repeat(8186 - prefix.length - 3) + "'\nRemaining text.\n";
+    report(t, 'escaped-apostrophe wrapper -c', bash(`eval ${quote(local(body))}`), body);
+  });
+
+  test('Issue #65: calls at the 7,000-byte quote-adjusted budget preserve all text', () => {
+    const forms = [
+      post,
+      (body) => post(body).replace('gh issue comment', 'gh pr comment'),
+      (body) => post(body).replace('gh issue comment 65', 'gh issue create --title finding'),
+      (body) => post(body).replace('gh issue comment 65', 'gh pr create --title finding'),
+    ];
+    for (const row of ['x'.repeat(59) + '\n', "'".repeat(59) + '\n', '"'.repeat(59) + '\n', "Don't run `code` | [x] \"quotes\" … × – μ ≈ \\path\n"]) {
+      for (const form of forms) {
+        const heading = '### Goal\nPreserve several KB of text.\n\n';
+        const ending = '\nEnd of local transport check\n';
+        const room = 7000 - budget(form(heading + ending));
+        const chunk = row.repeat(Math.floor(room / budget(row)));
+        const body = heading + chunk + 'x'.repeat(room - budget(chunk)) + ending;
+        const command = form(body);
+        assert.strictEqual(budget(command), 7000);
+        allowed(command); // Inspect only; no GitHub posts.
+        // Replace the gh prefix with cat and padding, preserving its quoting budget.
+        const offset = command.indexOf('<<');
+        const script = 'cat'.padEnd(offset) + command.slice(offset);
+        const wrapped = `eval ${quote(script)}`;
+        assert.strictEqual(Buffer.byteLength(wrapped), 7007);
+        const result = bash(wrapped);
         assert.strictEqual(result.status, 0, result.stderr);
         assert.strictEqual(result.stderr, '');
         assert.strictEqual(result.stdout, body);
-        received += result.stdout.slice(heading.length);
       }
-      assert.strictEqual(received, chunks.join(''));
     }
   });
 
@@ -126,11 +159,14 @@ if (process.argv.includes('--repro-65')) {
       post(body).replace('gh issue comment', 'gh pr comment'),
       post(body).replace('gh issue comment 65', 'gh issue create --title finding'),
       post(body).replace('gh issue comment 65', 'gh pr create --title finding'),
+      'gh issue view 65 --comments',
+      'gh pr view 67 --comments',
     ]) allowed(command);
     for (const command of [
       'gh issue comment 65 --body-file finding.md',
       'gh pr comment 65 --body-file finding.md',
       post(body).replace("<<'REPRO_65_END'", '<<REPRO_65_END'),
+      'node .claude/hooks/guard.test.js --repro-65',
     ]) {
       assert.throws(() => guard.check({
         cwd: ROOT, agent_type: 'producer', tool_name: 'Bash', tool_input: { command },
