@@ -165,6 +165,7 @@ These rules change only through a Critical-tier PR to this file, and the rules i
 **Dependencies**
 - Ask before installing tools or adding packages: Unity packages, Asset Store assets, NuGet, npm, pip or Blender add-ons.
 - Use official sources and permissive licenses (MIT, Apache-2.0, BSD, CC0). Record the source and license in the PR.
+- Exception: A package published by Unity Technologies in the Unity package registry under the Unity Companion License or the Unity Terms of Service may be added or used directly only when an accepted ADR names that package and its license and explains why the game needs it. One ADR may approve several such packages if it names each package and its license. Asset Store assets and packages from any other publisher remain subject to the permissive-license rule above. A package present in `Game/Packages/packages-lock.json` only because another package depends on it is not approved for direct use: referencing it from game code or adding it to `Game/Packages/manifest.json` requires that ADR. This exception leaves unchanged the requirement to ask before installing, the Critical tier for any new dependency, the security-perimeter rules for `Game/Packages/manifest.json` and `Game/Packages/packages-lock.json` (§6), and the accepted-ADR requirement for upgrading or removing packages (§4).
 - Any new dependency is Critical tier.
 
 **Accepted risks** (owner decisions, 2026-10-20, Issue #42)
