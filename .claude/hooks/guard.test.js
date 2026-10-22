@@ -13,6 +13,133 @@ const GUARD = path.join(__dirname, 'guard.js');
 const ROOT = path.resolve(__dirname, '..', '..');
 const TEMPLATE = path.join(__dirname, 'managed-settings.template.json');
 
+// Issue #65: standalone, local-only diagnostic; no git/gh or fixture writes.
+// Run: node .claude/hooks/guard.test.js --repro-65
+// Observed on Windows, Node v24.20.0, Git Bash 5.3.15(2)-release:
+// native -c input of 8,186 characters survives; 8,187 becomes 8,186.
+// A quoted eval wrapper then loses its closing quote (exit 2, unmatched ').
+// This models the reported error, not Claude Code's uninspected implementation.
+// stdin preserves the same script. Neither the guard nor Claude Code is involved
+// in those Bash calls. Re-run after upstream updates; a fixed Bash is also valid.
+if (process.argv.includes('--repro-65')) {
+  const guard = require('./guard.js');
+  const quote = (s) => "'" + s.replaceAll("'", "'\\''") + "'";
+  const local = (body) => `cat <<'REPRO_65_END'\n${body}REPRO_65_END\n`;
+  const post = (body) => `gh issue comment 65 --repo smokim38/rts-game --body-file - <<'REPRO_65_END'\n${body}REPRO_65_END\n`;
+  const allowed = (command) => {
+    const input = {
+      cwd: ROOT, agent_type: 'producer', tool_name: 'Bash', tool_input: { command },
+    };
+    const before = JSON.stringify(input);
+    assert.strictEqual(guard.check(input), null);
+    assert.strictEqual(JSON.stringify(input), before);
+  };
+  const bash = (script, stdin = false) => {
+    const result = spawnSync('bash', ['--noprofile', '--norc', stdin ? '-s' : '-c', ...(stdin ? [] : [script])], {
+      input: stdin ? script : undefined, encoding: 'utf8', timeout: 10000,
+    });
+    assert.ifError(result.error);
+    return result;
+  };
+
+  test('Issue #65: native -c boundary, with no here-document or special body characters', (t) => {
+    const version = bash('printf %s "$BASH_VERSION"');
+    assert.strictEqual(version.status, 0, version.stderr);
+    t.diagnostic(`Node ${process.version}, ${process.platform}, Bash ${version.stdout}`);
+    const prefix = 'printf %s ${#BASH_EXECUTION_STRING}\n#';
+    for (const size of [8186, 8187, 9000, 25000]) {
+      const script = prefix + 'x'.repeat(size - prefix.length);
+      const native = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.argv[1].length))', script], { encoding: 'utf8' });
+      assert.ifError(native.error);
+      assert.strictEqual(native.status, 0);
+      assert.strictEqual(native.stdout, String(size));
+      const result = bash(script);
+      assert.strictEqual(result.status, 0, result.stderr);
+      assert.strictEqual(result.stderr, '');
+      const received = Number(result.stdout);
+      assert.ok(received > 0 && received <= size);
+      t.diagnostic(`native Node received ${size}; Bash -c received ${received}`);
+    }
+  });
+
+  for (const [label, row] of [
+    ['ASCII', 'x'.repeat(149) + '\n'],
+    ['Markdown', "Don't run `code` | [x] \"quotes\" … × – μ ≈ \\path\n"],
+  ]) {
+    for (const size of [9000, 25000]) {
+      test(`Issue #65: ${label} ${size} characters, guard and Bash transport`, (t) => {
+        const body = row.repeat(Math.ceil(size / row.length)).slice(0, size) + '\n';
+        const command = post(body);
+        allowed(command); // Inspect only; never execute the gh command.
+        const script = local(body);
+        const wrapped = `eval ${quote(script)}`;
+        for (const input of [script, wrapped]) {
+          const result = bash(input, true);
+          assert.strictEqual(result.status, 0, result.stderr);
+          assert.strictEqual(result.stderr, '');
+          assert.strictEqual(result.stdout, body);
+        }
+        const direct = bash(script);
+        const result = bash(wrapped);
+        if (result.status === 2 && /unexpected EOF while looking for matching/.test(result.stderr)) {
+          assert.strictEqual(result.stdout, '', 'the local reader must not run');
+          assert.strictEqual(direct.status, 0, direct.stderr);
+          assert.notStrictEqual(direct.stdout, body);
+          assert.match(direct.stderr, /here-document/);
+          t.diagnostic(`guard allowed ${Buffer.byteLength(command)} bytes unchanged; -c lost ${body.length - direct.stdout.length} body characters; quoted wrapper: ${result.stderr.trim()}; stdin exact`);
+        } else {
+          assert.strictEqual(result.status, 0, result.stderr);
+          assert.strictEqual(result.stderr, '');
+          assert.strictEqual(result.stdout, body);
+          assert.strictEqual(direct.status, 0, direct.stderr);
+          assert.strictEqual(direct.stderr, '');
+          assert.strictEqual(direct.stdout, body);
+          t.diagnostic('Long -c input survived on this installation; external failure not reproduced.');
+        }
+      });
+    }
+  }
+
+  test('Issue #65: numbered calls under 1,024 UTF-8 bytes preserve all text', () => {
+    for (const row of ["'".repeat(59) + '\n', '"'.repeat(59) + '\n', "Don't run `code` | [x] \"quotes\" … × – μ ≈ \\path\n"]) {
+      const chunks = Array(40).fill(row.repeat(10));
+      let received = '';
+      for (const [index, chunk] of chunks.entries()) {
+        const heading = `Part ${index + 1}/${chunks.length}\n\n`;
+        const body = heading + chunk;
+        assert.ok(Buffer.byteLength(post(body)) <= 1024);
+        allowed(post(body));
+        const result = bash(`eval ${quote(local(body))}`);
+        assert.strictEqual(result.status, 0, result.stderr);
+        assert.strictEqual(result.stderr, '');
+        assert.strictEqual(result.stdout, body);
+        received += result.stdout.slice(heading.length);
+      }
+      assert.strictEqual(received, chunks.join(''));
+    }
+  });
+
+  test('Issue #65: documented post forms pass without widening Producer permissions', () => {
+    const body = 'Part 1/2\n\nA short finding.\n';
+    for (const command of [
+      post(body),
+      post(body).replace('gh issue comment', 'gh pr comment'),
+      post(body).replace('gh issue comment 65', 'gh issue create --title finding'),
+      post(body).replace('gh issue comment 65', 'gh pr create --title finding'),
+    ]) allowed(command);
+    for (const command of [
+      'gh issue comment 65 --body-file finding.md',
+      'gh pr comment 65 --body-file finding.md',
+      post(body).replace("<<'REPRO_65_END'", '<<REPRO_65_END'),
+    ]) {
+      assert.throws(() => guard.check({
+        cwd: ROOT, agent_type: 'producer', tool_name: 'Bash', tool_input: { command },
+      }), guard.Blocked);
+    }
+  });
+  return;
+}
+
 // Throwaway projects: another repository, and a studio checkout cloned from a main that holds
 // ADRs in each status, for the lane tests. The checkout's working copy then differs from main.
 const tempDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'guard-test-'));

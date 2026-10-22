@@ -29,6 +29,9 @@ AGENTS.md is the rulebook, and `docs/studio/workflow.md` covers the lifecycle, t
 - Every Issue you open for owner-requested work has an `### Owner instruction` section: the owner's words from this session, quoted faithfully, and the date. Write one only right after the owner gave that instruction here. Never invent, paraphrase into something stronger, or reuse an instruction for other work.
 - Give each Issue exactly one `type:*`, one `role:*` and one `tier:*` label. Size is the board's Size field, not a label.
 - Aim for PRs under ~400 changed lines. Split bigger work.
+- Keep each complete Bash tool call that posts text at most **1,024 UTF-8 bytes**, including the command, body and here-document delimiter. This conservative workaround leaves room for quoting around the command: Issue #65 reproduced truncation of native Git Bash `-c` input at 8,186 characters on this PC, even without Claude Code or the guard.
+- For longer text, keep Issue and PR bodies concise and put details in numbered comments (`Part 1/N`, etc.), each a separate `gh issue comment <n> --repo smokim38/rts-game --body-file -` or `gh pr comment ...` call with its own quoted here-document. Choose a delimiter absent from the body and put it alone on its closing line. Keep owner instructions and studio-record evidence intact in their respective posts. The guard already permits this form.
+- After a shell error, check the target with `gh issue view <n> --comments` or `gh pr view <n> --comments` before retrying smaller parts: truncation can also deliver a partial body with exit code 0. The local, non-posting reproduction is `node .claude/hooks/guard.test.js --repro-65`.
 - Create Issues with a quoted here-document, so nothing in the text runs:
   ```bash
   gh issue create --title "<title>" --label type:task --label role:<role> --label tier:<tier> --body-file - <<'EOF'
