@@ -487,11 +487,86 @@ function declineRequest(method) {
   return null;
 }
 
+// Token counts exactly as Codex reports them. A count it leaves out is null, never estimated.
+const count = (n) => (Number.isInteger(n) && n >= 0 ? n : null);
+const label = (s) => (typeof s === 'string' ? s.slice(0, 200) : null);
+function tokenCounts(b) {
+  if (!b || typeof b !== 'object') return null;
+  return {
+    input: count(b.inputTokens),
+    cachedInput: count(b.cachedInputTokens),
+    cacheWrite: count(b.cacheWriteInputTokens),
+    output: count(b.outputTokens),
+    reasoningOutput: count(b.reasoningOutputTokens),
+    total: count(b.totalTokens),
+  };
+}
+
+// Tracks the helper agents Codex starts, in `run.helpers`, and logs them with identifiers, names,
+// model, effort and numbers only: never the prompt or messages a collab call carries.
+// - A helper is logged when first seen: from a spawn call, or from its own activity.
+// - Whether it is working or finished follows only Codex's activity reports for it (`started` and
+//   `interacted` mean working, `completed` and `interrupted` mean finished), each counted once,
+//   since Codex reports an item when it starts and again when it completes. Collab calls never
+//   change it: their state snapshots can be stale, a call can fail, and a message doesn't start work.
+// - A spawn call gives the model and effort requested; activity gives the ones Codex resolved, which
+//   replace them. Details that arrive later are logged as an update.
+// - Helpers still working when the run ends finish with it (`run-ended`).
+function helperTracker(run, log) {
+  const counted = new Set();
+  let ended = false;
+  const seen = (threadId, { name = null, model = null, effort = null }, resolved) => {
+    if (typeof threadId !== 'string' || threadId === run.threadId) return null;
+    const details = { name: label(name), model: label(model), effort: label(effort) };
+    const helper = run.helpers[threadId];
+    if (!helper) {
+      run.helpers[threadId] = { threadId, ...details, status: null };
+      log({ event: 'helper-started', ...run.helpers[threadId] });
+      return run.helpers[threadId];
+    }
+    const changed = Object.keys(details).filter((k) => details[k] !== null && (helper[k] === null || (resolved && helper[k] !== details[k])));
+    for (const k of changed) helper[k] = details[k];
+    if (changed.length) log({ event: 'helper-updated', ...helper });
+    return helper;
+  };
+  const finishHelper = (helper, status) => {
+    if (helper.status) return;
+    helper.status = status;
+    log({ event: 'helper-ended', threadId: helper.threadId, status, tokens: run.tokens[helper.threadId] ?? null });
+  };
+  return {
+    item(item) {
+      if (ended) return;
+      if (item.type === 'collabAgentToolCall' && item.tool === 'spawnAgent') {
+        for (const id of item.receiverThreadIds ?? []) seen(id, { model: item.model, effort: item.reasoningEffort }, false);
+      } else if (item.type === 'subAgentActivity') {
+        const helper = seen(item.agentThreadId, { name: item.agentPath, model: item.model, effort: item.reasoningEffort }, true);
+        if (!helper) return;
+        if (typeof item.id === 'string') {
+          if (counted.has(item.id)) return;
+          counted.add(item.id);
+        }
+        if ((item.kind === 'started' || item.kind === 'interacted') && helper.status) {
+          helper.status = null;
+          log({ event: 'helper-resumed', ...helper });
+        }
+        if (item.kind === 'completed' || item.kind === 'interrupted') finishHelper(helper, item.kind);
+      }
+    },
+    end() {
+      if (ended) return;
+      for (const helper of Object.values(run.helpers)) finishHelper(helper, 'run-ended');
+      ended = true;
+    },
+  };
+}
+
 // `command` is Codex's program and leading arguments (codexCommand); tests pass a fake server.
 function runCodex({ cwd, model, effort, sandbox, developerInstructions, prompt, outputSchema, log, timeoutMs = RUN_TIMEOUT_MS, command = codexCommand() }) {
   const expected = { cwd, model, effort, sandboxType: sandbox === 'read-only' ? 'readOnly' : 'workspaceWrite' };
   const child = spawn(command.file, [...command.args, 'app-server'], { cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
-  const run = { threadId: null, settings: null, reroutes: [], reviews: [], declined: [], subagents: [], items: {}, finalText: null, turn: null, stderr: '' };
+  // `tokens` holds the latest total Codex reported per thread; `helpers` the helper agents by thread.
+  const run = { threadId: null, settings: null, reroutes: [], reviews: [], declined: [], tokens: {}, helpers: {}, items: {}, finalText: null, turn: null, stderr: '' };
   let nextId = 1;
   const pending = new Map();
   const send = (msg) => child.stdin.write(`${JSON.stringify(msg)}\n`);
@@ -502,6 +577,8 @@ function runCodex({ cwd, model, effort, sandbox, developerInstructions, prompt, 
       send({ method, id, params });
     });
 
+  const helpers = helperTracker(run, log);
+
   return new Promise((resolve, reject) => {
     let finished = false;
     const finish = (err) => {
@@ -509,6 +586,13 @@ function runCodex({ cwd, model, effort, sandbox, developerInstructions, prompt, 
       finished = true;
       clearTimeout(timer);
       child.kill();
+      helpers.end();
+      log({
+        event: 'run-tokens',
+        threadId: run.threadId,
+        total: run.tokens[run.threadId] ?? null,
+        helpers: Object.keys(run.helpers).map((id) => ({ threadId: id, total: run.tokens[id] ?? null })),
+      });
       log({ event: 'end', error: err?.message ?? null });
       if (err) reject(err);
       else resolve(run);
@@ -541,14 +625,26 @@ function runCodex({ cwd, model, effort, sandbox, developerInstructions, prompt, 
         const review = { status: params.review?.status, risk: params.review?.riskLevel ?? null, action: params.action?.command ?? params.action?.program ?? params.action?.type };
         run.reviews.push(review);
         log({ event: 'auto-review', ...review, rationale: params.review?.rationale ?? null });
+      } else if (method === 'thread/tokenUsage/updated') {
+        const threadId = label(params.threadId);
+        const total = tokenCounts(params.tokenUsage?.total);
+        if (threadId) run.tokens[threadId] = total;
+        log({
+          event: 'token-usage',
+          threadId,
+          turnId: label(params.turnId),
+          helper: threadId === null ? null : threadId !== run.threadId,
+          total,
+          last: tokenCounts(params.tokenUsage?.last),
+          contextWindow: count(params.tokenUsage?.modelContextWindow),
+        });
+      } else if (method === 'item/started') {
+        helpers.item(params.item ?? {});
       } else if (method === 'item/completed') {
         const item = params.item ?? {};
+        helpers.item(item);
         run.items[item.type] = (run.items[item.type] ?? 0) + 1;
         if (item.type === 'agentMessage') run.finalText = item.text;
-        if (item.type === 'subAgentActivity' || item.type === 'collabAgentToolCall') {
-          run.subagents.push({ model: item.model ?? null, effort: item.reasoningEffort ?? null });
-          log({ event: 'subagent', model: item.model ?? null, effort: item.reasoningEffort ?? null });
-        }
         if (item.type === 'commandExecution') log({ event: 'command', command: item.command, exitCode: item.exitCode, status: item.status });
         if (item.type === 'fileChange') log({ event: 'file-change', files: (item.changes ?? []).map((c) => c.path), status: item.status });
       } else if (method === 'turn/completed' && params.threadId === run.threadId) {
@@ -610,6 +706,12 @@ function runCodex({ cwd, model, effort, sandbox, developerInstructions, prompt, 
 
 // ---------- summary ----------
 
+function tokenText(t) {
+  if (t?.total == null) return 'not reported';
+  const part = (n) => (n == null ? '?' : n);
+  return `${t.total} total (input ${part(t.input)}, cached ${part(t.cachedInput)}, output ${part(t.output)})`;
+}
+
 function summarize({ args, branch, sha, dir, run, logFile, result, record, changed }) {
   const counts = {};
   for (const r of run.reviews) counts[r.status] = (counts[r.status] ?? 0) + 1;
@@ -620,7 +722,8 @@ function summarize({ args, branch, sha, dir, run, logFile, result, record, chang
     `Codex run: ${args.role} on Issue #${args.issue}${args.pr ? ` · PR #${args.pr} at ${sha}` : ''}`,
     `Run id: ${run.threadId} · Codex CLI ${s.cliVersion ?? 'unknown'}`,
     `Settings reported by Codex: model ${used} · effort ${s.effort} · sandbox ${s.sandbox?.type} · approvals ${s.approvalPolicy} · reviewer ${s.approvalsReviewer}`,
-    ...(run.subagents.length ? [`Subagents: ${run.subagents.map((a) => `${a.model ?? '?'} / ${a.effort ?? '?'}`).join(', ')}`] : []),
+    `Tokens: ${tokenText(run.tokens[run.threadId])}`,
+    ...Object.values(run.helpers).map((h) => `Helper agent ${h.name ?? h.threadId} (${h.model ?? '?'} / ${h.effort ?? '?'}, ${h.status ?? 'running'}): ${tokenText(run.tokens[h.threadId])}`),
     `Auto-review: ${reviewText} · requests that reached the launcher (declined): ${run.declined.length}`,
     `Turn: ${run.turn?.status}${run.turn?.error ? ` (${run.turn.error.message})` : ''}`,
     `Worktree: ${path.relative(ROOT, dir).replace(/\\/g, '/')}${branch ? ` · branch ${branch}` : ''}`,
@@ -728,6 +831,8 @@ module.exports = {
   verifySettings,
   verifySettingsUpdate,
   declineRequest,
+  helperTracker,
   runCodex,
+  summarize,
   SCHEMAS,
 };

@@ -254,6 +254,39 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', (l
     }
     if (scenario === 'approval') send({ id: 99, method: 'item/commandExecution/requestApproval', params: { command: 'x' } });
     if (scenario === 'exit') process.exit(3);
+    if (scenario === 'agents') {
+      // Helper h1 is spawned asking for gpt-mini/low and runs as gpt-mini-r/high. Its activity
+      // reports, each sent when it starts and again when it completes: started, completed,
+      // interacted, completed. Collab calls in between (a message, input with a stale state, a
+      // failed call, a wait) must not change it. h2 is spawned and never reported again. The
+      // prompt and messages are planted to check they never reach the log.
+      const call = (tool, status, receivers, states) => ({ type: 'collabAgentToolCall', id: 'c-' + tool + '-' + status, tool, senderThreadId: 't1', receiverThreadIds: receivers, status, agentsStates: states, prompt: 'PLANTED-PROMPT', model: 'gpt-mini', reasoningEffort: 'low' });
+      const tokens = (thread, total, window) => note('thread/tokenUsage/updated', { threadId: thread, turnId: 'u9', tokenUsage: {
+        total: { inputTokens: total - 5, cachedInputTokens: 2, cacheWriteInputTokens: 0, outputTokens: 5, reasoningOutputTokens: 1, totalTokens: total },
+        last: { inputTokens: 1, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0, totalTokens: 2 }, modelContextWindow: window } });
+      const item = (method, it) => note(method, { threadId: 't1', turnId: 'u1', item: it });
+      const activity = (id, kind) => {
+        const it = { type: 'subAgentActivity', id, kind, agentThreadId: 'h1', agentPath: 'root/worker', model: 'gpt-mini-r', reasoningEffort: 'high' };
+        item('item/started', it);
+        item('item/completed', it);
+      };
+      item('item/started', call('spawnAgent', 'inProgress', [], {}));
+      item('item/completed', call('spawnAgent', 'completed', ['h1', 'h2'], { h1: { status: 'running', message: 'PLANTED-MESSAGE' } }));
+      activity('a1', 'started');
+      tokens('h1', 10, 1000);
+      activity('a2', 'completed');
+      item('item/completed', call('sendMessage', 'completed', ['h1'], { h1: { status: 'completed', message: 'PLANTED-MESSAGE' } }));
+      item('item/started', call('sendInput', 'inProgress', ['h1'], { h1: { status: 'completed' } }));
+      activity('a3', 'interacted');
+      tokens('h1', 25, 1000);
+      activity('a4', 'completed');
+      item('item/completed', call('sendInput', 'completed', ['h1'], { h1: { status: 'running' } }));
+      item('item/completed', call('resumeAgent', 'failed', ['h1'], {}));
+      item('item/completed', call('wait', 'completed', ['h1'], { h1: { status: 'running' } }));
+      // The root thread reports some counts and leaves the rest out.
+      note('thread/tokenUsage/updated', { threadId: 't1', turnId: 'u1', tokenUsage: { total: { inputTokens: 1000, outputTokens: 200, totalTokens: 1200 }, last: null, modelContextWindow: null } });
+      done('{"ok":true}');
+    }
     if (scenario === 'tree') {
       // Like the npm wrapper: the real server is a child process of the program the launcher ran.
       const child = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
@@ -301,6 +334,44 @@ test('runCodex: the whole app-server flow, failing closed', async () => {
     assert.deepStrictEqual(JSON.parse(asked.finalText), { decision: 'decline' });
     assert.ok(events.some((e) => e.scenario === 'reroute' && e.event === 'model-rerouted' && e.to === 'gpt-other'));
 
+    // Token usage and helper agents, logged as they happen.
+    const summary = (r) => L.summarize({ args: { role: 'reviewer', issue: 46, pr: 50 }, sha: SHA, dir: path.join(os.tmpdir(), 'wt'), run: r, logFile: path.join(os.tmpdir(), 'x.jsonl') });
+    const agents = await run('agents');
+    const logged = events.filter((e) => e.scenario === 'agents');
+    const at = (pred) => logged.findIndex(pred);
+    const counts = (total) => ({ input: total - 5, cachedInput: 2, cacheWrite: 0, output: 5, reasoningOutput: 1, total });
+    const h1 = { scenario: 'agents', threadId: 'h1', name: 'root/worker', model: 'gpt-mini-r', effort: 'high', status: null };
+    const h1Ended = (total) => ({ scenario: 'agents', event: 'helper-ended', threadId: 'h1', status: 'completed', tokens: counts(total) });
+    // h1's life, in order: the spawn's requested model and effort, then the name and the model and
+    // effort Codex resolved, then its two completions with the follow-up work logged as a resume.
+    // The collab calls change nothing, and h1 doesn't end again with the run.
+    assert.deepStrictEqual(logged.filter((e) => e.threadId === 'h1' && e.event.startsWith('helper-')), [
+      { scenario: 'agents', event: 'helper-started', threadId: 'h1', name: null, model: 'gpt-mini', effort: 'low', status: null },
+      { ...h1, event: 'helper-updated' },
+      h1Ended(10),
+      { ...h1, event: 'helper-resumed' },
+      h1Ended(25),
+    ]);
+    const h1End = logged.findLastIndex((e) => e.event === 'helper-ended' && e.threadId === 'h1');
+    assert.ok(at((e) => e.event === 'helper-started' && e.threadId === 'h1') < h1End && h1End < at((e) => e.event === 'end'), 'a helper is logged as started before it ends, and both before the run ends');
+    const h1Tokens = logged.find((e) => e.event === 'token-usage' && e.threadId === 'h1');
+    assert.strictEqual(h1Tokens.helper, true);
+    assert.strictEqual(h1Tokens.contextWindow, 1000);
+    // h2 was never reported as stopped or given tokens: it ends with the run, tokens not reported.
+    assert.deepStrictEqual(logged.find((e) => e.event === 'helper-ended' && e.threadId === 'h2'), { scenario: 'agents', event: 'helper-ended', threadId: 'h2', status: 'run-ended', tokens: null });
+    const totals = logged.find((e) => e.event === 'run-tokens');
+    assert.deepStrictEqual(totals.total, { input: 1000, cachedInput: null, cacheWrite: null, output: 200, reasoningOutput: null, total: 1200 });
+    assert.deepStrictEqual(totals.helpers, [{ threadId: 'h1', total: counts(25) }, { threadId: 'h2', total: null }]);
+    assert.ok(at((e) => e.event === 'run-tokens') < at((e) => e.event === 'end'));
+    assert.ok(!JSON.stringify(logged).includes('PLANTED'), 'no prompt or message text in the log');
+    const text = summary(agents);
+    assert.match(text, /^Tokens: 1200 total \(input 1000, cached \?, output 200\)$/m);
+    assert.match(text, /^Helper agent root\/worker \(gpt-mini-r \/ high, completed\): 25 total \(input 20, cached 2, output 5\)$/m);
+    assert.match(text, /^Helper agent h2 \(gpt-mini \/ low, run-ended\): not reported$/m);
+    // A run where Codex reports no tokens.
+    assert.match(summary(ok), /^Tokens: not reported$/m);
+    assert.deepStrictEqual(events.find((e) => e.scenario === 'ok' && e.event === 'run-tokens'), { scenario: 'ok', event: 'run-tokens', threadId: 't1', total: null, helpers: [] });
+
     // Stopping a run ends the whole process tree, not just the wrapper. On Windows, Node puts the
     // npm wrapper's codex.exe in a job object that ends with the wrapper; this pins that.
     const pidFile = path.join(dir, 'grandchild.pid');
@@ -321,6 +392,72 @@ test('runCodex: the whole app-server flow, failing closed', async () => {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
+});
+
+test('helper agents: working or finished follows only their activity, in every arrival order', () => {
+  const track = () => {
+    const run = { threadId: 't1', tokens: {}, helpers: {} };
+    const logged = [];
+    return { run, logged, tracker: L.helperTracker(run, (e) => logged.push(e)) };
+  };
+  // What a helper's log says about its state: ends with their status, and resumes.
+  const states = (logged) => logged.filter((e) => e.threadId === 'h1' && ['helper-ended', 'helper-resumed'].includes(e.event)).map((e) => (e.event === 'helper-ended' ? e.status : 'resumed'));
+  const activity = (id, kind) => ({ type: 'subAgentActivity', id, kind, agentThreadId: 'h1', agentPath: 'root/worker', model: 'gpt-mini-r', reasoningEffort: 'high' });
+  const call = (id, tool, status, states, receivers = ['h1']) => ({ type: 'collabAgentToolCall', id, tool, senderThreadId: 't1', receiverThreadIds: receivers, status, agentsStates: states });
+  // Collab calls whose state snapshots, failures and messages must never change a helper's state
+  // (PR #48 review rounds 2 and 3): a message to a finished helper, input whose start and
+  // completion carry a stale state, a call that fails, a wait and a close.
+  const calls = [
+    call('c1', 'spawnAgent', 'inProgress', {}, []),
+    call('c1', 'spawnAgent', 'completed', { h1: { status: 'running' } }),
+    call('c2', 'sendMessage', 'completed', { h1: { status: 'completed' } }),
+    call('c3', 'sendInput', 'inProgress', { h1: { status: 'completed' } }),
+    call('c3', 'sendInput', 'completed', { h1: { status: 'completed' } }),
+    call('c4', 'resumeAgent', 'inProgress', { h1: { status: 'completed' } }),
+    call('c4', 'resumeAgent', 'failed', { h1: { status: 'running' } }),
+    call('c5', 'wait', 'completed', { h1: { status: 'running' } }),
+    call('c6', 'closeAgent', 'completed', { h1: { status: 'shutdown' } }),
+  ];
+  // Every way to merge two report streams, each kept in its own order.
+  const interleavings = function* (a, b) {
+    if (!a.length || !b.length) {
+      yield [...a, ...b];
+      return;
+    }
+    for (const rest of interleavings(a.slice(1), b)) yield [a[0], ...rest];
+    for (const rest of interleavings(a, b.slice(1))) yield [b[0], ...rest];
+  };
+  const cases = [
+    { kinds: ['started', 'completed', 'interacted', 'completed'], expected: ['completed', 'resumed', 'completed'] },
+    { kinds: ['started', 'interrupted', 'interacted', 'completed'], expected: ['interrupted', 'resumed', 'completed'] },
+    { kinds: ['started', 'completed', 'interacted'], expected: ['completed', 'resumed', 'run-ended'] },
+  ];
+  for (const { kinds, expected } of cases) {
+    // Codex reports each activity item when it starts and again when it completes.
+    const reports = kinds.flatMap((kind, i) => [activity(`a${i}`, kind), activity(`a${i}`, kind)]);
+    let orders = 0;
+    for (const order of interleavings(reports, calls)) {
+      const { logged, tracker } = track();
+      for (const item of order) tracker.item(item);
+      tracker.end();
+      assert.deepStrictEqual(states(logged), expected, `${kinds.join(' → ')} in order ${order.map((x) => x.id).join(' ')}`);
+      assert.strictEqual(logged.filter((e) => e.event === 'helper-started').length, 1);
+      orders++;
+    }
+    assert.ok(orders > 1000);
+  }
+
+  // A repeated report of an earlier activity, after a later one, counts once.
+  const { logged, tracker } = track();
+  for (const item of [activity('a0', 'started'), activity('a1', 'completed'), activity('a0', 'started')]) tracker.item(item);
+  tracker.end();
+  assert.deepStrictEqual(states(logged), ['completed']);
+
+  // Nothing is tracked after the run ends.
+  const late = track();
+  late.tracker.end();
+  late.tracker.item(activity('a0', 'started'));
+  assert.deepStrictEqual(late.logged, []);
 });
 
 test('Codex must confirm the exact settings before the turn starts', () => {
