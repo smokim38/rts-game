@@ -61,8 +61,19 @@ const claudeProjectDir = (root = ROOT, home = os.homedir()) => path.join(home, '
 
 const count = (n) => (Number.isInteger(n) && n >= 0 ? n : null);
 const time = (s) => (typeof s === 'string' && !Number.isNaN(Date.parse(s)) ? new Date(s).toISOString() : null);
-// Names come from fixed sets in the logs (agent types, models, roles); anything else is dropped.
-const name = (s) => (typeof s === 'string' && /^[\w.:/@ -]{1,80}$/.test(s) ? s : null);
+// Each name field has its own strict check, so nothing that looks like a file path, a command or an
+// email address reaches the page: no slashes, spaces, `@` or file-like dots. Anything else is dropped.
+const ok = (pattern) => (s) => (typeof s === 'string' && pattern.test(s) ? s : null);
+// A Claude agent type, optionally with a plugin prefix (`producer`, `codex:codex-rescue`), or the
+// session-marker's own "main session".
+const agentName = (s) => (s === 'main session' ? s : ok(/^[A-Za-z][\w-]{1,63}(?::[A-Za-z][\w-]{1,63})?$/)(s));
+// A model id. A dot is allowed only between digits (`gpt-6.1`), so `notes.txt` is dropped.
+const modelName = (s) => (typeof s === 'string' && /^[A-Za-z][A-Za-z0-9-]{0,79}$/.test(s.replace(/(\d)\.(?=\d)/g, '$1')) ? s : null);
+const effortName = ok(/^(?:none|minimal|low|medium|high|xhigh|max)$/);
+const roleName = ok(/^(?:gameplay-programmer|qa-test-engineer|tech-artist|reviewer)$/);
+// A Codex helper's name is the last part of its agent path (`root/worker` shows as `worker`), so
+// no path is ever shown.
+const helperName = (s) => (typeof s === 'string' ? ok(/^[A-Za-z0-9][\w-]{0,39}$/)(s.split('/').pop()) : null);
 
 // Whether `p`, after links and junctions, is `root` or inside it, so a link can't lead a read
 // out of the folders the dashboard may read.
@@ -149,12 +160,19 @@ function tailer(file, root = path.dirname(file), { chunk = READ_CHUNK, maxLine =
       }
       if (size === offset) return [];
       const buf = Buffer.alloc(Math.min(size - offset, chunk));
-      const fd = fs.openSync(file, 'r');
       let n;
       try {
-        n = fs.readSync(fd, buf, 0, buf.length, offset);
-      } finally {
-        fs.closeSync(fd);
+        const fd = fs.openSync(file, 'r');
+        try {
+          n = fs.readSync(fd, buf, 0, buf.length, offset);
+        } finally {
+          fs.closeSync(fd);
+        }
+      } catch {
+        // A file that vanished or can't be opened right now is tried again next poll; it never
+        // stops the other logs from being read.
+        size = offset;
+        return [];
       }
       offset += n;
       let text = decoder.write(buf.subarray(0, n));
@@ -206,9 +224,9 @@ function claudeAgent(kind, file, root, opts) {
       if (at) this.startedAt ??= at;
       const activity = at !== null && (r.type === 'user' || r.type === 'assistant') ? at : null;
       if (activity && (!this.lastAt || activity > this.lastAt)) this.lastAt = activity;
-      if (r.type === 'agent-setting') this.name = name(r.agentSetting) ?? this.name;
+      if (r.type === 'agent-setting') this.name = agentName(r.agentSetting) ?? this.name;
       if (r.type === 'assistant' && r.message && typeof r.message === 'object') {
-        this.model = name(r.message.model) ?? this.model;
+        this.model = modelName(r.message.model) ?? this.model;
         const u = r.message.usage;
         const id = typeof r.message.id === 'string' ? r.message.id : r.requestId;
         if (u && typeof u === 'object' && typeof id === 'string') {
@@ -234,13 +252,15 @@ function claudeAgent(kind, file, root, opts) {
   };
 }
 
-// The subagent's info file: only its type and whether it finished are read. Null while it can't
-// be read (for example, half written), so the subagent keeps its last known state.
+// The subagent's info file: only its type and whether it finished are read. `finished` is null
+// unless the file gives a true or false, and the whole result is null while the file can't be read
+// (for example, half written), so the subagent keeps its last known state.
 function subagentInfo(root, file) {
   if (!inside(root, file)) return null;
   try {
     const meta = JSON.parse(fs.readFileSync(file, 'utf8'));
-    return meta && typeof meta === 'object' ? { type: name(meta.agentType), finished: meta.finished === true } : null;
+    if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return null;
+    return { type: agentName(meta.agentType), finished: typeof meta.finished === 'boolean' ? meta.finished : null };
   } catch {
     return null;
   }
@@ -261,6 +281,7 @@ function claudeSession(id, file, root, opts) {
     gone: false,
     run: 0,
     startedAt: null,
+    endedAt: null,
     get running() {
       return this.open && !this.gone;
     },
@@ -274,14 +295,18 @@ function claudeSession(id, file, root, opts) {
         if (!this.running || pid !== this.pid) {
           this.run += 1;
           this.startedAt = at;
+          this.endedAt = null;
           this.gone = false;
         }
         this.open = true;
         this.pid = pid;
-        this.agent = name(r.agent) ?? this.agent;
+        this.agent = agentName(r.agent) ?? this.agent;
         return true;
       }
-      if (r.event === 'end' && pid !== null && pid === this.pid) this.open = false;
+      if (r.event === 'end' && pid !== null && pid === this.pid && this.open) {
+        this.open = false;
+        this.endedAt = at;
+      }
       return false;
     },
   };
@@ -314,7 +339,7 @@ function codexRun(file, root, opts) {
       if (r.event === 'turn-completed') this.turnFailed = typeof r.status === 'string' && r.status !== 'completed';
       if (r.event === 'start') {
         this.startedAt = at;
-        this.role = name(r.role);
+        this.role = roleName(r.role);
         this.issue = count(r.issue);
         this.pr = count(r.pr);
       } else if (r.event === 'thread-started') {
@@ -325,9 +350,9 @@ function codexRun(file, root, opts) {
         const h = this.helpers.get(r.threadId) ?? { name: null, model: null, effort: null, startedAt: at, ended: false, endedAt: null };
         this.helpers.set(r.threadId, h);
         if (r.event !== 'helper-ended') {
-          h.name = name(r.name) ?? h.name;
-          h.model = name(r.model) ?? h.model;
-          h.effort = name(r.effort) ?? h.effort;
+          h.name = helperName(r.name) ?? h.name;
+          h.model = modelName(r.model) ?? h.model;
+          h.effort = effortName(r.effort) ?? h.effort;
         }
         // Only a resume brings a finished helper back; later updates or token reports don't.
         if (r.event === 'helper-resumed') {
@@ -398,7 +423,10 @@ function studio({ codexDir, claudeDir, sessionsDir, repoDir = ROOT, homeDir = os
       // Once its process is gone the session stays finished, even if the id is reused later.
       if (session.open && !session.gone && !alive(session.pid)) session.gone = true;
       const file = path.join(claudeDir, `${id}.jsonl`);
-      if (!claude.has(file) && (startedNow || (!polled && session.running))) claude.set(file, claudeOf('session', file, { session }));
+      // At the first poll, a session that was running when the dashboard started is shown even if
+      // it has ended since: its end record is timed after the start.
+      const runningAtStart = session.running || (session.endedAt !== null && Date.parse(session.endedAt) >= started);
+      if (!claude.has(file) && (startedNow || (!polled && runningAtStart))) claude.set(file, claudeOf('session', file, { session }));
     }
   }
 
@@ -406,7 +434,7 @@ function studio({ codexDir, claudeDir, sessionsDir, repoDir = ROOT, homeDir = os
     const meta = subagentInfo(claudeDir, agent.info);
     if (!meta) return;
     agent.name = meta.type ?? agent.name;
-    agent.finished = meta.finished;
+    if (meta.finished !== null) agent.finished = meta.finished;
   };
 
   // A shown session's subagents. At the first poll, one is shown if it is running then: not
@@ -462,7 +490,9 @@ function studio({ codexDir, claudeDir, sessionsDir, repoDir = ROOT, homeDir = os
         if (r.event === 'start' && (polled || Date.parse(r.at) >= started)) startedNow = true;
         run.add(r);
       });
-      const runningAtStart = run.startedAt !== null && run.endedAt === null && t - Date.parse(run.startedAt) <= RUN_LIMIT_MS;
+      // Running when the dashboard started: still open within its time limit, or ended since.
+      const open = run.startedAt !== null && run.endedAt === null && t - Date.parse(run.startedAt) <= RUN_LIMIT_MS;
+      const runningAtStart = open || (run.startedAt !== null && run.endedAt !== null && Date.parse(run.endedAt) >= started);
       if (!codex.has(file) && (startedNow || (!polled && runningAtStart))) codex.set(file, run);
     }
   }
@@ -686,7 +716,7 @@ function start(watch, { port, host }, onListening) {
 function main(argv) {
   const opts = parseArgs(argv);
   const watch = studio({ codexDir: path.join(ROOT, '.studio', 'logs'), sessionsDir: path.join(ROOT, '.studio', 'sessions'), claudeDir: claudeProjectDir() });
-  watch.poll();
+  // The first poll runs inside `follow` too, so a read error at startup is reported, not fatal.
   follow(watch, { onError: (err) => process.stderr.write(`Dashboard read error: ${err.message}\n`) });
   const srv = start(watch, opts, () => process.stdout.write(`Studio dashboard: http://127.0.0.1:${opts.port}/  (this PC only; Ctrl+C to stop)\n`));
   srv.on('error', (err) => {

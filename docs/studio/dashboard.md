@@ -16,7 +16,7 @@ It uses Node.js only: no packages, and the page loads nothing from the internet.
 
 ## What it shows
 
-- **Live only.** An agent appears if it is running when the dashboard starts, or if it starts later, even if it has already finished by the dashboard's next read. Nothing that ended before the dashboard started is shown, and nothing is kept after you stop it.
+- **Live only.** An agent appears if it is running when the dashboard starts, or if it starts later, even if it has already finished by the dashboard's next read. That includes the dashboard's first read. Nothing that ended before the dashboard started is shown, and nothing is kept after you stop it.
   - A line added to a log after its agent ended never brings the agent back. Examples are the record the launcher posts after a run, or metadata Claude Code adds.
   - Only a real new start brings an agent back: a session's start record, a run's start, a helper being resumed. Real new activity does too: a message in a subagent's log.
   - "Last activity" is the time of the last message.
@@ -52,4 +52,11 @@ It uses Node.js only: no packages, and the page loads nothing from the internet.
 - A log line that never ends is dropped once it passes 16 MiB, so memory use stays bounded.
 - It is read-only: it writes, changes and deletes nothing.
 - It reduces every log record to names, times, states and numbers as it reads it. Conversation text, prompts, tool input and output, commands, file paths and file contents never reach the page.
+- Each name has its own strict check, and a value that fails is dropped. So nothing that looks like a file path, a command or an email address is shown:
+  - agent names: a plain agent type, optionally with a plugin prefix, or "main session"
+  - models: an id where a dot may only sit between digits
+  - effort: a known level
+  - roles: the four launcher roles
+  - Codex helpers: only the last part of the helper's agent path (`root/worker` shows as `worker`)
+- One log that can't be read for a moment is tried again on the next read. It doesn't stop the other agents from updating, or the dashboard from starting.
 - It answers only on `127.0.0.1`, so other devices can't reach it. It also refuses requests that don't address it by `127.0.0.1` or `localhost`, which stops websites from reading it through your browser.

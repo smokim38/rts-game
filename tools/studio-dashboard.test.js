@@ -386,7 +386,7 @@ test('Codex: live launcher runs and their helper agents, from the launcher log e
     watch.poll();
     const s = watch.state();
     [run] = s.codex;
-    assert.deepStrictEqual(run.helpers.map((h) => [h.name, h.model, h.effort, h.state, h.tokens?.total ?? null, h.endedAt]), [['root/worker', 'gpt-mini-r', 'high', 'finished', 150, t(0)], ['helper', null, null, 'finished', null, t(0)]]);
+    assert.deepStrictEqual(run.helpers.map((h) => [h.name, h.model, h.effort, h.state, h.tokens?.total ?? null, h.endedAt]), [['worker', 'gpt-mini-r', 'high', 'finished', 150, t(0)], ['helper', null, null, 'finished', null, t(0)]]);
     assert.strictEqual(run.state, 'finished');
     assert.ok(run.endedAt);
     assert.deepStrictEqual(s.codex.map((r) => [r.role, r.issue, r.state]), [['reviewer', 46, 'finished'], ['gameplay-programmer', 50, 'running']]);
@@ -469,7 +469,7 @@ test('live only: a Codex helper that finished before the dashboard opened stays 
     // Real new activity: the helper resumes.
     fs.appendFileSync(open, jsonl([{ at: t(0), event: 'helper-resumed', threadId: 'h1', name: null, model: null, effort: null, status: null }]));
     watch.poll();
-    assert.deepStrictEqual(watch.state().codex[0].helpers.map((h) => [h.name, h.state]), [['root/worker', 'running']]);
+    assert.deepStrictEqual(watch.state().codex[0].helpers.map((h) => [h.name, h.state]), [['worker', 'running']]);
   } finally {
     f.done();
   }
@@ -778,7 +778,7 @@ test('startup: a Codex run that starts and ends just before the first read is ke
     const watch = D.studio({ ...f.dirs, now: () => base });
     watch.poll();
     const s = watch.state();
-    assert.deepStrictEqual(s.codex.map((r) => [r.issue, r.state, r.helpers.map((h) => [h.name, h.state, h.tokens?.total])]), [[47, 'finished', [['root/worker', 'finished', 9]]]]);
+    assert.deepStrictEqual(s.codex.map((r) => [r.issue, r.state, r.helpers.map((h) => [h.name, h.state, h.tokens?.total])]), [[47, 'finished', [['worker', 'finished', 9]]]]);
     assert.ok(!JSON.stringify(s).includes(PLANTED));
   } finally {
     f.done();
@@ -811,6 +811,79 @@ test('startup: agents that ended before the dashboard started still stay hidden'
   }
 });
 
+test('startup: agents running when the dashboard started are kept, finished, if they end before the first read', () => {
+  const f = folders();
+  try {
+    const base = Date.now();
+    const at = (s) => new Date(base + s * 1000).toISOString();
+    sessionLog(f, 's', [record('s', 'start', 921, 'qa-lead', at(-60)), record('s', 'end', 921, 'qa-lead', at(1))]);
+    fs.writeFileSync(path.join(f.codexDir, 'run.jsonl'), jsonl([
+      { at: at(-60), event: 'start', role: 'reviewer', issue: 47, pr: 49 },
+      { at: at(-50), event: 'helper-started', threadId: 'h1', name: 'root/worker', model: null, effort: null, status: null },
+      { at: at(1), event: 'helper-ended', threadId: 'h1', status: 'run-ended', tokens: null },
+      { at: at(1), event: 'end', error: null },
+    ]));
+    const watch = D.studio({ ...f.dirs, now: () => base, alive: () => false });
+    watch.poll();
+    const s = watch.state();
+    assert.deepStrictEqual(byName(s), { 'qa-lead': 'finished' });
+    assert.deepStrictEqual(s.codex.map((r) => [r.issue, r.state, r.helpers.map((h) => [h.name, h.state])]), [[47, 'finished', [['worker', 'finished']]]]);
+  } finally {
+    f.done();
+  }
+});
+
+test('a subagent keeps its finished state when its info file holds no valid finished value', () => {
+  const f = folders();
+  try {
+    sessionLog(f, 'p', [record('p', 'start', process.pid, 'producer', ago(60e3).toISOString())]);
+    const subs = path.join(f.claudeDir, 'p', 'subagents');
+    fs.mkdirSync(subs, { recursive: true });
+    const meta = path.join(subs, 'agent-a.meta.json');
+    fs.writeFileSync(path.join(subs, 'agent-a.jsonl'), jsonl([prompt()]));
+    fs.writeFileSync(meta, JSON.stringify({ agentType: 'game-designer', finished: false }));
+    const watch = D.studio({ ...f.dirs });
+    watch.poll();
+    fs.writeFileSync(meta, JSON.stringify({ agentType: 'game-designer', finished: true }));
+    watch.poll();
+    for (const broken of ['{}', '[]', 'null', '{"agentType":"game-designer","finished":"no"}']) {
+      fs.writeFileSync(meta, broken);
+      watch.poll();
+      assert.deepStrictEqual(byName(watch.state()), { producer: 'running', 'game-designer': 'finished' }, broken);
+    }
+  } finally {
+    f.done();
+  }
+});
+
+test('one unreadable log does not stop the others, at startup or later', () => {
+  const f = folders();
+  const openSync = fs.openSync;
+  try {
+    const at = new Date().toISOString();
+    for (const issue of [46, 47]) fs.writeFileSync(path.join(f.codexDir, `run-${issue}.jsonl`), jsonl([{ at, event: 'start', role: 'reviewer', issue, pr: issue + 2 }]));
+    sessionLog(f, 's', [record('s', 'start', process.pid, 'producer')]);
+    fs.writeFileSync(path.join(f.claudeDir, 's.jsonl'), jsonl([prompt(), ...reply('m1', usage(1, 1, 0, 0))]));
+    // run-46.jsonl can't be opened (locked, or removed between listing and opening).
+    fs.openSync = (file, ...rest) => {
+      if (String(file).endsWith('run-46.jsonl')) throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' });
+      return openSync(file, ...rest);
+    };
+    const watch = D.studio({ ...f.dirs });
+    watch.poll();
+    assert.deepStrictEqual(watch.state().codex.map((r) => r.issue), [47]);
+    assert.strictEqual(watch.state().claude[0].tokens.total, 2);
+    // It can be read again later, and then shows.
+    fs.openSync = openSync;
+    fs.appendFileSync(path.join(f.claudeDir, 's.jsonl'), jsonl(reply('m2', usage(1, 1, 0, 0))));
+    watch.poll();
+    assert.strictEqual(watch.state().claude[0].tokens.total, 4);
+  } finally {
+    fs.openSync = openSync;
+    f.done();
+  }
+});
+
 test('read-only: polling writes, changes and deletes nothing', () => {
   const f = folders();
   const names = ['writeFileSync', 'appendFileSync', 'mkdirSync', 'rmSync', 'unlinkSync', 'renameSync', 'copyFileSync', 'truncateSync', 'utimesSync', 'writeSync', 'writeFile', 'appendFile'];
@@ -836,6 +909,25 @@ test('the server: this PC only, GET only, and only names, times, states and numb
   const f = folders();
   sessionLog(f, 's', [record('s', 'start', process.pid, 'producer')]);
   fs.writeFileSync(path.join(f.claudeDir, 's.jsonl'), jsonl([{ type: 'agent-setting', agentSetting: 'producer' }, prompt(), ...reply('m1', usage(1, 2, 3, 4))]));
+  // Name, model and effort fields holding file paths, commands and email addresses, next to real
+  // names that must still pass.
+  sessionLog(f, 'bad', [record('bad', 'start', process.pid, 'someone@example.test')]);
+  fs.writeFileSync(path.join(f.claudeDir, 'bad.jsonl'), jsonl([
+    { type: 'agent-setting', agentSetting: 'C:/outside/private.txt' },
+    { type: 'assistant', timestamp: new Date().toISOString(), message: { id: 'b1', model: 'notes.txt', usage: usage(1, 1, 0, 0) } },
+  ]));
+  const subs = path.join(f.claudeDir, 's', 'subagents');
+  fs.mkdirSync(subs, { recursive: true });
+  for (const [id, type] of [['agent-a', '/home/someone/.ssh/id_rsa'], ['agent-b', 'codex:codex-rescue'], ['agent-c', 'rm -rf x']]) {
+    fs.writeFileSync(path.join(subs, `${id}.jsonl`), jsonl([prompt()]));
+    fs.writeFileSync(path.join(subs, `${id}.meta.json`), JSON.stringify({ agentType: type, finished: false }));
+  }
+  const at = new Date().toISOString();
+  fs.writeFileSync(path.join(f.codexDir, 'run.jsonl'), jsonl([
+    { at, event: 'start', role: 'C:/outside/role.txt', issue: 47, pr: 49 },
+    { at, event: 'helper-started', threadId: 'h1', name: 'C:/outside/private.txt', model: 'cat private.txt', effort: 'someone@example.test', status: null },
+    { at, event: 'helper-started', threadId: 'h2', name: 'root/explorer_1', model: 'gpt-6.1-sol', effort: 'xhigh', status: null },
+  ]));
   const watch = D.studio({ ...f.dirs });
   watch.poll();
   const srv = D.start(watch, { port: 0, host: '127.0.0.1' });
@@ -859,7 +951,13 @@ test('the server: this PC only, GET only, and only names, times, states and numb
     assert.ok(!/<script[^>]+src=|<link|@import|https?:\/\//i.test(page.body), 'the page loads nothing from elsewhere');
     const state = await request('GET', '/state', `localhost:${port}`);
     assert.strictEqual(state.status, 200);
-    assert.deepStrictEqual(JSON.parse(state.body).claude[0].tokens, { input: 1, output: 2, cache: 7, total: 10 });
+    const s = JSON.parse(state.body);
+    assert.deepStrictEqual(s.claude.find((a) => a.name === 'producer').tokens, { input: 1, output: 2, cache: 7, total: 10 });
+    for (const bad of ['private.txt', 'cat ', '@example', 'C:/', '/home/', 'id_rsa', 'notes.txt', 'rm -rf', 'role.txt']) {
+      assert.ok(!state.body.includes(bad), `${bad} reached the page`);
+    }
+    assert.deepStrictEqual(s.claude.map((a) => [a.name, a.model]).sort(), [['codex:codex-rescue', null], ['main session', null], ['producer', 'claude-opus-5-5'], ['subagent', null], ['subagent', null]]);
+    assert.deepStrictEqual(s.codex.map((r) => [r.role, r.helpers.map((h) => [h.name, h.model, h.effort])]), [[null, [['helper', null, null], ['explorer_1', 'gpt-6.1-sol', 'xhigh']]]]);
     assert.strictEqual((await request('GET', '/state', 'example.com')).status, 403);
     assert.strictEqual((await request('GET', '/', `evil.example:${port}`)).status, 403);
     assert.strictEqual((await request('POST', '/state')).status, 405);
