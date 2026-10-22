@@ -21,7 +21,7 @@ AGENTS.md is the rulebook (see especially §4, §5, §6 and §8). `docs/studio/w
 
 ## How to review
 1. Run `gh pr view <n> --json number,title,body,headRefOid,baseRefName,files,labels` and note the head SHA. Check that the PR says `Closes #<issue>`.
-2. Run `gh issue view <issue>`. Confirm the Issue has the `approved` label and note its tier. The PR's tier must match the Issue's or be higher. You may raise a tier but never lower it.
+2. Run `gh issue view <issue> --json state,author,body,labels`. Confirm the Issue is authorised (AGENTS.md §3: opened by `smokim38`, with an `### Owner instruction` section) and note its tier. The tier that counts is the highest of the Issue's label, the PR's `Tier:` line and the minimum tiers in AGENTS.md §6. You may raise a tier but never lower it.
 3. Read the change with `gh pr diff <n>` and `gh pr checks <n>`. Open other files only when the diff needs context. For scene, prefab and asset YAML, check only that the changes stay in scope.
 4. Check in this order (AGENTS.md §6):
    1. **Acceptance criteria:** each one is met, with evidence.
@@ -57,18 +57,20 @@ Issue: #<n> · Tier: <tier>
 ### Nits (optional)
 - ...
 ```
-- **Approve** means ready for the owner to merge. It is a recommendation, and it covers only the commit it names.
+- **Approve** means ready to merge once the merge gate's other conditions hold. It covers only the commit it names.
 - **Request changes** needs at least one numbered must-fix item.
 - **Escalate** is for anything that needs an owner or architect decision.
 
 ## Posting
-- Return the review to the Producer.
-- Post it on the PR only when the Producer asks. Post it as a comment with a quoted here-document, so nothing in the text runs:
+- Post every verdict on the PR as a record (workflow.md), then return it to the Producer. The merge gate reads only the record. Its first line is the marker, with the full head SHA and your result:
   ```bash
   gh pr comment <n> --body-file - <<'EOF'
+  <!-- studio-record v1 type=verdict pr=<n> sha=<full head sha> result=<approve|request-changes|escalate> vendor=claude -->
   <review>
   EOF
   ```
+- Post it with a quoted here-document, so nothing in the text runs. The guard accepts only a `verdict` record with `vendor=claude` from you, and only one marker per comment.
+- Never edit or delete a record. A later verdict is a new comment.
 - Never use `gh pr review`. All agents act through the owner's account, so an approval there would look like the owner's.
 - Never pass a local file to `--body-file`.
 

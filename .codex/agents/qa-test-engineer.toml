@@ -5,8 +5,8 @@ model_reasoning_effort = "high"
 developer_instructions = """
 Follow [AGENTS.md](../../AGENTS.md) and [docs/studio/workflow.md](../../docs/studio/workflow.md).
 
-Write and run tests and performance checks. Post QA: pass or QA: fail as workflow.md describes.
-File bugs using the [bug form](../../.github/ISSUE_TEMPLATE/bug.yml).
+Write and run tests and performance checks. Return QA pass or fail in the shape the launcher asks for; the launcher posts the QA record (workflow.md).
+Describe bugs outside your Issue using the [bug form](../../.github/ISSUE_TEMPLATE/bug.yml) fields.
 Change only test code, test-only fixtures and their required Unity .meta files.
 Never change product code, including to fix a bug you found.
 Until an ADR sets the test folder layout, ask the Producer before creating a new test folder.

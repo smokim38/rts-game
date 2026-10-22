@@ -7,11 +7,18 @@
 // studio repository by path, so there is no scope check to get around.
 // Claude Code sends the tool call as JSON on stdin. Exit code 2 blocks the call and shows
 // stderr to Claude. Errors also exit 2, and the managed hook sets onFailure "block".
+// Two Producer commands need GitHub as well: the merge form and the Codex launcher form. For
+// those the guard queries GitHub read-only and blocks if any lookup fails or is incomplete.
 // Tests: node --test .claude/hooks/guard.test.js
 
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { execFile } = require('node:child_process');
+
+const OWNER = 'smokim38';
+const REPO = 'smokim38/rts-game';
 
 const SHELL_TOOLS = new Set(['Bash', 'PowerShell']);
 const FILE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
@@ -278,6 +285,7 @@ function parse(src, dialect, depth = 0, strict = true) {
     s.tokens.some((t, i) => isCommandToken(t) && (INTERPRETERS.has(cmdName(t.text)) || (i === 0 && t.text === '.'))),
   );
   const segments = top.segments.map((s) => ({ ...s, depth }));
+  const parts = [...top.parts];
   let hasSubst = top.hasSubst;
   if (runsCode) {
     // Code handed to another shell or interpreter. git, gh and downloads must run at the top level,
@@ -290,21 +298,22 @@ function parse(src, dialect, depth = 0, strict = true) {
     if (!p.subst) continue;
     const inner = parse(p.text, dialect, depth + 1, strict);
     segments.push(...inner.segments);
+    parts.push(...inner.parts);
     hasSubst ||= inner.hasSubst;
   }
-  return { segments, hasSubst };
+  return { segments, parts, hasSubst };
 }
 
 // git, gh or a downloader run as a command: the name stands alone, optionally with a path in
 // front or an executable extension, and ends at a space, quote, separator or the end.
 // Names inside other words (`setup-git-hooks.md`, `gitleaks`) don't count.
-const RUNS_TOOL = /(^|[^\w.-])(git(-[\w-]+)?|gh|curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod)(\.(exe|cmd|bat))?(?=$|[\s'"`;&|()])/i;
+const RUNS_TOOL = /(^|[^\w.-])(git(-[\w-]+)?|gh|curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod|codex|claude)(\.(exe|cmd|bat|ps1|js))?(?=$|[\s'"`;&|()])/i;
 
 function checkInterpreterCode(text, depth) {
   // Also test the text without quotes and escapes, so `g\it` or `"g"it` still read as git.
   const flat = text.replace(/["'`^\\]/g, '');
   if (RUNS_TOOL.test(text) || RUNS_TOOL.test(flat)) {
-    block('run git, gh and downloads directly, not inside code passed to another shell or interpreter');
+    block('run git, gh and downloads directly, not inside code passed to another shell or interpreter (Codex and Claude never run from code)');
   }
   for (const dialect of ['Bash', 'PowerShell']) {
     const inner = parse(text, dialect, depth + 1, false);
@@ -339,11 +348,19 @@ function commandIndex(seg) {
 
 // ---------- git ----------
 
+// A long option or any abbreviation of it (git accepts unambiguous prefixes), with or without `=value`.
+const longOption = (t, names) => {
+  const m = /^--([a-z][a-z-]*)(=|$)/i.exec(t);
+  return Boolean(m) && names.some((n) => n.startsWith(m[1].toLowerCase()));
+};
+// A short option alone, in a cluster or with its value attached (`-u x`, `-qu x`, `-ux`).
+const shortOption = (t, letters) => /^-[A-Za-z]/.test(t) && [...t.slice(1)].some((c) => letters.includes(c));
+
 function parseGitArgs(a) {
   let i = 0;
   while (i < a.length && a[i].startsWith('-')) {
     const t = a[i];
-    if (t === '-c' || t === '--config-env' || t.startsWith('--config-env=')) {
+    if (t.startsWith('-c') || t.startsWith('--config-env')) {
       block('`git -c` and `--config-env` change git config for the command; git config changes are forbidden (AGENTS.md §5)');
     }
     if (t === '--exec-path' || t.startsWith('--exec-path=')) block('`git --exec-path` changes which programs git runs');
@@ -418,7 +435,7 @@ function checkGit(a, alone) {
     block('git needs a command');
   }
   if (!GIT_COMMANDS.has(sub)) block(`\`git ${sub}\` is not a built-in git command; aliases and git-* programs can't be checked`);
-  if (rest.some((t) => /^--(upload-pack|receive-pack|exec)(=|$)/.test(t))) block('git options that run another program are not allowed');
+  if (rest.some((t) => longOption(t, ['upload-pack', 'receive-pack', 'exec']))) block('git options that run another program are not allowed');
   if (HOOKED.has(sub) && !alone) {
     block(`run \`git ${sub}\` as the only command in its call, with nothing before it, so nothing can change what the git hooks run with`);
   }
@@ -430,16 +447,26 @@ function checkGit(a, alone) {
   if (sub === 'remote' && !isRemoteRead(rest)) {
     block('changing remotes is a git config change (AGENTS.md §5). Allowed: `git remote -v`, `git remote get-url <name>`, `git remote show <name>`');
   }
-  if (sub === 'clone' && rest.some((t) => /^(-c|--config|-u)(=|$)|^--config=/.test(t))) block('`git clone` config options are not allowed');
-  if (['diff', 'log', 'show'].includes(sub) && rest.some((t) => /^--(output|ext-diff|textconv)(=|$)/.test(t))) {
+  // A template folder installs git hooks into the new repository.
+  const cloneOption = (t) => longOption(t, ['config', 'template']) || (sub === 'clone' && shortOption(t, 'cu'));
+  if ((sub === 'clone' || sub === 'init') && rest.some(cloneOption)) block(`\`git ${sub}\` config, template and upload-pack options are not allowed`);
+  if (sub === 'ls-remote' && rest.some((t) => shortOption(t, 'u'))) block('`git ls-remote -u` runs another program');
+  const action = rest.find((t) => !t.startsWith('-'));
+  if ((sub === 'maintenance' && action !== 'run') || (sub === 'lfs' && ['install', 'uninstall'].includes(action))) {
+    block(`\`git ${sub} ${action ?? ''}\` changes the global git config; git config changes are forbidden (AGENTS.md §5)`);
+  }
+  // Rewriting refs could make a local `origin/main` lie about what was merged.
+  const symbolicRefWrite = sub === 'symbolic-ref' && (rest.some((t) => /^(-d|--delete|-m)$/.test(t)) || rest.filter((t) => !t.startsWith('-')).length > 1);
+  if (sub === 'update-ref' || sub === 'replace' || symbolicRefWrite) block(`\`git ${sub}\` rewrites refs; the guard never lets refs be rewritten by hand`);
+  if (['diff', 'log', 'show'].includes(sub) && rest.some((t) => longOption(t, ['output', 'ext-diff', 'textconv']))) {
     block(`\`git ${sub}\` may not write files or run external diff programs`);
   }
   const runsCommands =
-    (sub === 'rebase' && rest.some((t) => /^(-x|--exec)(=|$)/.test(t) || /^-[A-Za-z]*x/.test(t))) ||
+    (sub === 'rebase' && rest.some((t) => shortOption(t, 'x'))) ||
     (sub === 'bisect' && rest.includes('run')) ||
     (sub === 'submodule' && rest.includes('foreach')) ||
-    (sub === 'difftool' && rest.some((t) => /^(-x|--extcmd)(=|$)/.test(t))) ||
-    (sub === 'grep' && rest.some((t) => /^(-O|--open-files-in-pager)/.test(t)));
+    (sub === 'difftool' && rest.some((t) => shortOption(t, 'x') || longOption(t, ['extcmd']))) ||
+    (sub === 'grep' && rest.some((t) => shortOption(t, 'O') || longOption(t, ['open-files-in-pager'])));
   if (runsCommands) block(`this \`git ${sub}\` form runs other commands, which the guard can't check`);
 }
 
@@ -453,6 +480,8 @@ const GH_SHORT_VALUES = {
   'pr create': 'aBbFHlmprRtT',
   'pr edit': 'BbFRt',
   'pr review': 'bFR',
+  'pr comment': 'bFR',
+  'issue comment': 'bFR',
   api: 'FfHpqtX',
 };
 const GH_LONG_VALUES = new Set([
@@ -495,15 +524,13 @@ function flagValue(e, i) {
   return eq > 0 ? { name: t.slice(0, eq), value: t.slice(eq + 1), next: i } : { name: t, value: e[i + 1] ?? '', next: i + 1 };
 }
 
-function hasApprovedLabel(e) {
-  const flags = new Set(['--label', '-l', '--add-label', '--remove-label']);
-  return e.some((t, i) => {
-    const { name, value } = flagValue(e, i);
-    return flags.has(name) && value.split(',').some((v) => v.trim().toLowerCase() === 'approved');
-  });
-}
-
 const approvesPr = (e) => e.some((t) => t === '-a' || /^--approve(=|$)/.test(t));
+
+// The Producer's two gated commands, each exact and alone in its call (AGENTS.md §6, §5).
+const MERGE_FORM = '`gh pr merge <n> --repo smokim38/rts-game --squash --delete-branch --match-head-commit <sha>`';
+const MERGE_COMMAND = /^gh pr merge (\d+) --repo smokim38\/rts-game --squash --delete-branch --match-head-commit ([0-9a-f]{40})$/;
+const LAUNCH_FORM = '`node tools/codex-launch.js <role> <issue> [<pr>]`';
+const LAUNCH_COMMAND = /^node tools\/codex-launch\.js (?:(gameplay-programmer|tech-artist) (\d+)|(qa-test-engineer|reviewer) (\d+) (\d+))$/;
 
 function checkGhApi(e) {
   const valueFlags = new Set(['-H', '--header', '-q', '--jq', '-t', '--template', '--hostname', '--cache', '-p', '--preview']);
@@ -539,14 +566,19 @@ function checkGhApi(e) {
   }
 }
 
-function checkGh(a) {
+// The first three words of a gh command, skipping the repository option.
+function ghWords(a) {
   const words = [];
   for (let i = 0; i < a.length && words.length < 3; i++) {
     const t = a[i];
     if (t === '-R' || t === '--repo') i++;
     else if (!t.startsWith('-')) words.push(t.toLowerCase());
   }
-  const [group, action, third] = words;
+  return words;
+}
+
+function checkGh(a, allowMerge) {
+  const [group, action, third] = ghWords(a);
   if (group === undefined) return;
   if (!GH_COMMANDS.has(group)) block(`\`gh ${group}\` is not a built-in gh command; aliases and extensions can't be checked`);
   const forbidden = {
@@ -562,17 +594,18 @@ function checkGh(a) {
     repo: ['edit', 'delete', 'rename', 'archive', 'unarchive', 'set-default', 'sync'],
   };
   if (Object.hasOwn(forbidden, group) && (forbidden[group] === null || forbidden[group].includes(action))) {
-    const why = group === 'label' ? 'labels are managed by the owner; `approved` is owner-only' : 'login, secrets, settings and installs are owner-only';
+    const why = group === 'label' ? 'the label set is managed by the owner' : 'login, secrets, settings and installs are owner-only';
     block(`\`gh ${group}${forbidden[group] ? ` ${action}` : ''}\` is forbidden: ${why} (AGENTS.md §5)`);
   }
   if (group === 'repo' && action === 'deploy-key' && ['add', 'delete'].includes(third)) block('deploy keys are repository settings (AGENTS.md §5)');
+  if (['codespace', 'copilot', 'agent-task'].includes(group)) block(`\`gh ${group}\` opens remote shells or starts other AI agents; the studio doesn't use it`);
+  // `gh repo clone … -- <git flags>`, `gh codespace ssh -- <ssh flags>`: passed on unchecked.
+  const dashes = a.indexOf('--');
+  if (dashes >= 0 && dashes < a.length - 1) block('gh passes arguments after `--` to other programs (git, ssh), which the guard can’t check');
   const e = expandFlags(a, GH_SHORT_VALUES[`${group} ${action}`] ?? GH_SHORT_VALUES[group] ?? 'R');
-  if (group === 'pr' && action === 'merge') block('only the owner merges pull requests (AGENTS.md §0)');
+  if (group === 'pr' && action === 'merge' && !allowMerge) block(`only the Producer merges, with exactly ${MERGE_FORM} as a call of its own (AGENTS.md §0)`);
   if (group === 'pr' && action === 'review' && approvesPr(e)) {
     block('agents never approve on GitHub; post the review as a comment (AGENTS.md §0, §6)');
-  }
-  if ((group === 'issue' || group === 'pr') && (action === 'create' || action === 'edit') && hasApprovedLabel(e)) {
-    block('only the owner adds or removes the `approved` label (AGENTS.md §3)');
   }
   if ((group === 'issue' || group === 'pr') && action === 'comment' && e.some((t) => /^--(edit-last|delete-last)/.test(t))) {
     block('agents share the owner’s account, so they never edit or delete existing comments');
@@ -615,11 +648,12 @@ function isProseSegment(seg) {
 // system environment variables.
 const ENV_STORE = /(^|[:{])env:|environment::|\b(hkcu|hkey_current_user|hklm|hkey_local_machine)\b.*[\\/]environment\b/;
 // A variable named as a word, not read through `$NAME` or `${NAME}` (shell names are case-sensitive).
-const ENV_NAME = /(?<![$\w{:])(GIT_[A-Z0-9_]+|GITLEAKS_[A-Z0-9_]*|PATH|PATHEXT)(?!\w)/;
+// LESSOPEN and LESSCLOSE make `less` run a program on each file it reads.
+const ENV_NAME = /(?<![$\w{:])(GIT_[A-Z0-9_]+|GITLEAKS_[A-Z0-9_]*|PATH|PATHEXT|LESSOPEN|LESSCLOSE)(?!\w)/;
 
 function checkEnvironment(seg, command) {
-  const why = 'setting GIT_*, GITLEAKS_* or PATH changes how git and the secret scan run (AGENTS.md §5)';
-  const overrides = /^(\$?env:)?(git_\w*|gitleaks_\w*|path|pathext)(\+?=|$)/;
+  const why = 'setting GIT_*, GITLEAKS_*, PATH or LESSOPEN changes what git, the secret scan or `less` run (AGENTS.md §5)';
+  const overrides = /^(\$?env:)?(git_\w*|gitleaks_\w*|path|pathext|lessopen|lessclose)(\+?=|$)/;
   const quiet = isReadSegment(seg) || isProseSegment(seg);
   seg.tokens.forEach((t, i) => {
     if (t.redirect) return;
@@ -633,12 +667,36 @@ function checkEnvironment(seg, command) {
   if (/setenvironmentvariable/i.test(command) && /(git_|gitleaks_|\bpath\b)/i.test(command)) block(why);
 }
 
-function checkSegment(seg, input, dialect, command, total) {
+// Codex, nested Claude sessions and the launcher, by any path, extension or package version, and
+// their npm packages by any path. Codex runs only through the launcher, and only in the
+// Producer's exact launcher form (AGENTS.md §5).
+const AGENT_PROGRAMS = new Set(['codex', 'claude', 'codex-launch']);
+const AGENT_PACKAGE = /(^|[/=])(@openai\/codex|@anthropic-ai\/claude-code)(@[^/]*)?(\/|$)/;
+
+function isAgentProgram(text) {
+  const p = norm(text);
+  if (AGENT_PACKAGE.test(p)) return true;
+  return AGENT_PROGRAMS.has(p.split('/').pop().replace(/@[^@]*$/, '').replace(/\.(exe|cmd|bat|ps1|js|mjs|cjs)$/, ''));
+}
+
+// The program a token names, or one an assignment or option value runs: `EDITOR=codex`,
+// `--x=claude …`. A value can hold a whole command (`GH_BROWSER="npx claude"`, or PowerShell's
+// `$env:GH_BROWSER = 'npx claude'`), so every word counts. Programs that run a value strip its
+// quotes and escapes first (`npx "claude"`, `cl""aude`, `cl\aude`), so those forms are checked too.
+function namesAgent(text) {
+  if (isAgentProgram(text)) return true;
+  const unquoted = text.replace(/["'`]/g, '');
+  const unescaped = unquoted.replace(/\\(.)/g, '$1');
+  return [text, unquoted, unescaped].some((v) => v.split(/[\s=]+/).some((w) => w && isAgentProgram(w)));
+}
+
+function checkSegment(seg, input, dialect, command, total, gate) {
   const isPwsh = hasCommand(seg, new Set(['pwsh', 'powershell']));
   checkEnvironment(seg, command);
   for (const t of seg.tokens.filter(isWord)) {
     const lower = norm(t.text);
-    if (lower.includes('--no-veri')) block('`--no-verify` skips the git hooks, including the gitleaks secret scan (AGENTS.md §5)');
+    // Git accepts any unambiguous prefix of a long option, so every prefix down to `--no-v` counts.
+    if (lower.includes('--no-veri') || /^--no-v(e(r(i(fy?)?)?)?)?(=|$)/.test(lower)) block('`--no-verify` skips the git hooks, including the gitleaks secret scan (AGENTS.md §5)');
     if (isPwsh && /^-(e|ec|ea|en\w*)$/.test(lower)) block('an encoded PowerShell command cannot be checked');
     if (lower.includes('hookspath') && !isGitConfigRead(seg)) block('core.hooksPath must stay `.githooks`; git config changes are forbidden (AGENTS.md §5)');
   }
@@ -673,18 +731,27 @@ function checkSegment(seg, input, dialect, command, total) {
       block('`setx` and registry changes set environment variables for later sessions; they are owner settings');
     }
     if (['new-psdrive', 'ndr', 'mount'].includes(name)) block('a new drive can hide a path from the guard');
+    // Read commands with options that run another program on what they read.
+    if (name === 'rg' && rest.some((t) => /^--pre(-glob)?(=|$)/.test(t.text))) block('`rg --pre` runs another program on each file, which the guard can’t check');
+    if (name === 'find' && rest.some((t) => /^-(exec|execdir|ok|okdir)$/i.test(t.text))) block('`find -exec` and `-ok` run other programs, which the guard can’t check');
   }
   const headName = ci >= 0 ? cmdName(seg.tokens[ci].text) : '';
   seg.tokens.forEach((t, i) => {
     if (!isCommandToken(t)) return;
     const name = cmdName(t.text);
+    // As data for a program that doesn't run it (`rg codex`, `git commit -m claude`), the name is
+    // harmless. Assignments before the program (`EDITOR=codex git commit`) are never data.
+    const asData = i > ci && (NON_RUNNERS.has(headName) || headName === 'git' || headName === 'gh');
+    if (namesAgent(t.text) && !asData && gate?.kind !== 'launch') {
+      block(`Codex runs only through the Producer’s ${LAUNCH_FORM}, and Claude sessions are never started from a shell (AGENTS.md §5)`);
+    }
     if (name !== 'git' && name !== 'gh') return;
     if (i !== ci && NON_RUNNERS.has(headName)) return; // only data for a program that doesn't run it
     const after = seg.tokens.slice(i + 1);
     const discards = (x, k) => after[k - 1]?.redirect && NULL_TARGET.test(x.text); // 2>$null
     if (after.some((x, k) => x.dynamic && !discards(x, k))) block(`\`${name}\` arguments built from variables or expansions can’t be checked; write them out`);
     if (name === 'git') checkGit(argsAfter(seg.tokens, i), total === 1 && i === 0);
-    else checkGh(argsAfter(seg.tokens, i));
+    else checkGh(argsAfter(seg.tokens, i), gate?.kind === 'merge');
   });
   if (dialect === 'PowerShell' && seg.tokens.some((t) => t.text === '--%')) block('the PowerShell stop-parsing token `--%` hides arguments from the guard');
 }
@@ -742,15 +809,136 @@ function checkReviewerShell(segments, hasSubst) {
   }
 }
 
+// ---------- records ----------
+// Review, QA and owner-approval evidence: a PR comment whose first line is the marker
+// (docs/studio/workflow.md). The merge gate reads them; these rules decide who may post which.
+
+const RECORD = /studio-record/i;
+const MARKER = /^<!-- studio-record v1 type=(verdict|qa|owner-approval) pr=(\d+) sha=([0-9a-f]{40}) result=([a-z-]+)(?: vendor=(claude|codex))? -->$/;
+const RESULTS = { verdict: ['approve', 'request-changes', 'escalate'], qa: ['pass', 'fail'], 'owner-approval': ['approved'] };
+// An owner-approval record's second line quotes the owner's reply and its date (.claude/agents/producer.md).
+const APPROVAL = /^Owner approval for PR #(\d+) at ([0-9a-f]{40}): "(.+)" \(Producer session, (20\d\d-[01]\d-[0-3]\d)\)$/;
+
+// The record a comment body holds, or null if it is malformed: one marker, on the first line.
+function parseRecord(body) {
+  const lines = body.replace(/\r\n/g, '\n').split('\n');
+  if ((lines.join('\n').match(/studio-record/gi) ?? []).length !== 1) return null;
+  const m = MARKER.exec(lines[0]);
+  if (!m) return null;
+  const [, type, pr, sha, result, vendor] = m;
+  if (!RESULTS[type].includes(result) || (type === 'verdict') !== Boolean(vendor)) return null;
+  if (type === 'owner-approval') {
+    const a = APPROVAL.exec(lines[1] ?? '');
+    if (!a || a[1] !== pr || a[2] !== sha || !/\bapproved\b/i.test(a[3])) return null;
+  }
+  return { type, pr: Number(pr), sha, result, vendor: vendor ?? '' };
+}
+
+// A comment's text when the guard can read all of it: a literal --body, or `--body-file -`
+// fed by the call's one quoted here-document. Otherwise null.
+function commentBody(seg, e, parts) {
+  let body = null;
+  let stdin = false;
+  for (let i = 0; i < e.length; i++) {
+    const { name, value, next } = flagValue(e, i);
+    if (name === '--body' || name === '-b') {
+      if (body !== null) return null;
+      body = value;
+    } else if (name === '--body-file' || name === '-F') {
+      if (value !== '-') return null;
+      stdin = true;
+    } else if (['--editor', '-e', '--web', '-w'].includes(name)) return null;
+    else continue;
+    i = next;
+  }
+  const heredocs = seg.tokens.filter((t) => t.redirect && t.text === '<<');
+  if (!stdin) return heredocs.length === 0 ? body : null;
+  const docs = parts.filter((p) => p.heredoc);
+  return body === null && heredocs.length === 1 && heredocs[0].literal && docs.length === 1 ? docs[0].text : null;
+}
+
+// The Producer posts only owner-approval records and the code-reviewer only its own verdicts
+// (vendor=claude). The launcher posts Codex verdicts and QA records itself. Other sessions post none.
+function checkRecordComments(segments, parts, role) {
+  const strict = role === 'producer' || role === 'code-reviewer';
+  for (const seg of segments) {
+    const i = commandIndex(seg);
+    if (i < 0 || cmdName(seg.tokens[i].text) !== 'gh') continue;
+    const a = argsAfter(seg.tokens, i);
+    const [group, action, n] = ghWords(a);
+    if ((group !== 'pr' && group !== 'issue') || action !== 'comment') continue;
+    const body = commentBody(seg, expandFlags(a, GH_SHORT_VALUES[`${group} comment`]), parts);
+    if (strict && (body === null || segments.length !== 1)) {
+      block(`${role} comments must be a literal --body or \`--body-file -\` with a quoted here-document (<<'EOF'), as a call of their own, so the guard can read them`);
+    }
+    const text = body ?? [...seg.tokens.map((t) => t.text), ...parts.map((p) => p.text)].join('\n');
+    if (!RECORD.test(text)) continue;
+    const record = body === null ? null : parseRecord(body);
+    const mine = record && group === 'pr' && record.pr === Number(n) &&
+      ((role === 'producer' && record.type === 'owner-approval') || (role === 'code-reviewer' && record.type === 'verdict' && record.vendor === 'claude'));
+    if (!mine) {
+      block(
+        'only the code-reviewer posts verdict records (vendor=claude), only the Producer posts owner-approval records, and the launcher posts the rest; ' +
+          'one well-formed marker on the first line, naming this PR, and for an owner approval the quoted reply and date on the second line (docs/studio/workflow.md)',
+      );
+    }
+  }
+}
+
+// ---------- the Producer ----------
+
+// Git Bash writes drive paths as /c/dev/...
+const fromMsys = (p) => (process.platform === 'win32' ? p.replace(/^\/([a-z])(?=\/|$)/i, '$1:') : p);
+const samePath = (a, b) => norm(path.resolve(a)).replace(/\/$/, '') === norm(path.resolve(b)).replace(/\/$/, '');
+const projectRoot = (input) => path.resolve(process.env.CLAUDE_PROJECT_DIR || input.cwd || '.');
+
+// The merge form or the launcher form, exact and alone in the call, from the Producer only.
+function producerGate(command, input) {
+  if (input.agent_type !== 'producer') return null;
+  const c = command.trim();
+  let m = MERGE_COMMAND.exec(c);
+  if (m) return { kind: 'merge', pr: Number(m[1]), sha: m[2] };
+  m = LAUNCH_COMMAND.exec(c);
+  if (m) return { kind: 'launch', role: m[1] ?? m[3], issue: Number(m[2] ?? m[4]), pr: m[5] ? Number(m[5]) : null };
+  return null;
+}
+
+// Strict: only git, gh and `cd` to the repository root, run directly, with no file redirects.
+// Everything else (interpreters, scripts, programs given by path, read commands) is blocked, so
+// the launcher form is the only way the Producer's shell can start Codex.
+function checkProducerShell(segments, hasSubst, input) {
+  const allowed = `the Producer’s shell runs only git, gh, ${LAUNCH_FORM} and \`cd\` to the repository root; read files with Read, Grep and Glob (.claude/agents/producer.md)`;
+  if (hasSubst) block('the Producer’s commands may not use command substitution');
+  const root = projectRoot(input);
+  for (const seg of segments) {
+    if (commandIndex(seg) !== 0 || !/^(git|gh|cd)$/i.test(seg.tokens[0].text)) block(allowed);
+    seg.tokens.forEach((t, k) => {
+      if (!t.redirect || t.dup || t.text === '<<') return;
+      if (t.text.startsWith('>') && NULL_TARGET.test(seg.tokens[k + 1]?.text ?? '')) return;
+      block('the Producer’s commands may not redirect to or from files');
+    });
+    if (seg.tokens[0].text.toLowerCase() === 'cd') {
+      const args = argsAfter(seg.tokens, 0);
+      const target = args.length === 1 && !seg.tokens.some((t) => t.dynamic) ? path.resolve(input.cwd || root, fromMsys(args[0])) : null;
+      if (target === null || !samePath(target, root)) block('the Producer changes directory only to the repository root; use `git -C <worktree>` for a launcher worktree');
+    }
+  }
+}
+
+// Returns the gate to check against GitHub for the Producer's merge and launcher forms.
 function checkShell(command, dialect, input) {
-  const { segments, hasSubst } = parse(command, dialect);
-  for (const seg of segments) checkSegment(seg, input, dialect, command, segments.length);
-  checkDownloadPipe(segments, command);
+  const { segments, parts, hasSubst } = parse(command, dialect);
   const role = input.agent_type;
+  const gate = producerGate(command, input);
+  for (const seg of segments) checkSegment(seg, input, dialect, command, segments.length, gate);
+  checkDownloadPipe(segments, command);
+  checkRecordComments(segments, parts, role);
+  if (role === 'producer' && !gate) checkProducerShell(segments, hasSubst, input);
   if (Object.hasOwn(LANES, role ?? '')) {
     if (role !== 'code-reviewer') block(`the ${role} role has no shell access (.claude/agents/${role}.md)`);
     checkReviewerShell(segments, hasSubst);
   }
+  return gate;
 }
 
 // ---------- file edits ----------
@@ -797,22 +985,335 @@ function checkFile(input) {
   }
 }
 
+// The checks that need no network. Returns the gate for a Producer merge or launch, else null.
 function check(input) {
   if (!input || typeof input !== 'object') block('the hook input is not a JSON object');
   const tool = input.tool_name;
-  if (!SHELL_TOOLS.has(tool) && !FILE_TOOLS.has(tool)) return;
-  if (SHELL_TOOLS.has(tool)) {
-    const command = input.tool_input?.command;
-    if (typeof command !== 'string') block('the tool input has no command');
-    checkShell(command, tool, input);
-  } else {
+  if (!SHELL_TOOLS.has(tool) && !FILE_TOOLS.has(tool)) return null;
+  if (FILE_TOOLS.has(tool)) {
     checkFile(input);
+    return null;
+  }
+  const command = input.tool_input?.command;
+  if (typeof command !== 'string') block('the tool input has no command');
+  return checkShell(command, tool, input);
+}
+
+// ---------- GitHub lookups ----------
+// Read-only queries for the fixed repository, never the local remote or local refs. Every list
+// is read in full: a count that doesn't add up, an error or a timeout blocks. An Issue's labels
+// and body edits are read in one page of 100 each, so an Issue with more of either blocks.
+
+const REPO_API = `repos/${REPO}`;
+const LOOKUP_MS = 12000; // inside the hook's 15-second timeout
+
+// Windows starts a bare program name from the current folder before PATH, so gh is run by its
+// absolute path from an absolute PATH entry.
+function onPath(name) {
+  const file = process.platform === 'win32' ? `${name}.exe` : name;
+  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+    if (!path.isAbsolute(dir)) continue;
+    const candidate = path.join(dir, file);
+    if (fs.statSync(candidate, { throwIfNoEntry: false })?.isFile()) return candidate;
+  }
+  return null;
+}
+
+function runGh(args) {
+  return new Promise((resolve, reject) => {
+    const gh = onPath('gh');
+    if (!gh) {
+      reject(new Error('gh is not on PATH'));
+      return;
+    }
+    execFile(gh, args, { timeout: LOOKUP_MS, maxBuffer: 64 * 1024 * 1024, windowsHide: true }, (err, stdout) => {
+      if (err) reject(new Error(`gh api ${args[1]} failed`));
+      else resolve(stdout);
+    });
+  });
+}
+
+const PR_QUERY = `query($n:Int!){repository(owner:"smokim38",name:"rts-game"){pullRequest(number:$n){
+  state baseRefName headRefOid body changedFiles commits{totalCount}
+  closingIssuesReferences(first:10){totalCount nodes{number repository{nameWithOwner}}}}}}`;
+const COMMENTS_QUERY = `query($n:Int!,$endCursor:String){repository(owner:"smokim38",name:"rts-game"){pullRequest(number:$n){
+  comments(first:100,after:$endCursor){totalCount pageInfo{hasNextPage endCursor}
+  nodes{author{login} body createdAt lastEditedAt includesCreatedEdit}}}}}`;
+const ISSUE_QUERY = `query($n:Int!){repository(owner:"smokim38",name:"rts-game"){issue(number:$n){
+  state author{login} body labels(first:100){totalCount nodes{name}}
+  userContentEdits(first:100){totalCount nodes{editor{login}}}}}}`;
+
+// `run` takes gh's arguments and resolves to its output; tests pass a stub.
+function makeGitHub(run = runGh) {
+  const api = async (endpoint, ...args) => JSON.parse(await run(['api', endpoint, '--hostname', 'github.com', ...args]));
+  const graphql = (query, n, paginate = false) => api('graphql', ...(paginate ? ['--paginate', '--slurp'] : []), '-F', `n=${n}`, '-f', `query=${query}`);
+  const pages = async (endpoint) => {
+    const list = await api(endpoint, '--paginate', '--slurp');
+    if (!Array.isArray(list) || list.length === 0) throw new Error(`no pages from ${endpoint}`);
+    return list;
+  };
+  const complete = (what, got, total, max = Infinity) => {
+    if (got !== total || got > max) throw new Error(`${what}: read ${got} of ${total}`);
+  };
+  return {
+    async pullRequest(n) {
+      const pr = (await graphql(PR_QUERY, n))?.data?.repository?.pullRequest;
+      if (!pr) throw new Error(`PR #${n} not found`);
+      const refs = pr.closingIssuesReferences;
+      complete('closing issues', refs.nodes.length, refs.totalCount);
+      return {
+        state: pr.state,
+        base: pr.baseRefName,
+        head: pr.headRefOid,
+        body: pr.body ?? '',
+        changedFiles: pr.changedFiles,
+        commitCount: pr.commits.totalCount,
+        closes: refs.nodes.map((x) => ({ number: x.number, repo: x.repository?.nameWithOwner ?? '' })),
+      };
+    },
+    async comments(n) {
+      const conns = (await graphql(COMMENTS_QUERY, n, true)).map((p) => p?.data?.repository?.pullRequest?.comments);
+      if (conns.length === 0 || conns.some((c) => !c) || conns.at(-1).pageInfo.hasNextPage) throw new Error('PR comments incomplete');
+      const nodes = conns.flatMap((c) => c.nodes);
+      complete('PR comments', nodes.length, conns[0].totalCount);
+      return nodes.map((c) => ({ author: c.author?.login ?? '', body: c.body ?? '', createdAt: c.createdAt, edited: Boolean(c.lastEditedAt || c.includesCreatedEdit) }));
+    },
+    async commits(n, expected) {
+      const list = (await pages(`${REPO_API}/pulls/${n}/commits?per_page=100`)).flat();
+      complete('PR commits', list.length, expected, 250);
+      return list.map((c) => ({ sha: c.sha, message: c.commit?.message ?? '', parents: (c.parents ?? []).map((p) => p.sha) }));
+    },
+    async files(n, expected) {
+      const list = (await pages(`${REPO_API}/pulls/${n}/files?per_page=100`)).flat();
+      complete('PR files', list.length, expected, 3000);
+      return list.map((f) => ({ path: f.filename, previous: f.previous_filename ?? null }));
+    },
+    async checkRuns(sha) {
+      const list = await pages(`${REPO_API}/commits/${sha}/check-runs?filter=latest&per_page=100`);
+      const runs = list.flatMap((p) => p.check_runs);
+      complete('check runs', runs.length, list[0].total_count);
+      return runs.map((r) => ({ id: r.id, name: r.name, status: r.status, conclusion: r.conclusion, app: r.app?.slug ?? '' }));
+    },
+    async statuses(sha) {
+      const list = await pages(`${REPO_API}/commits/${sha}/status?per_page=100`);
+      const statuses = list.flatMap((p) => p.statuses);
+      complete('commit statuses', statuses.length, list[0].total_count);
+      return statuses.map((s) => ({ context: s.context, state: s.state }));
+    },
+    async issue(n) {
+      const issue = (await graphql(ISSUE_QUERY, n))?.data?.repository?.issue;
+      if (!issue) throw new Error(`Issue #${n} not found`);
+      complete('Issue labels', issue.labels.nodes.length, issue.labels.totalCount);
+      complete('Issue edits', issue.userContentEdits.nodes.length, issue.userContentEdits.totalCount);
+      return {
+        state: issue.state,
+        author: issue.author?.login ?? '',
+        body: issue.body ?? '',
+        labels: issue.labels.nodes.map((l) => l.name),
+        editors: issue.userContentEdits.nodes.map((e) => e.editor?.login ?? ''),
+      };
+    },
+    async isAncestorOfMain(sha) {
+      const { status } = await api(`${REPO_API}/compare/${sha}...main`);
+      return status === 'ahead' || status === 'identical';
+    },
+    async launcherBlob() {
+      const { sha } = await api(`${REPO_API}/contents/tools/codex-launch.js?ref=main`);
+      if (!/^[0-9a-f]{40}$/.test(sha ?? '')) throw new Error('no blob for tools/codex-launch.js on main');
+      return sha;
+    },
+  };
+}
+
+// ---------- merge gate (AGENTS.md §6) ----------
+
+// An authorised Issue (AGENTS.md §3). Same rule as the launcher's check.
+function ownerInstruction(body) {
+  const lines = (body ?? '').split(/\r?\n/);
+  const start = lines.findIndex((l) => /^###\s+Owner instruction\s*$/i.test(l.trim()));
+  if (start < 0) return false;
+  const section = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/^#{1,3}\s/.test(line)) break;
+    section.push(line);
+  }
+  return section.some((l) => /^>\s*\S/.test(l)) && /\b20\d\d-[01]\d-[0-3]\d\b/.test(section.join('\n'));
+}
+
+function authorityProblem(issue) {
+  if (issue.state !== 'OPEN') return 'is not open';
+  if (issue.author !== OWNER) return `was not opened by ${OWNER}`;
+  if (!ownerInstruction(issue.body)) return 'has no "### Owner instruction" section with a quote and a date';
+  if (issue.editors.some((e) => e !== OWNER)) return 'was edited by another account';
+  return null;
+}
+
+const TIERS = ['light', 'owner', 'standard', 'critical'];
+// The security perimeter (AGENTS.md §6). Paths are compared in lower case.
+const PERIMETER = /^(\.claude|\.codex|\.githooks|\.github)\/|^(agents\.md|claude\.md|\.gitattributes|\.gitleaksignore)$|(^|\/)(\.gitignore|\.mcp\.json|\.?gitleaks\.toml)$|^tools\/(install-claude-guard\.ps1|codex-launch(\.test)?\.js)$|^game\/packages\/(manifest|packages-lock)\.json$|^game\/projectsettings\/projectversion\.txt$/;
+// Docs, for the Light floor: Markdown anywhere, and text files and images under docs/. Anything
+// else, including scripts and unknown file types under docs/, is at least Standard.
+const DOC_FILE = /\.md$|^docs\/.*\.(txt|png|jpe?g|gif|webp|svg)$/;
+
+// The tier that counts: the highest of the Issue's label, the PR's `Tier:` line and the path minimums.
+function requiredTier(issue, body, paths) {
+  const labels = issue.labels.filter((l) => /^tier:/i.test(l)).map((l) => l.slice(5).toLowerCase());
+  if (labels.length !== 1 || !TIERS.includes(labels[0])) block('the linked Issue needs exactly one tier label');
+  const line = /^Tier:[ \t]*(light|owner|standard|critical)[ \t]*$/im.exec(body);
+  if (!line) block('the PR body needs a `Tier:` line naming one tier (AGENTS.md §8)');
+  const p = paths.map((x) => x.toLowerCase());
+  const perimeter = p.some((x) => PERIMETER.test(x));
+  let floor = 'light';
+  if (perimeter || p.some((x) => x.startsWith('docs/adr/'))) floor = 'critical';
+  else if (p.some((x) => /^(game|art|tools)\//.test(x) || !DOC_FILE.test(x))) floor = 'standard';
+  const declared = [labels[0], line[1].toLowerCase()];
+  const tier = [...declared, floor].reduce((a, b) => (TIERS.indexOf(b) > TIERS.indexOf(a) ? b : a));
+  return { tier, owner: tier === 'owner' || declared.includes('owner') || perimeter, qa: p.some((x) => x.startsWith('game/')) };
+}
+
+// Only the latest run of each check counts; gitleaks must have succeeded (AGENTS.md §5).
+function checkChecks(runs, statuses) {
+  const latest = new Map();
+  for (const r of runs) {
+    const key = `${r.app}\0${r.name}`;
+    if (!latest.has(key) || r.id > latest.get(key).id) latest.set(key, r);
+  }
+  const gitleaks = latest.get('github-actions\0gitleaks');
+  if (gitleaks?.status !== 'completed' || gitleaks.conclusion !== 'success') block('the latest gitleaks check on this commit has not succeeded (AGENTS.md §5)');
+  for (const r of latest.values()) {
+    if (r.status !== 'completed' || !['success', 'neutral', 'skipped'].includes(r.conclusion)) {
+      block(`the check ${JSON.stringify(String(r.name).slice(0, 60))} is ${r.conclusion ?? r.status}`);
+    }
+  }
+  for (const s of statuses) if (s.state !== 'success') block(`the status ${JSON.stringify(String(s.context).slice(0, 60))} is ${s.state}`);
+}
+
+// A commit's trailers: its last paragraph, after the subject, when every line is `Key: value`
+// or a folded continuation.
+function trailers(message) {
+  const paragraphs = message.replace(/\r\n/g, '\n').trim().split(/\n[ \t]*\n/);
+  const last = paragraphs.length > 1 ? paragraphs.at(-1).split('\n') : [];
+  return last.length && last.every((l) => /^[A-Za-z0-9-]+:[ \t]/.test(l) || /^[ \t]+\S/.test(l)) ? last : [];
+}
+
+// Who wrote the PR: a `Codex-Run:` trailer marks launcher output, every other commit is Claude
+// work. A `Codex-Run:` line anywhere else makes the authorship unclear, which blocks. Merges of
+// `main` into the branch don't count.
+async function vendorsOf(commits, gh) {
+  const vendors = new Set();
+  for (const c of commits) {
+    if (c.parents.length > 1 && (await Promise.all(c.parents.slice(1).map((p) => gh.isAncestorOfMain(p)))).every(Boolean)) continue;
+    const runs = trailers(c.message).filter((l) => /^Codex-Run:/i.test(l));
+    const mentions = (c.message.match(/^[ \t]*Codex-Run:/gim) ?? []).length;
+    if (mentions !== runs.length || runs.length > 1 || (runs.length && !/^Codex-Run:[ \t]+\S+[ \t]*$/.test(runs[0]))) {
+      block(`commit ${String(c.sha).slice(0, 12)} has a \`Codex-Run:\` line outside a single, well-formed trailer, so its author is unclear`);
+    }
+    vendors.add(runs.length ? 'codex' : 'claude');
+  }
+  if (vendors.size === 0) vendors.add('claude');
+  return vendors;
+}
+
+// The newest record of each type (and vendor) for the SHA. Only the owner account's comments count.
+function recordsFor(comments, n, sha) {
+  const latest = new Map();
+  for (const c of comments) {
+    if (c.author !== OWNER || !RECORD.test(c.body)) continue;
+    const r = parseRecord(c.body);
+    if (!r || r.pr !== n) block('a record comment on this PR is malformed or names another PR; post a new, well-formed record (docs/studio/workflow.md)');
+    if (c.edited) block('a record comment on this PR was edited after posting; records are never edited (docs/studio/workflow.md)');
+    if (r.sha !== sha) continue;
+    const key = `${r.type}:${r.vendor}`;
+    if (!latest.has(key) || c.createdAt >= latest.get(key).at) latest.set(key, { ...r, at: c.createdAt });
+  }
+  return latest;
+}
+
+async function checkMerge({ pr: n, sha }, gh) {
+  const pr = await gh.pullRequest(n);
+  if (pr.state !== 'OPEN' || pr.base !== 'main') block(`PR #${n} is not an open pull request on main`);
+  if (pr.head !== sha) block(`PR #${n}'s head is ${pr.head}, not ${sha}; review the new head first`);
+  const bodyCloses = [...pr.body.matchAll(/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[ \t]+#(\d+)\b/gi)].map((m) => Number(m[1]));
+  if (pr.closes.some((c) => c.repo !== REPO)) block(`PR #${n} closes an Issue in another repository`);
+  const linked = new Set([...bodyCloses, ...pr.closes.map((c) => c.number)]);
+  if (linked.size !== 1 || pr.closes.length !== 1 || bodyCloses.length === 0) block(`PR #${n} must close exactly one Issue, with \`Closes #<n>\` in its body`);
+  const [number] = linked;
+  const [issue, comments, commits, files, runs, statuses] = await Promise.all([
+    gh.issue(number),
+    gh.comments(n),
+    gh.commits(n, pr.commitCount),
+    gh.files(n, pr.changedFiles),
+    gh.checkRuns(sha),
+    gh.statuses(sha),
+  ]);
+  const problem = authorityProblem(issue);
+  if (problem) block(`Issue #${number} ${problem}, so it doesn't authorise work (AGENTS.md §3)`);
+  checkChecks(runs, statuses);
+  // A rename counts by its old and its new path.
+  const need = requiredTier(issue, pr.body, files.flatMap((f) => (f.previous ? [f.path, f.previous] : [f.path])));
+  const records = recordsFor(comments, n, sha);
+  for (const r of records.values()) {
+    if (['request-changes', 'escalate', 'fail'].includes(r.result)) block(`the newest ${r.type}${r.vendor ? ` (${r.vendor})` : ''} record for ${sha} is ${r.result}`);
+  }
+  const missing = [];
+  if (need.tier === 'light' && !/self-check/i.test(pr.body)) missing.push('the author’s self-check in the PR body');
+  if (TIERS.indexOf(need.tier) >= TIERS.indexOf('standard')) {
+    for (const vendor of await vendorsOf(commits, gh)) {
+      const reviewer = vendor === 'codex' ? 'claude' : 'codex';
+      if (!records.has(`verdict:${reviewer}`)) missing.push(`an Approve verdict from ${reviewer} for ${vendor}-written work`);
+    }
+  }
+  if (need.owner && !records.has('owner-approval:')) missing.push('an owner-approval record');
+  if (need.qa && !records.has('qa:')) missing.push('a QA: pass record (it changes Game/)');
+  if (missing.length) block(`PR #${n} at ${sha} (${need.tier} tier) is missing ${missing.join(', ')} (AGENTS.md §6)`);
+}
+
+// ---------- launcher check (AGENTS.md §5) ----------
+
+const blobSha = (buf) => crypto.createHash('sha1').update(`blob ${buf.length}\0`).update(buf).digest('hex');
+
+// Only the launcher merged on GitHub's main may run: the file under the project root, with no
+// symlink or junction on the way, must match main's blob, as checked out or with LF line endings.
+async function checkLauncher(input, gh) {
+  const root = projectRoot(input);
+  if (!samePath(input.cwd || root, root)) block('run the launcher from the repository root');
+  const file = path.join(root, 'tools', 'codex-launch.js');
+  let content;
+  try {
+    const expected = path.join(fs.realpathSync.native(root), 'tools', 'codex-launch.js');
+    const linked = [file, path.dirname(file)].some((p) => fs.lstatSync(p).isSymbolicLink());
+    if (linked || !samePath(fs.realpathSync.native(file), expected)) block('tools/codex-launch.js must be a plain file in the repository, not reached through a link');
+    content = fs.readFileSync(expected);
+  } catch (err) {
+    if (err instanceof Blocked) throw err;
+    block('tools/codex-launch.js can’t be read');
+  }
+  const lf = Buffer.from(content.toString('latin1').replace(/\r\n/g, '\n'), 'latin1');
+  const main = await gh.launcherBlob();
+  if (blobSha(content) !== main && blobSha(lf) !== main) block('tools/codex-launch.js differs from the reviewed copy on GitHub main; only the merged launcher may run');
+}
+
+// Everything: the local checks, then GitHub for a Producer merge or launch.
+async function checkAsync(input, gh = makeGitHub()) {
+  const gate = check(input);
+  if (!gate) return;
+  let timer;
+  const deadline = new Promise((resolve, reject) => {
+    timer = setTimeout(() => reject(new Error('timed out')), LOOKUP_MS);
+  });
+  try {
+    await Promise.race([gate.kind === 'merge' ? checkMerge(gate, gh) : checkLauncher(input, gh), deadline]);
+  } catch (err) {
+    if (err instanceof Blocked) throw err;
+    block(`a GitHub lookup failed, so the ${gate.kind} can’t be checked (${err.message})`);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
-function main() {
+async function main() {
   try {
-    check(JSON.parse(fs.readFileSync(0, 'utf8')));
+    await checkAsync(JSON.parse(fs.readFileSync(0, 'utf8')));
   } catch (err) {
     const why = err instanceof Blocked ? err.message : `the guard could not check this call (${err.message})`;
     process.stderr.write(`Blocked by the studio guard: ${why}.\nDon't retry in another form. If it is really needed, stop and ask the owner.\n`);
@@ -823,4 +1324,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { check };
+module.exports = { check, checkAsync, makeGitHub, blobSha, Blocked };
