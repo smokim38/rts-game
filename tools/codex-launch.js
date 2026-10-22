@@ -487,11 +487,30 @@ function declineRequest(method) {
   return null;
 }
 
+// Token counts exactly as Codex reports them. A count it leaves out is null, never estimated.
+const count = (n) => (Number.isInteger(n) && n >= 0 ? n : null);
+const label = (s) => (typeof s === 'string' ? s.slice(0, 200) : null);
+function tokenCounts(b) {
+  if (!b || typeof b !== 'object') return null;
+  return {
+    input: count(b.inputTokens),
+    cachedInput: count(b.cachedInputTokens),
+    cacheWrite: count(b.cacheWriteInputTokens),
+    output: count(b.outputTokens),
+    reasoningOutput: count(b.reasoningOutputTokens),
+    total: count(b.totalTokens),
+  };
+}
+
+// Collab tool states that mean the helper agent has stopped.
+const HELPER_DONE = new Set(['completed', 'errored', 'interrupted', 'shutdown', 'notFound']);
+
 // `command` is Codex's program and leading arguments (codexCommand); tests pass a fake server.
 function runCodex({ cwd, model, effort, sandbox, developerInstructions, prompt, outputSchema, log, timeoutMs = RUN_TIMEOUT_MS, command = codexCommand() }) {
   const expected = { cwd, model, effort, sandboxType: sandbox === 'read-only' ? 'readOnly' : 'workspaceWrite' };
   const child = spawn(command.file, [...command.args, 'app-server'], { cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
-  const run = { threadId: null, settings: null, reroutes: [], reviews: [], declined: [], subagents: [], items: {}, finalText: null, turn: null, stderr: '' };
+  // `tokens` holds the latest total Codex reported per thread; `helpers` the helper agents by thread.
+  const run = { threadId: null, settings: null, reroutes: [], reviews: [], declined: [], tokens: {}, helpers: {}, items: {}, finalText: null, turn: null, stderr: '' };
   let nextId = 1;
   const pending = new Map();
   const send = (msg) => child.stdin.write(`${JSON.stringify(msg)}\n`);
@@ -502,6 +521,40 @@ function runCodex({ cwd, model, effort, sandbox, developerInstructions, prompt, 
       send({ method, id, params });
     });
 
+  // Helper agents are logged when first seen and when they stop, with identifiers, names, model,
+  // effort and numbers only: never the prompt or messages a collab call carries.
+  // A spawn call usually comes before the helper's name, so details that arrive later are logged
+  // as an update.
+  const helperStarted = (threadId, { name = null, model = null, effort = null } = {}) => {
+    if (typeof threadId !== 'string' || threadId === run.threadId) return;
+    const details = { name: label(name), model: label(model), effort: label(effort) };
+    const helper = run.helpers[threadId];
+    if (!helper) {
+      run.helpers[threadId] = { threadId, ...details, status: null };
+      log({ event: 'helper-started', ...run.helpers[threadId] });
+      return;
+    }
+    const added = Object.keys(details).filter((k) => details[k] !== null && helper[k] === null);
+    if (!added.length) return;
+    for (const k of added) helper[k] = details[k];
+    log({ event: 'helper-updated', ...helper });
+  };
+  const helperEnded = (threadId, status) => {
+    const helper = run.helpers[threadId];
+    if (!helper || helper.status) return;
+    helper.status = label(status);
+    log({ event: 'helper-ended', threadId, status: helper.status, tokens: run.tokens[threadId] ?? null });
+  };
+  const trackHelpers = (item) => {
+    if (item.type === 'subAgentActivity') {
+      helperStarted(item.agentThreadId, { name: item.agentPath, model: item.model, effort: item.reasoningEffort });
+      if (item.kind === 'completed' || item.kind === 'interrupted') helperEnded(item.agentThreadId, item.kind);
+    } else if (item.type === 'collabAgentToolCall') {
+      if (item.tool === 'spawnAgent') for (const id of item.receiverThreadIds ?? []) helperStarted(id, { model: item.model, effort: item.reasoningEffort });
+      for (const [id, state] of Object.entries(item.agentsStates ?? {})) if (HELPER_DONE.has(state?.status)) helperEnded(id, state.status);
+    }
+  };
+
   return new Promise((resolve, reject) => {
     let finished = false;
     const finish = (err) => {
@@ -509,6 +562,14 @@ function runCodex({ cwd, model, effort, sandbox, developerInstructions, prompt, 
       finished = true;
       clearTimeout(timer);
       child.kill();
+      // Helpers Codex never reported as stopped end with the run.
+      for (const id of Object.keys(run.helpers)) helperEnded(id, 'run-ended');
+      log({
+        event: 'run-tokens',
+        threadId: run.threadId,
+        total: run.tokens[run.threadId] ?? null,
+        helpers: Object.keys(run.helpers).map((id) => ({ threadId: id, total: run.tokens[id] ?? null })),
+      });
       log({ event: 'end', error: err?.message ?? null });
       if (err) reject(err);
       else resolve(run);
@@ -541,14 +602,26 @@ function runCodex({ cwd, model, effort, sandbox, developerInstructions, prompt, 
         const review = { status: params.review?.status, risk: params.review?.riskLevel ?? null, action: params.action?.command ?? params.action?.program ?? params.action?.type };
         run.reviews.push(review);
         log({ event: 'auto-review', ...review, rationale: params.review?.rationale ?? null });
+      } else if (method === 'thread/tokenUsage/updated') {
+        const threadId = label(params.threadId);
+        const total = tokenCounts(params.tokenUsage?.total);
+        if (threadId) run.tokens[threadId] = total;
+        log({
+          event: 'token-usage',
+          threadId,
+          turnId: label(params.turnId),
+          helper: threadId === null ? null : threadId !== run.threadId,
+          total,
+          last: tokenCounts(params.tokenUsage?.last),
+          contextWindow: count(params.tokenUsage?.modelContextWindow),
+        });
+      } else if (method === 'item/started') {
+        trackHelpers(params.item ?? {});
       } else if (method === 'item/completed') {
         const item = params.item ?? {};
+        trackHelpers(item);
         run.items[item.type] = (run.items[item.type] ?? 0) + 1;
         if (item.type === 'agentMessage') run.finalText = item.text;
-        if (item.type === 'subAgentActivity' || item.type === 'collabAgentToolCall') {
-          run.subagents.push({ model: item.model ?? null, effort: item.reasoningEffort ?? null });
-          log({ event: 'subagent', model: item.model ?? null, effort: item.reasoningEffort ?? null });
-        }
         if (item.type === 'commandExecution') log({ event: 'command', command: item.command, exitCode: item.exitCode, status: item.status });
         if (item.type === 'fileChange') log({ event: 'file-change', files: (item.changes ?? []).map((c) => c.path), status: item.status });
       } else if (method === 'turn/completed' && params.threadId === run.threadId) {
@@ -610,6 +683,12 @@ function runCodex({ cwd, model, effort, sandbox, developerInstructions, prompt, 
 
 // ---------- summary ----------
 
+function tokenText(t) {
+  if (t?.total == null) return 'not reported';
+  const part = (n) => (n == null ? '?' : n);
+  return `${t.total} total (input ${part(t.input)}, cached ${part(t.cachedInput)}, output ${part(t.output)})`;
+}
+
 function summarize({ args, branch, sha, dir, run, logFile, result, record, changed }) {
   const counts = {};
   for (const r of run.reviews) counts[r.status] = (counts[r.status] ?? 0) + 1;
@@ -620,7 +699,8 @@ function summarize({ args, branch, sha, dir, run, logFile, result, record, chang
     `Codex run: ${args.role} on Issue #${args.issue}${args.pr ? ` · PR #${args.pr} at ${sha}` : ''}`,
     `Run id: ${run.threadId} · Codex CLI ${s.cliVersion ?? 'unknown'}`,
     `Settings reported by Codex: model ${used} · effort ${s.effort} · sandbox ${s.sandbox?.type} · approvals ${s.approvalPolicy} · reviewer ${s.approvalsReviewer}`,
-    ...(run.subagents.length ? [`Subagents: ${run.subagents.map((a) => `${a.model ?? '?'} / ${a.effort ?? '?'}`).join(', ')}`] : []),
+    `Tokens: ${tokenText(run.tokens[run.threadId])}`,
+    ...Object.values(run.helpers).map((h) => `Helper agent ${h.name ?? h.threadId} (${h.model ?? '?'} / ${h.effort ?? '?'}, ${h.status ?? 'running'}): ${tokenText(run.tokens[h.threadId])}`),
     `Auto-review: ${reviewText} · requests that reached the launcher (declined): ${run.declined.length}`,
     `Turn: ${run.turn?.status}${run.turn?.error ? ` (${run.turn.error.message})` : ''}`,
     `Worktree: ${path.relative(ROOT, dir).replace(/\\/g, '/')}${branch ? ` · branch ${branch}` : ''}`,
@@ -729,5 +809,6 @@ module.exports = {
   verifySettingsUpdate,
   declineRequest,
   runCodex,
+  summarize,
   SCHEMAS,
 };

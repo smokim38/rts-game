@@ -254,6 +254,21 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', (l
     }
     if (scenario === 'approval') send({ id: 99, method: 'item/commandExecution/requestApproval', params: { command: 'x' } });
     if (scenario === 'exit') process.exit(3);
+    if (scenario === 'agents') {
+      // Helper h1 starts, reports tokens and completes; h2 is spawned and never reported again.
+      // The prompt and messages are planted to check they never reach the log.
+      const call = (status, receivers, states) => ({ type: 'collabAgentToolCall', id: 'c1', tool: 'spawnAgent', senderThreadId: 't1', receiverThreadIds: receivers, status, agentsStates: states, prompt: 'PLANTED-PROMPT', model: 'gpt-mini', reasoningEffort: 'low' });
+      note('item/started', { threadId: 't1', turnId: 'u1', item: call('inProgress', [], {}) });
+      note('item/completed', { threadId: 't1', turnId: 'u1', item: call('completed', ['h1', 'h2'], { h1: { status: 'running', message: 'PLANTED-MESSAGE' } }) });
+      note('item/started', { threadId: 't1', turnId: 'u1', item: { type: 'subAgentActivity', id: 'a1', kind: 'started', agentThreadId: 'h1', agentPath: 'root/worker', model: 'gpt-mini', reasoningEffort: 'low' } });
+      note('thread/tokenUsage/updated', { threadId: 'h1', turnId: 'u9', tokenUsage: {
+        total: { inputTokens: 100, cachedInputTokens: 40, cacheWriteInputTokens: 0, outputTokens: 20, reasoningOutputTokens: 5, totalTokens: 120 },
+        last: { inputTokens: 100, cachedInputTokens: 40, cacheWriteInputTokens: 0, outputTokens: 20, reasoningOutputTokens: 5, totalTokens: 120 }, modelContextWindow: 1000 } });
+      note('item/completed', { threadId: 't1', turnId: 'u1', item: { type: 'subAgentActivity', id: 'a2', kind: 'completed', agentThreadId: 'h1', agentPath: 'root/worker' } });
+      // The root thread reports some counts and leaves the rest out.
+      note('thread/tokenUsage/updated', { threadId: 't1', turnId: 'u1', tokenUsage: { total: { inputTokens: 1000, outputTokens: 200, totalTokens: 1200 }, last: null, modelContextWindow: null } });
+      done('{"ok":true}');
+    }
     if (scenario === 'tree') {
       // Like the npm wrapper: the real server is a child process of the program the launcher ran.
       const child = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
@@ -300,6 +315,39 @@ test('runCodex: the whole app-server flow, failing closed', async () => {
     assert.deepStrictEqual(asked.declined, ['item/commandExecution/requestApproval']);
     assert.deepStrictEqual(JSON.parse(asked.finalText), { decision: 'decline' });
     assert.ok(events.some((e) => e.scenario === 'reroute' && e.event === 'model-rerouted' && e.to === 'gpt-other'));
+
+    // Token usage and helper agents, logged as they happen.
+    const summary = (r) => L.summarize({ args: { role: 'reviewer', issue: 46, pr: 50 }, sha: SHA, dir: path.join(os.tmpdir(), 'wt'), run: r, logFile: path.join(os.tmpdir(), 'x.jsonl') });
+    const agents = await run('agents');
+    const logged = events.filter((e) => e.scenario === 'agents');
+    const at = (pred) => logged.findIndex(pred);
+    const h1Start = at((e) => e.event === 'helper-started' && e.threadId === 'h1');
+    const h1End = at((e) => e.event === 'helper-ended' && e.threadId === 'h1');
+    assert.deepStrictEqual(logged[h1Start], { scenario: 'agents', event: 'helper-started', threadId: 'h1', name: null, model: 'gpt-mini', effort: 'low', status: null });
+    assert.ok(h1Start < h1End && h1End < at((e) => e.event === 'end'), 'a helper is logged as started before it ends, and both before the run ends');
+    // Its name arrives after the spawn call and is logged once.
+    const named = logged.filter((e) => e.event === 'helper-updated');
+    assert.deepStrictEqual(named, [{ scenario: 'agents', event: 'helper-updated', threadId: 'h1', name: 'root/worker', model: 'gpt-mini', effort: 'low', status: null }]);
+    assert.ok(h1Start < at((e) => e.event === 'helper-updated') && at((e) => e.event === 'helper-updated') < h1End);
+    assert.deepStrictEqual(logged[h1End].tokens, { input: 100, cachedInput: 40, cacheWrite: 0, output: 20, reasoningOutput: 5, total: 120 });
+    assert.strictEqual(logged[h1End].status, 'completed');
+    const h1Tokens = logged.find((e) => e.event === 'token-usage' && e.threadId === 'h1');
+    assert.strictEqual(h1Tokens.helper, true);
+    assert.strictEqual(h1Tokens.contextWindow, 1000);
+    // h2 was never reported as stopped or given tokens: it ends with the run, tokens not reported.
+    assert.deepStrictEqual(logged.find((e) => e.event === 'helper-ended' && e.threadId === 'h2'), { scenario: 'agents', event: 'helper-ended', threadId: 'h2', status: 'run-ended', tokens: null });
+    const totals = logged.find((e) => e.event === 'run-tokens');
+    assert.deepStrictEqual(totals.total, { input: 1000, cachedInput: null, cacheWrite: null, output: 200, reasoningOutput: null, total: 1200 });
+    assert.deepStrictEqual(totals.helpers, [{ threadId: 'h1', total: logged[h1End].tokens }, { threadId: 'h2', total: null }]);
+    assert.ok(at((e) => e.event === 'run-tokens') < at((e) => e.event === 'end'));
+    assert.ok(!JSON.stringify(logged).includes('PLANTED'), 'no prompt or message text in the log');
+    const text = summary(agents);
+    assert.match(text, /^Tokens: 1200 total \(input 1000, cached \?, output 200\)$/m);
+    assert.match(text, /^Helper agent root\/worker \(gpt-mini \/ low, completed\): 120 total \(input 100, cached 40, output 20\)$/m);
+    assert.match(text, /^Helper agent h2 \(gpt-mini \/ low, run-ended\): not reported$/m);
+    // A run where Codex reports no tokens.
+    assert.match(summary(ok), /^Tokens: not reported$/m);
+    assert.deepStrictEqual(events.find((e) => e.scenario === 'ok' && e.event === 'run-tokens'), { scenario: 'ok', event: 'run-tokens', threadId: 't1', total: null, helpers: [] });
 
     // Stopping a run ends the whole process tree, not just the wrapper. On Windows, Node puts the
     // npm wrapper's codex.exe in a job object that ends with the wrapper; this pins that.
