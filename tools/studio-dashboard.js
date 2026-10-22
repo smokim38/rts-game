@@ -12,7 +12,8 @@
 //   session logs and each session's subagents/ logs and info files
 // A file is read only if its real path, after links and junctions, is inside its folder. Beyond
 // that, it only checks whether a recorded Claude process id is still running.
-// Live only: an agent appears if it is running when the dashboard starts or starts later.
+// It shows only agents that start at or after the moment it starts, judged by the times in their
+// start records, with their subagents and helpers.
 // Records are reduced to names, times, states and numbers as they are read, so no conversation
 // text, prompts, tool input or output, commands or paths reach the page.
 // Node.js built-in modules only. Tests: node --test tools/studio-dashboard.test.js
@@ -141,14 +142,6 @@ function tailer(file, root = path.dirname(file), { chunk = READ_CHUNK, maxLine =
   return {
     get atEnd() {
       return offset >= size;
-    },
-    // Leaves what the file holds now unread; later reads return only lines added after this.
-    skipToEnd() {
-      size = stat(root, file)?.size ?? 0;
-      offset = size;
-      rest = '';
-      skipping = false;
-      decoder = new StringDecoder('utf8');
     },
     read() {
       size = stat(root, file)?.size ?? 0;
@@ -281,7 +274,8 @@ function claudeSession(id, file, root, opts) {
     gone: false,
     run: 0,
     startedAt: null,
-    endedAt: null,
+    // The first start record timed at or after the dashboard started; the session is shown from it.
+    shownFrom: null,
     get running() {
       return this.open && !this.gone;
     },
@@ -295,7 +289,6 @@ function claudeSession(id, file, root, opts) {
         if (!this.running || pid !== this.pid) {
           this.run += 1;
           this.startedAt = at;
-          this.endedAt = null;
           this.gone = false;
         }
         this.open = true;
@@ -303,10 +296,7 @@ function claudeSession(id, file, root, opts) {
         this.agent = agentName(r.agent) ?? this.agent;
         return true;
       }
-      if (r.event === 'end' && pid !== null && pid === this.pid && this.open) {
-        this.open = false;
-        this.endedAt = at;
-      }
+      if (r.event === 'end' && pid !== null && pid === this.pid) this.open = false;
       return false;
     },
   };
@@ -384,7 +374,6 @@ function studio({ codexDir, claudeDir, sessionsDir, repoDir = ROOT, homeDir = os
   const runs = new Map(); // file -> run, for every launcher log
   const claude = new Map(); // file -> session or subagent, once shown
   const codex = new Map(); // file -> run, once shown
-  let polled = false;
   let keys = 0;
   const keyOf = new Map();
   const key = (id) => {
@@ -392,41 +381,37 @@ function studio({ codexDir, claudeDir, sessionsDir, repoDir = ROOT, homeDir = os
     return keyOf.get(id);
   };
 
-  // Live only, everywhere the dashboard decides what to show: an agent is shown if it is running
-  // at the first poll, or later on a real new start or real new activity. A line added after an
-  // agent ended (a posted record, metadata) never shows it.
+  // Only agents that start at or after the moment the dashboard started are shown, with their
+  // subagents and helpers. Whether an agent is shown depends only on the times in its records,
+  // compared with that moment: never on when or whether a file was read, on file times, or on
+  // read failures and retries.
+  const after = (s) => {
+    const ms = Date.parse(s);
+    return !Number.isNaN(ms) && ms >= started;
+  };
   const claudeOf = (kind, file, extra) => Object.assign(claudeAgent(kind, file, claudeDir, opts), { parent: null, info: null, session: null, finished: false }, extra);
   let behind = false;
-  // Reads one chunk, or the whole file when `full` (at the first poll, for logs that decide what is
-  // shown), and notes whether more is waiting.
-  const drain = (tail, onRecord, full = !polled) => {
-    do {
-      for (const r of tail.read()) onRecord(r);
-    } while (full && !tail.atEnd);
+  // Reads one chunk and notes whether more is waiting.
+  const drain = (tail, onRecord) => {
+    for (const r of tail.read()) onRecord(r);
     if (!tail.atEnd) behind = true;
   };
 
-  // A session is shown if it is running at the first poll, or on a new start record, even if it
-  // has already ended by then.
+  // A session is shown from its first start record timed at or after the dashboard started: a new
+  // session, or an earlier one restarted, resumed, cleared or compacted.
   function pollSessions() {
     for (const f of list(sessionsDir, sessionsDir)) {
       const id = f.endsWith('.jsonl') ? f.slice(0, -'.jsonl'.length) : '';
       if (!SESSION_ID.test(id)) continue;
       let session = sessions.get(id);
       if (!session) sessions.set(id, (session = claudeSession(id, path.join(sessionsDir, f), sessionsDir, opts)));
-      // A start is new if it is read after the first poll, or timed after the dashboard started
-      // (so a session that started and ended just before the first poll is kept).
-      let startedNow = false;
       drain(session.tail, (r) => {
-        if (session.add(r) && (polled || Date.parse(r.at) >= started)) startedNow = true;
+        if (session.add(r) && session.shownFrom === null && after(r.at)) session.shownFrom = time(r.at);
       });
       // Once its process is gone the session stays finished, even if the id is reused later.
       if (session.open && !session.gone && !alive(session.pid)) session.gone = true;
       const file = path.join(claudeDir, `${id}.jsonl`);
-      // At the first poll, a session that was running when the dashboard started is shown even if
-      // it has ended since: its end record is timed after the start.
-      const runningAtStart = session.running || (session.endedAt !== null && Date.parse(session.endedAt) >= started);
-      if (!claude.has(file) && (startedNow || (!polled && runningAtStart))) claude.set(file, claudeOf('session', file, { session }));
+      if (!claude.has(file) && session.shownFrom !== null) claude.set(file, claudeOf('session', file, { session }));
     }
   }
 
@@ -437,10 +422,8 @@ function studio({ codexDir, claudeDir, sessionsDir, repoDir = ROOT, homeDir = os
     if (meta.finished !== null) agent.finished = meta.finished;
   };
 
-  // A shown session's subagents. At the first poll, one is shown if it is running then: not
-  // finished, with its latest message from the session's current run. After that, one is shown
-  // once it records a message timed after the dashboard started, in whichever run of its session,
-  // so a subagent from a run that ended between two polls is shown too.
+  // A shown session's subagents: one is shown once it has a message timed at or after the moment
+  // its session is shown from, in whichever run of the session since then.
   function pollSubagents() {
     for (const parent of [...claude.values()].filter((a) => a.kind === 'session')) {
       const { session } = parent;
@@ -457,48 +440,30 @@ function studio({ codexDir, claudeDir, sessionsDir, repoDir = ROOT, homeDir = os
         let active = false;
         drain(agent.tail, (r) => {
           const at = agent.add(r);
-          if (at && Date.parse(at) >= started) active = true;
+          if (at && at >= session.shownFrom) active = true;
         });
         readInfo(agent);
-        const runningAtStart = !polled && !agent.finished && agent.lastAt !== null && session.startedAt !== null && agent.lastAt >= session.startedAt;
-        if (active || runningAtStart) {
-          agent.shownRun = session.run;
-          claude.set(file, agent);
-        }
+        if (active) claude.set(file, agent);
       }
     }
   }
 
-  // A run is shown if, at the first poll, its log has a start less than a run's time limit ago and
-  // no end, or on a new start, even if it has already ended. At the first poll, a log untouched
-  // for longer than that limit belongs to a finished or stopped run, so only lines added later are
-  // read from it.
-  function pollRuns(t) {
+  // A run is shown from a launcher start entry timed at or after the dashboard started, with all
+  // its helpers (a launcher log holds one run).
+  function pollRuns() {
     for (const f of list(codexDir, codexDir)) {
       if (!f.endsWith('.jsonl')) continue;
       const file = path.join(codexDir, f);
       let run = runs.get(file);
-      if (!run) {
-        runs.set(file, (run = codexRun(file, codexDir, opts)));
-        const s = polled ? null : stat(codexDir, file);
-        if (s && t - s.mtimeMs > RUN_LIMIT_MS) run.tail.skipToEnd();
-      }
-      // The first poll reads to the end of the file, past any chunk with no complete record.
-      // As for sessions, a start is new if read after the first poll or timed after the dashboard started.
-      let startedNow = false;
+      if (!run) runs.set(file, (run = codexRun(file, codexDir, opts)));
       drain(run.tail, (r) => {
-        if (r.event === 'start' && (polled || Date.parse(r.at) >= started)) startedNow = true;
+        if (r.event === 'start' && after(r.at)) codex.set(file, run);
         run.add(r);
       });
-      // Running when the dashboard started: still open within its time limit, or ended since.
-      const open = run.startedAt !== null && run.endedAt === null && t - Date.parse(run.startedAt) <= RUN_LIMIT_MS;
-      const runningAtStart = open || (run.startedAt !== null && run.endedAt !== null && Date.parse(run.endedAt) >= started);
-      if (!codex.has(file) && (startedNow || (!polled && runningAtStart))) codex.set(file, run);
     }
   }
 
   function poll() {
-    const t = now();
     behind = false;
     // An allowed folder that leads elsewhere isn't read. It is checked on every poll, so a folder
     // replaced by a link later is refused too.
@@ -509,23 +474,18 @@ function studio({ codexDir, claudeDir, sessionsDir, repoDir = ROOT, homeDir = os
       for (const [file, agent] of claude) {
         // A subagent shown just now has been read this poll already.
         if (agent.kind === 'subagent' && !shownBefore.has(file)) continue;
-        drain(agent.tail, (r) => agent.add(r), false);
+        drain(agent.tail, (r) => agent.add(r));
         if (agent.kind === 'subagent') readInfo(agent);
       }
     }
-    if (expected(repoDir, codexDir)) pollRuns(t);
-    polled = true;
+    if (expected(repoDir, codexDir)) pollRuns();
     return behind;
   }
 
-  // A subagent belongs to its session's current run only if its latest activity is from that run
-  // (or, with no activity yet, it appeared during that run). So when a session is resumed, the
-  // subagents of its earlier runs stay finished until they really do something new.
-  const current = (a) => {
-    if (a.kind === 'session') return true;
-    if (a.lastAt === null) return a.shownRun === a.session.run;
-    return a.session.startedAt === null || a.lastAt >= a.session.startedAt;
-  };
+  // A subagent belongs to its session's current run only if its latest message is from that run.
+  // So when a session is resumed, the subagents of its earlier runs stay finished until they really
+  // do something new.
+  const current = (a) => a.kind === 'session' || (a.lastAt !== null && (a.session.startedAt === null || a.lastAt >= a.session.startedAt));
 
   function state() {
     const t = now();
@@ -554,9 +514,7 @@ function studio({ codexDir, claudeDir, sessionsDir, repoDir = ROOT, homeDir = os
         endedAt: r.endedAt,
         state: runState,
         tokens: (r.threadId && r.tokens[r.threadId]) || null,
-        // Live only: a helper that finished before the dashboard started is left out unless it resumes.
-        // An end with no readable time counts as before the start.
-        helpers: [...r.helpers.entries()].filter(([, h]) => !(h.ended && (h.endedAt === null || Date.parse(h.endedAt) < started))).map(([thread, h]) => ({
+        helpers: [...r.helpers.entries()].map(([thread, h]) => ({
           key: key(`${r.file}#${thread}`),
           name: h.name ?? 'helper',
           model: h.model,

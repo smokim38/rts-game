@@ -16,9 +16,11 @@ It uses Node.js only: no packages, and the page loads nothing from the internet.
 
 ## What it shows
 
-- **Live only.** An agent appears if it is running when the dashboard starts, or if it starts later, even if it has already finished by the dashboard's next read. That includes the dashboard's first read. Nothing that ended before the dashboard started is shown, and nothing is kept after you stop it.
-  - A line added to a log after its agent ended never brings the agent back. Examples are the record the launcher posts after a run, or metadata Claude Code adds.
-  - Only a real new start brings an agent back: a session's start record, a run's start, a helper being resumed. Real new activity does too: a message in a subagent's log.
+- **Only agents that start after you open it.** The dashboard shows only agents that start at or after the moment it starts, with their subagents and helpers. Anything that started earlier isn't shown, even if it's still running, and nothing is kept after you stop it.
+  - **A Claude session** appears from a start record timed at or after that moment. A session that was already open appears once it writes a new start record: when it's restarted, resumed, cleared or compacted.
+  - **A Codex run** appears from a launcher start entry timed at or after that moment.
+  - **Subagents and helpers** appear only under a shown session or run. A subagent appears once it has a message timed after its session appeared.
+  - **Only record times decide.** Whether an agent appears depends only on the times in its records. It never depends on when a log was read, on file times, or on a log that couldn't be read at first. Lines added after an agent ended, such as the record the launcher posts, never bring it back.
   - "Last activity" is the time of the last message.
 - **Claude:** each session, with its subagents under it. Each row shows:
   - the name: the agent type for a session started with `--agent` (such as `producer`) or for a subagent, otherwise "main session"
@@ -27,15 +29,14 @@ It uses Node.js only: no packages, and the page loads nothing from the internet.
     - **running**: a session is running from its start record until an end record from the same Claude Code process, or until that process is gone. Both records are written by the session hooks (#50, `docs/studio/claude-staff.md`).
       - A late end record from an earlier process doesn't end a resumed session.
       - A session that starts after the dashboard opened always appears, even if it ended before the next update.
-      - A subagent is running until it finishes or its session does. A subagent that ran after the dashboard opened always appears, even if its session ended and was resumed before the next update.
+      - A subagent is running until it finishes or its session does. A subagent that ran after its session appeared always appears, even if the session ended and was resumed before the next update.
       - When a session is resumed, subagents from its earlier runs stay finished unless they do something new. If a subagent's info file can't be read for a moment, it keeps its last known state.
     - **finished**: a session that has ended or whose process is gone, or a subagent that has finished
   - the tokens: input, output, cache (read and written) and total. Claude Code writes one reply as several log records, so each reply counts once.
-- **Sessions without a start record don't appear.** That covers sessions opened before the session hooks were installed: restart them to see them. A record the hook's 1-second timeout cut off is missing too.
+- **Sessions without a start record after the dashboard opened don't appear.** To see a session that was already open, restart or resume it. A record cut off by the hook's 1-second timeout is missing too.
 - **Codex:** each launcher run, with its role, Issue and PR, start and end times, state and token totals.
   - The state is running, finished, failed, or stopped. Failed means the run ended with an error or its turn didn't complete, and no error text is shown. Stopped means it passed the launcher's time limit with no end, so its launcher went away.
   - Each helper agent Codex starts is shown under its run, with its name, model and effort, times, state and tokens. A helper stops when its run does.
-  - A helper that finished before the dashboard started is left out unless Codex gives it more work.
   - These come from the launcher's log entries (#46). A count Codex didn't report shows as `–`.
 - The page updates every 2 seconds. A large log is caught up within moments: while a log has more to read, the dashboard keeps reading in bounded steps and answers the page between them.
 
