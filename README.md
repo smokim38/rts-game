@@ -34,3 +34,9 @@ rts-game/
 1. Install [Git LFS](https://git-lfs.com/) and run `git lfs install` (models, textures and audio are stored with LFS).
 2. Clone the repo.
 3. Open the `Game/` folder in Unity Hub with **Unity 6000.3.23f1** (Unity 6.3 LTS).
+
+## License
+
+Copyright (C) 2026 smokim38. All rights reserved, except for the `.py` scripts in `Art/` that carry `# SPDX-License-Identifier: GPL-3.0-or-later`: only those scripts are covered by [Art/LICENSE](Art/LICENSE) under `GPL-3.0-or-later`. `.blend` files and other owner-made content in `Art/`, game code, exported art, docs and tools stay all rights reserved, with no license beyond what GitHub's Terms of Service and applicable law allow. Third-party content keeps its own license, unchanged.
+
+See [LICENSE](LICENSE) for the scope and [ADR 0003](docs/adr/0003-repository-licensing.md) for the decision. GitHub may not correctly detect or display the repository's licenses.
