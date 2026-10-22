@@ -194,6 +194,67 @@ test('Claude: sessions run from their start record until their end record or the
   }
 });
 
+test('Claude: a session that starts and ends between two polls still appears, as finished', () => {
+  const f = folders();
+  try {
+    const live = new Set();
+    const watch = D.studio({ claudeDir: f.claudeDir, codexDir: f.codexDir, sessionsDir: f.sessionsDir, alive: (pid) => live.has(pid) });
+    watch.poll();
+    // One session starts and ends, and another starts and loses its process, both before the next poll.
+    sessionLog(f, 'brief', [record('brief', 'start', 301, 'qa-lead'), record('brief', 'end', 301, 'qa-lead')]);
+    sessionLog(f, 'crashed', [record('crashed', 'start', 302, 'tech-architect')]);
+    watch.poll();
+    assert.deepStrictEqual(byName(watch.state()), { 'qa-lead': 'finished', 'tech-architect': 'finished' });
+  } finally {
+    f.done();
+  }
+});
+
+test('Claude: a resumed session keeps its earlier subagents finished until they really do something', () => {
+  const f = folders();
+  try {
+    const live = new Set([401]);
+    const watch = D.studio({ claudeDir: f.claudeDir, codexDir: f.codexDir, sessionsDir: f.sessionsDir, alive: (pid) => live.has(pid) });
+    const subs = path.join(f.claudeDir, 'res', 'subagents');
+    fs.mkdirSync(subs, { recursive: true });
+    const subagent = (id, type, at) => {
+      fs.writeFileSync(path.join(subs, `${id}.jsonl`), jsonl([prompt(at)]));
+      fs.writeFileSync(path.join(subs, `${id}.meta.json`), JSON.stringify({ agentType: type, finished: false }));
+    };
+    // A subagent left over from an earlier run when the dashboard starts: never shown.
+    sessionLog(f, 'res', [record('res', 'start', 400, 'producer', ago(600e3).toISOString()), record('res', 'end', 400, 'producer', ago(500e3).toISOString())]);
+    subagent('agent-old', 'tech-architect', ago(550e3).toISOString());
+    setTime(path.join(subs, 'agent-old.jsonl'), ago(550e3));
+    sessionLog(f, 'res', [record('res', 'start', 401, 'producer', ago(400e3).toISOString())]);
+    subagent('agent-r1', 'game-designer', ago(300e3).toISOString());
+    watch.poll();
+    assert.deepStrictEqual(byName(watch.state()), { producer: 'running', 'game-designer': 'running' });
+
+    // The session ends without the subagent finishing, then is resumed: the subagent stays finished.
+    sessionLog(f, 'res', [record('res', 'end', 401, 'producer', ago(200e3).toISOString())]);
+    watch.poll();
+    assert.deepStrictEqual(byName(watch.state()), { producer: 'finished', 'game-designer': 'finished' });
+    sessionLog(f, 'res', [record('res', 'start', 402, 'producer', ago(100e3).toISOString())]);
+    live.add(402);
+    watch.poll();
+    assert.deepStrictEqual(byName(watch.state()), { producer: 'running', 'game-designer': 'finished' });
+
+    // Its process disappears and it is resumed again within one poll: still finished.
+    sessionLog(f, 'res', [record('res', 'start', 403, 'producer', ago(50e3).toISOString())]);
+    live.delete(402);
+    live.add(403);
+    watch.poll();
+    assert.deepStrictEqual(byName(watch.state()), { producer: 'running', 'game-designer': 'finished' });
+
+    // The subagent really does something in this run: running again.
+    fs.appendFileSync(path.join(subs, 'agent-r1.jsonl'), jsonl([prompt()]));
+    watch.poll();
+    assert.deepStrictEqual(byName(watch.state()), { producer: 'running', 'game-designer': 'running' });
+  } finally {
+    f.done();
+  }
+});
+
 test('links: nothing outside the allowed folders is read', (t) => {
   const f = folders();
   try {

@@ -21,7 +21,7 @@ It uses Node.js only: no packages, and the page loads nothing from the internet.
   - the name: the agent type for a session started with `--agent` (such as `producer`) or for a subagent, otherwise "main session"
   - the model, the start time and the last activity time
   - the state:
-    - **running**: a session is running from its start record until its end record, or until its Claude Code process is gone. Both records are written by the session hooks (#50, `docs/studio/claude-staff.md`). A subagent is running until it finishes or its session does.
+    - **running**: a session is running from its start record until its end record, or until its Claude Code process is gone. Both records are written by the session hooks (#50, `docs/studio/claude-staff.md`). A session that starts after the dashboard opened always appears, even if it ended before the next update. A subagent is running until it finishes or its session does. When a session is resumed, subagents from its earlier runs stay finished unless they do something new.
     - **finished**: a session that has ended or whose process is gone, or a subagent that has finished
   - the tokens: input, output, cache (read and written) and total. Claude Code writes one reply as several log records, so each reply counts once.
 - **Sessions without a start record don't appear.** That covers sessions opened before the session hooks were installed: restart them to see them. A record the hook's 1-second timeout cut off is missing too.

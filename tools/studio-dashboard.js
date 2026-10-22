@@ -221,6 +221,7 @@ function subagentInfo(root, file) {
 
 // One Claude session's start and end records (#50). It is running from a start record until an
 // end record, or until its process is gone; a start record with a new process id begins a new run.
+// `run` counts the runs, so a resumed session can be told apart from its earlier runs.
 function claudeSession(id, file, root) {
   return {
     id,
@@ -229,6 +230,7 @@ function claudeSession(id, file, root) {
     pid: null,
     open: false,
     gone: false,
+    run: 0,
     startedAt: null,
     get running() {
       return this.open && !this.gone;
@@ -240,6 +242,7 @@ function claudeSession(id, file, root) {
       if (r.event === 'start') {
         const pid = Number.isSafeInteger(r.pid) && r.pid > 0 ? r.pid : null;
         if (!this.open || pid !== this.pid) {
+          this.run += 1;
           this.startedAt = at;
           this.gone = false;
         }
@@ -342,7 +345,8 @@ function studio({ codexDir, claudeDir, sessionsDir, now = () => Date.now(), aliv
     return agent;
   };
 
-  // A session is shown if it is running at the first poll, or when a start record arrives later.
+  // A session is shown if it is running at the first poll, or when a start record arrives later,
+  // even if it has already ended by then.
   function pollSessions() {
     for (const f of list(sessionsDir, sessionsDir)) {
       const id = f.endsWith('.jsonl') ? f.slice(0, -'.jsonl'.length) : '';
@@ -356,20 +360,22 @@ function studio({ codexDir, claudeDir, sessionsDir, now = () => Date.now(), aliv
       // Once its process is gone the session stays finished, even if the id is reused later.
       if (session.open && !session.gone && !alive(session.pid)) session.gone = true;
       const file = path.join(claudeDir, `${id}.jsonl`);
-      if (!claude.has(file) && session.running && (startedNow || !polled)) showClaude('session', file, { session });
+      if (!claude.has(file) && (polled ? startedNow : session.running)) showClaude('session', file, { session });
     }
   }
 
-  // A shown session's subagents: at the first poll those not finished, later those that start.
+  // A shown session's subagents: at the first poll those not finished that were written during the
+  // session's current run, later those that start.
   function pollSubagents() {
     for (const parent of [...claude.values()].filter((a) => a.kind === 'session')) {
+      const runStart = parent.session.startedAt === null ? -Infinity : Date.parse(parent.session.startedAt);
       const subDir = path.join(claudeDir, parent.session.id, 'subagents');
       for (const s of list(claudeDir, subDir)) {
         if (!s.endsWith('.jsonl')) continue;
         const file = path.join(subDir, s);
         if (claude.has(file)) continue;
         const info = path.join(subDir, `${s.slice(0, -'.jsonl'.length)}.meta.json`);
-        if (shouldShow(claudeDir, file, () => !subagentInfo(claudeDir, info).finished)) showClaude('subagent', file, { parent: parent.file, info, session: parent.session });
+        if (shouldShow(claudeDir, file, (st) => st.mtimeMs >= runStart && !subagentInfo(claudeDir, info).finished)) showClaude('subagent', file, { parent: parent.file, info, session: parent.session, shownRun: parent.session.run });
       }
     }
   }
@@ -411,6 +417,15 @@ function studio({ codexDir, claudeDir, sessionsDir, now = () => Date.now(), aliv
     polled = true;
   }
 
+  // A subagent belongs to its session's current run only if its latest activity is from that run
+  // (or, with no activity yet, it appeared during that run). So when a session is resumed, the
+  // subagents of its earlier runs stay finished until they really do something new.
+  const current = (a) => {
+    if (a.kind === 'session') return true;
+    if (a.lastAt === null) return a.shownRun === a.session.run;
+    return a.session.startedAt === null || a.lastAt >= a.session.startedAt;
+  };
+
   function state() {
     const t = now();
     const agents = [...claude.values()]
@@ -422,8 +437,8 @@ function studio({ codexDir, claudeDir, sessionsDir, now = () => Date.now(), aliv
         model: a.model,
         startedAt: (a.kind === 'session' ? a.session.startedAt : null) ?? a.startedAt,
         lastActivityAt: a.lastAt,
-        // A subagent can't outlive its session.
-        state: a.session.running && !a.finished ? 'running' : 'finished',
+        // A subagent can't outlive its session, or the run it belonged to.
+        state: a.session.running && !a.finished && current(a) ? 'running' : 'finished',
         tokens: a.tokens(),
       }));
     const runs = [...codex.values()].map((r) => {
