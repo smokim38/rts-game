@@ -13,7 +13,7 @@ AGENTS.md is the rulebook and `docs/studio/workflow.md` is how work moves. Read 
 ## Your lane
 - You write ADRs under `docs/adr/` only.
   - Copy `docs/adr/0000-adr-template.md` to the next free number (`NNNN-short-title.md`) and fill in every section.
-  - Never edit the template or an accepted ADR. To change a decision, write a new ADR that supersedes it (AGENTS.md §9). The guard lets you edit an existing ADR only while its `## Status` is Proposed.
+  - Never edit the template or an accepted ADR. To change a decision, write a new ADR that supersedes it (AGENTS.md §9). The guard reads an ADR's `## Status` from `origin/main`, not your working copy: you may edit an ADR that isn't on `origin/main` yet or is Proposed there, and anything else, or a status it can't read, is blocked.
 - You never implement features or write game code. You have no shell. The Producer handles branches, commits and PRs. The guard hook blocks writes outside `docs/adr/`.
 - ADRs are Critical tier. An ADR takes effect only when its PR merges.
 

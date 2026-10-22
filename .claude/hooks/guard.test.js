@@ -13,18 +13,38 @@ const GUARD = path.join(__dirname, 'guard.js');
 const ROOT = path.resolve(__dirname, '..', '..');
 const TEMPLATE = path.join(__dirname, 'managed-settings.template.json');
 
-// Throwaway projects: another repository, and a studio checkout with an accepted and a
-// proposed ADR for the lane tests.
+// Throwaway projects: another repository, and a studio checkout cloned from a main that holds
+// ADRs in each status, for the lane tests. The checkout's working copy then differs from main.
 const tempDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'guard-test-'));
 const otherRepo = tempDir();
 execFileSync('git', ['init', '-q', otherRepo]);
 execFileSync('git', ['-C', otherRepo, 'remote', 'add', 'origin', 'https://github.com/someone/other.git']);
+const adr = (status) => `# ADR\n\n## Status\n\n${status}\n\n## Context\n`;
+const writeAdrs = (dir, adrs) => {
+  fs.mkdirSync(path.join(dir, 'docs', 'adr'), { recursive: true });
+  for (const [name, status] of Object.entries(adrs)) fs.writeFileSync(path.join(dir, 'docs', 'adr', name), adr(status));
+};
+const studioMain = tempDir();
+const gitIn = (dir, ...args) => execFileSync('git', ['-C', dir, ...args], {
+  stdio: 'pipe',
+  env: { ...process.env, GIT_AUTHOR_NAME: 'test', GIT_AUTHOR_EMAIL: 'test@example.invalid', GIT_COMMITTER_NAME: 'test', GIT_COMMITTER_EMAIL: 'test@example.invalid' },
+});
+gitIn(studioMain, 'init', '-q', '-b', 'main');
+writeAdrs(studioMain, {
+  '0001-accepted.md': 'Accepted',
+  '0002-proposed.md': 'Proposed',
+  '0004-rejected.md': 'Rejected',
+  '0005-deprecated.md': 'Deprecated',
+  '0006-superseded.md': 'Superseded by ADR 0007',
+  '0007-Mixed-Case.md': 'Accepted',
+});
+gitIn(studioMain, 'add', '.');
+gitIn(studioMain, 'commit', '-q', '-m', 'ADRs on main');
 const studio = tempDir();
-fs.mkdirSync(path.join(studio, 'docs', 'adr'), { recursive: true });
-fs.writeFileSync(path.join(studio, 'docs', 'adr', '0001-accepted.md'), '# 1. Accepted\n\n## Status\n\nAccepted\n\n## Context\n');
-fs.writeFileSync(path.join(studio, 'docs', 'adr', '0002-proposed.md'), '# 2. Proposed\n\n## Status\n\nProposed\n\n## Context\n');
+execFileSync('git', ['clone', '-q', studioMain, studio], { stdio: 'pipe' });
+writeAdrs(studio, { '0001-accepted.md': 'Proposed', '0002-proposed.md': 'Accepted', '0003-new.md': 'Accepted' });
 test.after(() => {
-  for (const dir of [otherRepo, studio]) fs.rmSync(dir, { recursive: true, force: true });
+  for (const dir of [otherRepo, studioMain, studio]) fs.rmSync(dir, { recursive: true, force: true });
 });
 
 function run(input, project = ROOT) {
@@ -500,9 +520,26 @@ expect(2, 'game-designer writes docs/adr/', file('Write', path.join(ROOT, 'docs'
 expect(2, 'game-designer writes Game/', file('Write', path.join(ROOT, 'Game', 'Assets', 'X.cs'), as('game-designer')));
 expect(2, 'game-designer writes outside the repo', file('Write', path.join(ROOT, '..', 'x.md'), as('game-designer')));
 expect(2, 'game-designer runs a shell command', shell('Bash', 'ls', as('game-designer')));
-expect(0, 'tech-architect writes a new ADR', file('Write', inStudio('docs/adr/0003-new.md'), { cwd: studio, ...as('tech-architect') }), studio);
-expect(0, 'tech-architect edits a Proposed ADR', file('Edit', inStudio('docs/adr/0002-proposed.md'), { cwd: studio, ...as('tech-architect') }), studio);
-expect(2, 'tech-architect edits an Accepted ADR', file('Edit', inStudio('docs/adr/0001-accepted.md'), { cwd: studio, ...as('tech-architect') }), studio);
+// The status that counts is the one committed on origin/main, not the working copy's.
+const architect = { cwd: studio, ...as('tech-architect') };
+expect(0, 'tech-architect edits an ADR not on main whose working copy says Accepted', file('Edit', inStudio('docs/adr/0003-new.md'), architect), studio);
+expect(0, 'tech-architect writes a brand-new ADR', file('Write', inStudio('docs/adr/0008-brand-new.md'), architect), studio);
+expect(0, 'tech-architect edits an ADR Proposed on main whose working copy says Accepted', file('Edit', inStudio('docs/adr/0002-proposed.md'), architect), studio);
+expect(2, 'tech-architect edits an ADR Accepted on main whose working copy says Proposed', file('Edit', inStudio('docs/adr/0001-accepted.md'), architect), studio);
+for (const name of ['0004-rejected', '0005-deprecated', '0006-superseded']) {
+  expect(2, `tech-architect edits ${name}.md (not Proposed on main)`, file('Write', inStudio(`docs/adr/${name}.md`), architect), studio);
+}
+expect(2, 'tech-architect edits an Accepted ADR named in another case', file('Edit', inStudio('docs/adr/0007-mixed-case.md'), architect), studio);
+// Fails closed: a repository with no origin/main, and a folder that isn't a repository.
+const notRepo = tempDir();
+test.after(() => fs.rmSync(notRepo, { recursive: true, force: true }));
+for (const project of [otherRepo, notRepo]) {
+  test('blocks: tech-architect edits an ADR when origin/main can’t be read', () => {
+    const r = run(file('Write', path.join(project, 'docs', 'adr', '0003-new.md'), { cwd: project, ...as('tech-architect') }), project);
+    assert.strictEqual(r.status, 2, `exit ${r.status}, stderr: ${r.stderr}`);
+    assert.match(r.stderr, /status on origin\/main can’t be read/);
+  });
+}
 expect(2, 'tech-architect edits the ADR template', file('Edit', path.join(ROOT, 'docs', 'adr', '0000-adr-template.md'), as('tech-architect')));
 expect(2, 'tech-architect writes docs/design/', file('Edit', path.join(ROOT, 'docs', 'design', 'gdd.md'), as('tech-architect')));
 expect(2, 'tech-architect runs PowerShell', shell('PowerShell', 'Get-ChildItem', as('tech-architect')));

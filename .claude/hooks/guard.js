@@ -15,7 +15,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFile } = require('node:child_process');
+const { execFile, execFileSync } = require('node:child_process');
 
 const OWNER = 'smokim38';
 const REPO = 'smokim38/rts-game';
@@ -950,16 +950,29 @@ function isProtectedPath(abs) {
   return PROTECTED_FILE.test(p) || userFiles.includes(p) || p.startsWith(`${home}/.config/git/`);
 }
 
-function adrStatus(abs) {
-  let text;
-  try {
-    text = fs.readFileSync(abs, 'utf8');
-  } catch {
-    return null; // a new ADR
-  }
+function adrStatus(text) {
   const m = /^##\s*Status\s*$([\s\S]*?)(^##\s|$(?![\s\S]))/im.exec(text);
   const line = m ? m[1].split(/\r?\n/).map((l) => l.trim()).find((l) => l !== '') : '';
   return (line ?? '').toLowerCase();
+}
+
+// An ADR's statuses as committed on origin/main: none if it isn't there yet. The working copy
+// can't decide, because an ADR is written as Accepted on its branch before review. Paths match
+// case-insensitively, as the file system does on Windows. Any git error blocks.
+const MAIN_REF = 'refs/remotes/origin/main';
+function mainAdrStatuses(root, rel) {
+  const git = onPath('git');
+  if (!git) block('git is not on PATH, so the ADR’s status on origin/main can’t be checked');
+  const run = (...args) => execFileSync(git, ['--no-replace-objects', '-C', root, ...args], { timeout: 5000, maxBuffer: 64 * 1024 * 1024, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  try {
+    const entries = run('ls-tree', '-r', '-z', MAIN_REF).toString('utf8').split('\0').filter((e) => e !== '');
+    return entries
+      .map((e) => /^(\d+) (\w+) ([0-9a-f]+)\t([\s\S]*)$/.exec(e))
+      .filter((m) => m && norm(m[4]) === rel)
+      .map((m) => (m[2] === 'blob' && m[1] !== '120000' ? adrStatus(run('cat-file', 'blob', m[3]).toString('utf8')) : ''));
+  } catch {
+    block('the ADR’s status on origin/main can’t be read, so the edit can’t be checked');
+  }
 }
 
 function checkFile(input) {
@@ -978,9 +991,8 @@ function checkFile(input) {
   const rel = norm(path.relative(root, abs));
   if (!lane.file.test(rel)) block(`${role} may write only ${lane.where} (.claude/agents/${role}.md)`);
   if (role === 'tech-architect') {
-    const status = adrStatus(abs);
-    if (status !== null && !status.startsWith('proposed')) {
-      block('only Proposed ADRs can be edited; supersede an accepted ADR with a new one (AGENTS.md §9)');
+    if (mainAdrStatuses(root, rel).some((status) => !status.startsWith('proposed'))) {
+      block('only ADRs that are new or Proposed on origin/main can be edited; supersede an accepted ADR with a new one (AGENTS.md §9)');
     }
   }
 }
