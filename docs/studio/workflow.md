@@ -171,6 +171,9 @@ Done:          <feature>: what changed in the game, how to try it (PR #<n>)
 In progress:   <feature>, <one-line state>
 Blocked:       <feature>, blocked on <what>, next step <who/what>
 Needs owner:   <decision or approval>, with a recommendation
+Tokens:        Codex <total> (<PR or Issue #n>: <tokens>, <runs> runs; ...), Claude not available
 ```
 
 Write "none" on a line with nothing to report. "In progress" covers the Ready, In progress and In review cards, so every card outside Backlog and Done appears exactly once.
+
+"Tokens" is the session's Codex token total, added up from the launcher's run summaries and broken down by PR or Issue with the number of runs for each. Note any runs that reported no tokens. Claude usage is "not available" unless the Producer has a figure. The line is "none" when no Codex runs happened.
