@@ -5,8 +5,10 @@
 // running. A record holds only the session id, agent name, event, time and the process id of the
 // Claude Code session. Nothing else from the input is kept: no prompts, paths or other text.
 // It must never get in a session's way. It prints nothing, because SessionStart output would go
-// into the session's context. It stops itself within a second of starting and always exits 0.
-// All file work is asynchronous, so the stop timer still fires while the disk is slow.
+// into the session's context, and it always exits 0. It never delays a session by more than
+// 1 second: Claude Code's hook timeout ("timeout": 1 in .claude/settings.json) enforces that, and
+// a run it stops leaves no record or an incomplete line. The script's own time limit normally
+// stops it sooner. All file work is asynchronous, so that limit still fires while the disk is slow.
 // Tests: node --test .claude/hooks/session-marker.test.js
 
 const fsp = require('node:fs/promises');
