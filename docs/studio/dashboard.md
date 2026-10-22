@@ -35,6 +35,7 @@ It uses Node.js only: no packages, and the page loads nothing from the internet.
   - `.studio/sessions/` in the repository, for each Claude session's start and end records
   - this repository's Claude Code session logs, in `.claude\projects\<repo folder>\` in your user folder: the session logs and their `subagents\` folders
 - It reads a file only if its real location, after following any link or junction, is inside one of those folders.
+- It reads a folder only if that folder really is at its place in the repository or your user folder. A folder that is itself a link or junction to somewhere else isn't read.
 - It checks whether a recorded Claude process id is still running, and reads nothing else about the process.
 - It reads nothing else outside the repository: not `~/.claude.json`, and not Codex's own folder.
 - A log line that never ends is dropped once it passes 16 MiB, so memory use stays bounded.

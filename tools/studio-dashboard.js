@@ -92,6 +92,21 @@ const list = (root, dir) => {
   }
 };
 
+// Whether an allowed folder really is at its expected place under `base` (the repository or the
+// user folder): its real path must be the base's real path plus the same names, so no folder from
+// the base down is a link or junction that leads elsewhere.
+function expected(base, dir) {
+  const rel = path.relative(base, dir);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return false;
+  try {
+    const want = path.join(fs.realpathSync.native(base), rel);
+    const real = fs.realpathSync.native(dir);
+    return process.platform === 'win32' ? real.toLowerCase() === want.toLowerCase() : real === want;
+  } catch {
+    return false;
+  }
+}
+
 // Whether a process with this id is running. Signal 0 only checks that it exists.
 function pidAlive(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
@@ -311,7 +326,7 @@ function codexRun(file, root) {
 // ---------- the studio ----------
 
 // Watches all sources. `poll` reads what changed; `state` is what the page shows.
-function studio({ codexDir, claudeDir, sessionsDir, now = () => Date.now(), alive = pidAlive }) {
+function studio({ codexDir, claudeDir, sessionsDir, repoDir = ROOT, homeDir = os.homedir(), now = () => Date.now(), alive = pidAlive }) {
   const started = now();
   const sessions = new Map(); // session id -> its start and end records, for every records file
   const claude = new Map(); // file -> session or subagent, once shown
@@ -382,17 +397,21 @@ function studio({ codexDir, claudeDir, sessionsDir, now = () => Date.now(), aliv
 
   function poll() {
     const t = now();
-    pollSessions();
-    pollSubagents();
-    for (const agent of claude.values()) {
-      for (const r of agent.tail.read()) agent.add(r);
-      if (agent.kind === 'subagent') {
-        const meta = subagentInfo(claudeDir, agent.info);
-        agent.name = meta.type ?? agent.name;
-        agent.finished = meta.finished;
+    // An allowed folder that leads elsewhere isn't read. It is checked on every poll, so a folder
+    // replaced by a link later is refused too.
+    if (expected(repoDir, sessionsDir)) pollSessions();
+    if (expected(homeDir, claudeDir)) {
+      pollSubagents();
+      for (const agent of claude.values()) {
+        for (const r of agent.tail.read()) agent.add(r);
+        if (agent.kind === 'subagent') {
+          const meta = subagentInfo(claudeDir, agent.info);
+          agent.name = meta.type ?? agent.name;
+          agent.finished = meta.finished;
+        }
       }
     }
-    for (const f of list(codexDir, codexDir)) {
+    for (const f of expected(repoDir, codexDir) ? list(codexDir, codexDir) : []) {
       if (!f.endsWith('.jsonl')) continue;
       const file = path.join(codexDir, f);
       let run = codex.get(file);

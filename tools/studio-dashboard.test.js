@@ -25,7 +25,9 @@ function folders() {
   const codexDir = path.join(base, 'logs');
   const sessionsDir = path.join(base, 'sessions');
   for (const dir of [claudeDir, codexDir, sessionsDir]) fs.mkdirSync(dir);
-  return { base, claudeDir, codexDir, sessionsDir, done: () => fs.rmSync(base, { recursive: true, force: true }) };
+  // The temporary folder stands in for both the repository and the user folder.
+  const dirs = { claudeDir, codexDir, sessionsDir, repoDir: base, homeDir: base };
+  return { base, claudeDir, codexDir, sessionsDir, dirs, done: () => fs.rmSync(base, { recursive: true, force: true }) };
 }
 
 // Session records as #50's session-marker writes them.
@@ -117,7 +119,7 @@ test('Claude: sessions run from their start record until their end record or the
   try {
     const at = (name) => path.join(f.claudeDir, name);
     const live = new Set([101, 104]);
-    const watch = () => D.studio({ claudeDir: f.claudeDir, codexDir: f.codexDir, sessionsDir: f.sessionsDir, alive: (pid) => live.has(pid) });
+    const watch = () => D.studio({ ...f.dirs, alive: (pid) => live.has(pid) });
     // The Producer session, running, with a running subagent and one that finished earlier.
     sessionLog(f, 'live', [record('live', 'start', 101, 'producer')]);
     fs.writeFileSync(at('live.jsonl'), jsonl([
@@ -198,7 +200,7 @@ test('Claude: a session that starts and ends between two polls still appears, as
   const f = folders();
   try {
     const live = new Set();
-    const watch = D.studio({ claudeDir: f.claudeDir, codexDir: f.codexDir, sessionsDir: f.sessionsDir, alive: (pid) => live.has(pid) });
+    const watch = D.studio({ ...f.dirs, alive: (pid) => live.has(pid) });
     watch.poll();
     // One session starts and ends, and another starts and loses its process, both before the next poll.
     sessionLog(f, 'brief', [record('brief', 'start', 301, 'qa-lead'), record('brief', 'end', 301, 'qa-lead')]);
@@ -214,7 +216,7 @@ test('Claude: a resumed session keeps its earlier subagents finished until they 
   const f = folders();
   try {
     const live = new Set([401]);
-    const watch = D.studio({ claudeDir: f.claudeDir, codexDir: f.codexDir, sessionsDir: f.sessionsDir, alive: (pid) => live.has(pid) });
+    const watch = D.studio({ ...f.dirs, alive: (pid) => live.has(pid) });
     const subs = path.join(f.claudeDir, 'res', 'subagents');
     fs.mkdirSync(subs, { recursive: true });
     const subagent = (id, type, at) => {
@@ -284,13 +286,54 @@ test('links: nothing outside the allowed folders is read', (t) => {
       t.diagnostic('file links need extra rights on this PC, so only the folder link was tested');
     }
 
-    const watch = D.studio({ claudeDir: f.claudeDir, codexDir: f.codexDir, sessionsDir: f.sessionsDir, alive: (pid) => pid === 201 });
+    const watch = D.studio({ ...f.dirs, alive: (pid) => pid === 201 });
     watch.poll();
     watch.poll();
     const s = watch.state();
     assert.deepStrictEqual(s.claude.map((a) => [a.kind, a.name, a.tokens.total]), fileLinks ? [['session', 'main session', 0], ['session', 'main session', 0]] : [['session', 'main session', 0]]);
     assert.deepStrictEqual(s.codex, []);
     assert.ok(!JSON.stringify(s).includes(PLANTED));
+  } finally {
+    f.done();
+  }
+});
+
+test('links: an allowed folder that is itself a link to elsewhere is not read', () => {
+  const f = folders();
+  try {
+    // Each allowed folder is replaced by a junction to a lookalike folder outside it.
+    const outside = (dir, file, records) => {
+      const target = path.join(f.base, `outside-${path.basename(dir)}`);
+      fs.mkdirSync(target);
+      fs.writeFileSync(path.join(target, file), jsonl(records));
+      fs.rmdirSync(dir);
+      fs.symlinkSync(target, dir, 'junction');
+    };
+    outside(f.codexDir, 'run.jsonl', [{ at: new Date().toISOString(), event: 'start', role: 'reviewer', issue: 1, pr: 2 }]);
+    outside(f.sessionsDir, 's.jsonl', [record('s', 'start', 501, `${PLANTED}-AGENT`)]);
+    const watch = D.studio({ ...f.dirs, alive: (pid) => pid === 501 });
+    watch.poll();
+    watch.poll();
+    assert.deepStrictEqual(watch.state().codex, []);
+    assert.deepStrictEqual(watch.state().claude, []);
+
+    // With real record folders but a linked Claude folder, the session shows without its log.
+    const g = folders();
+    try {
+      sessionLog(g, 's', [record('s', 'start', 501)]);
+      const target = path.join(g.base, 'outside-claude');
+      fs.mkdirSync(target);
+      fs.writeFileSync(path.join(target, 's.jsonl'), jsonl([prompt(), ...reply('x1', usage(999, 0, 0, 0))]));
+      fs.rmdirSync(g.claudeDir);
+      fs.symlinkSync(target, g.claudeDir, 'junction');
+      const w = D.studio({ ...g.dirs, alive: (pid) => pid === 501 });
+      w.poll();
+      w.poll();
+      assert.deepStrictEqual(w.state().claude.map((a) => [a.name, a.tokens.total, a.model]), [['main session', 0, null]]);
+      for (const s of [watch.state(), w.state()]) assert.ok(!JSON.stringify(s).includes(PLANTED));
+    } finally {
+      g.done();
+    }
   } finally {
     f.done();
   }
@@ -324,7 +367,7 @@ test('Codex: live launcher runs and their helper agents, from the launcher log e
       { at: t(50), event: 'token-usage', threadId: 't1', helper: false, total: tokens(1200), last: null, contextWindow: null },
     ]);
     // The dashboard started 30 seconds ago: the first helper finished before that.
-    const watch = D.studio({ claudeDir: f.claudeDir, codexDir: f.codexDir, sessionsDir: f.sessionsDir, now: () => base - 30e3 });
+    const watch = D.studio({ ...f.dirs, now: () => base - 30e3 });
     watch.poll();
     let [run, ...others] = watch.state().codex;
     assert.deepStrictEqual(others, []);
@@ -361,7 +404,7 @@ test('Codex: an ended run stays hidden even when its log starts with a long unre
     const start = { at: new Date().toISOString(), event: 'start', role: 'reviewer', issue: 46, pr: 48 };
     fs.writeFileSync(path.join(f.codexDir, 'ended.jsonl'), junk + jsonl([start, { at: new Date().toISOString(), event: 'end', error: null }]));
     fs.writeFileSync(path.join(f.codexDir, 'open.jsonl'), junk + jsonl([{ ...start, issue: 47, pr: 49 }]));
-    const watch = D.studio({ claudeDir: f.claudeDir, codexDir: f.codexDir, sessionsDir: f.sessionsDir });
+    const watch = D.studio({ ...f.dirs });
     watch.poll();
     watch.poll();
     assert.deepStrictEqual(watch.state().codex.map((r) => [r.issue, r.state]), [[47, 'running']]);
@@ -380,7 +423,7 @@ test('read-only: polling writes, changes and deletes nothing', () => {
     fs.writeFileSync(path.join(f.codexDir, 'r.jsonl'), jsonl([{ at: new Date().toISOString(), event: 'start', role: 'reviewer', issue: 1, pr: 2 }]));
     for (const n of names) fs[n] = () => assert.fail(`the dashboard called fs.${n}`);
     fs.openSync = (file, flags, ...rest) => (flags === 'r' ? saved.openSync(file, flags, ...rest) : assert.fail(`the dashboard opened ${file} with ${flags}`));
-    const watch = D.studio({ claudeDir: f.claudeDir, codexDir: f.codexDir, sessionsDir: f.sessionsDir });
+    const watch = D.studio({ ...f.dirs });
     watch.poll();
     watch.poll();
     assert.strictEqual(watch.state().claude.length, 1);
@@ -395,7 +438,7 @@ test('the server: this PC only, GET only, and only names, times, states and numb
   const f = folders();
   sessionLog(f, 's', [record('s', 'start', process.pid, 'producer')]);
   fs.writeFileSync(path.join(f.claudeDir, 's.jsonl'), jsonl([{ type: 'agent-setting', agentSetting: 'producer' }, prompt(), ...reply('m1', usage(1, 2, 3, 4))]));
-  const watch = D.studio({ claudeDir: f.claudeDir, codexDir: f.codexDir, sessionsDir: f.sessionsDir });
+  const watch = D.studio({ ...f.dirs });
   watch.poll();
   const srv = D.start(watch, { port: 0, host: '127.0.0.1' });
   await new Promise((r) => srv.once('listening', r));
