@@ -19,6 +19,7 @@
 // Node.js built-in modules only. Tests: node --test tools/codex-launch.test.js
 
 const { execFileSync, spawn } = require('node:child_process');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('node:readline');
@@ -237,26 +238,59 @@ const alive = (pid) => {
   }
 };
 
-// An exclusive lock file holding this process's id. One left by a process that has ended is
-// taken over. Returns the function that releases it.
-function acquire(file) {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      fs.writeFileSync(file, `${process.pid}\n`, { flag: 'wx' });
-      return () => fs.rmSync(file, { force: true });
-    } catch (err) {
-      if (err.code !== 'EEXIST') throw err;
-    }
-    let pid;
-    try {
-      pid = Number(fs.readFileSync(file, 'utf8').trim());
-    } catch {
-      continue; // released in the meantime
-    }
-    if (!Number.isInteger(pid) || pid <= 0 || alive(pid)) refuse(`another launcher run holds ${path.basename(file)}; try again when it finishes`);
-    fs.rmSync(file, { force: true });
+const readLock = (file) => {
+  try {
+    return fs.readFileSync(file, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
   }
-  refuse(`another launcher run took ${path.basename(file)} first`);
+};
+
+// An exclusive lock file holding this process's id and a random token. Returns the function that
+// releases it, which removes the lock only while it still holds that token. A lock left by a
+// process that has ended is taken over under `<file>.recover`, so only one run recovers it and a
+// run that read the stale lock too finds it changed. `onStale` lets tests interleave a rival.
+function acquire(file, onStale = () => {}) {
+  const name = path.basename(file);
+  const token = `${process.pid} ${crypto.randomBytes(8).toString('hex')}\n`;
+  const take = () => {
+    try {
+      fs.writeFileSync(file, token, { flag: 'wx' });
+      return true;
+    } catch (err) {
+      if (err.code === 'EEXIST') return false;
+      throw err;
+    }
+  };
+  const release = () => {
+    if (readLock(file) === token) fs.rmSync(file, { force: true });
+  };
+  if (take()) return release;
+  const stale = readLock(file);
+  if (stale === null) {
+    if (take()) return release;
+    refuse(`another launcher run took ${name} first`);
+  }
+  const pid = Number(stale.trim().split(/\s+/)[0]);
+  if (!Number.isInteger(pid) || pid <= 0 || alive(pid)) refuse(`another launcher run holds ${name}; try again when it finishes`);
+  onStale();
+  const recover = `${file}.recover`;
+  try {
+    fs.writeFileSync(recover, token, { flag: 'wx' });
+  } catch (err) {
+    if (err.code !== 'EEXIST') throw err;
+    refuse(`another launcher run is recovering ${name}; try again. If no launcher is running, the owner deletes ${path.basename(recover)}`);
+  }
+  try {
+    const now = readLock(file);
+    if (now !== null && now !== stale) refuse(`another launcher run took ${name} first`);
+    if (now !== null) fs.rmSync(file, { force: true });
+    if (!take()) refuse(`another launcher run took ${name} first`);
+    return release;
+  } finally {
+    fs.rmSync(recover, { force: true });
+  }
 }
 
 // One WIP slot per engineer (workflow.md): a lock names the Issue that holds the slot until it

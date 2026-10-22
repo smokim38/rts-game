@@ -248,6 +248,16 @@ const blockedBash = [
   'GH_BROWSER=codex gh browse',
   'export VISUAL=codex',
   'env EDITOR="claude --x" git commit',
+  // PR #43 review, round 2: shorter prefixes of --no-verify, and agents later in a value
+  'git commit --no-ver -m x',
+  'git merge --no-ver origin/main',
+  'git merge --no-v origin/main',
+  'git push --no-verif origin HEAD:refs/heads/feat/x',
+  'git -C . commit --no-ve -m x',
+  'GH_BROWSER="npx @anthropic-ai/claude-code@latest" gh browse',
+  'GH_BROWSER="npx claude" gh browse',
+  'EDITOR="cmd /c codex" git commit',
+  'export BROWSER="node C:/npm/node_modules/@openai/codex/bin/codex.js"',
 ];
 
 const blockedPowerShell = [
@@ -317,6 +327,9 @@ const blockedPowerShell = [
   "& node 'C:\\Program Files\\nodejs\\node_modules\\@anthropic-ai\\claude-code\\cli.js' -p x",
   "$env:EDITOR = 'codex'; git commit",
   "$env:PAGER='claude'; git log",
+  // PR #43 review, round 2
+  'git merge --no-ver origin/main',
+  "$env:GH_BROWSER = 'npx @anthropic-ai/claude-code@latest'; gh browse",
 ];
 
 const allowedBash = [
@@ -404,6 +417,10 @@ const allowedBash = [
   'rg "@openai/codex" docs',
   'git commit -m "docs: Codex-Run is a trailer"',
   'node --test tools/codex-launch.test.js',
+  'git commit -v -m x',
+  'git log --no-walk HEAD',
+  'git commit -m "fix: GH_BROWSER=npx claude docs"',
+  'rg "EDITOR=cmd /c codex" docs',
 ];
 
 const allowedPowerShell = [

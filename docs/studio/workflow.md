@@ -123,7 +123,7 @@ A `type:spike` Issue is time-boxed research. Its output is a written finding (a 
 
 ## WIP limit
 
-Each engineer (gameplay-programmer, qa-test-engineer, tech-artist) has **one WIP slot**: at most one open assigned Issue at a time. The launcher enforces it with a lock per role under `.studio/locks/`, which frees when the Issue closes. The slot is checked and claimed atomically, so two launcher runs can't both take it. For qa-test-engineer, a QA check fills the slot until its result is posted. If an engineer is blocked, the Producer resolves the blocker or asks the owner; the engineer doesn't start a second Issue. Fixes requested by review or QA belong to the same Issue, so they never need a second one.
+Each engineer (gameplay-programmer, qa-test-engineer, tech-artist) has **one WIP slot**: at most one open assigned Issue at a time. The launcher enforces it with a lock per role under `.studio/locks/`, which frees when the Issue closes. The slot is checked and claimed atomically, so two launcher runs can't both take it, and only one run can take over a lock left by a run that crashed. For qa-test-engineer, a QA check fills the slot until its result is posted. If an engineer is blocked, the Producer resolves the blocker or asks the owner; the engineer doesn't start a second Issue. Fixes requested by review or QA belong to the same Issue, so they never need a second one.
 
 ## Merge policy
 

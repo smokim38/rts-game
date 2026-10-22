@@ -143,15 +143,37 @@ test('locks: exclusive while their process lives, taken over once it has ended',
   try {
     const file = path.join(dir, 'reviewer-pr50.run');
     const release = L.acquire(file);
-    assert.strictEqual(fs.readFileSync(file, 'utf8'), `${process.pid}\n`);
+    assert.match(fs.readFileSync(file, 'utf8'), new RegExp(`^${process.pid} [0-9a-f]{16}\\n$`));
     refused(() => L.acquire(file), /another launcher run holds/);
     release();
     assert.strictEqual(fs.existsSync(file), false);
     L.acquire(file)();
-    fs.writeFileSync(file, '999999\n'); // never a live process id on Windows (not a multiple of 4)
+    const dead = '999999 0000000000000000\n'; // never a live process id on Windows (not a multiple of 4)
+    fs.writeFileSync(file, dead);
     L.acquire(file)();
+    assert.strictEqual(fs.existsSync(`${file}.recover`), false);
     fs.writeFileSync(file, ''); // being written by another run
     refused(() => L.acquire(file), /another launcher run holds/);
+
+    // Two runs read the same stale lock: the rival recovers it first, so this run must refuse
+    // and leave the rival's lock alone.
+    const rival = `${process.pid} ffffffffffffffff\n`;
+    fs.writeFileSync(file, dead);
+    refused(() => L.acquire(file, () => fs.writeFileSync(file, rival)), /took reviewer-pr50\.run first/);
+    assert.strictEqual(fs.readFileSync(file, 'utf8'), rival);
+    // The rival is still recovering it.
+    fs.writeFileSync(file, dead);
+    fs.writeFileSync(`${file}.recover`, rival);
+    refused(() => L.acquire(file), /recovering reviewer-pr50\.run/);
+    assert.strictEqual(fs.readFileSync(file, 'utf8'), dead);
+    fs.rmSync(`${file}.recover`);
+
+    // Releasing removes only this run's own lock.
+    fs.rmSync(file);
+    const mine = L.acquire(file);
+    fs.writeFileSync(file, rival);
+    mine();
+    assert.strictEqual(fs.readFileSync(file, 'utf8'), rival);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -232,6 +254,11 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', (l
     }
     if (scenario === 'approval') send({ id: 99, method: 'item/commandExecution/requestApproval', params: { command: 'x' } });
     if (scenario === 'exit') process.exit(3);
+    if (scenario === 'tree') {
+      // Like the npm wrapper: the real server is a child process of the program the launcher ran.
+      const child = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+      require('node:fs').writeFileSync(process.argv[3], String(child.pid));
+    }
   } else if (msg.id === 99) done(JSON.stringify(msg.result));
   function done(text) {
     note('item/completed', { item: { type: 'agentMessage', text } });
@@ -273,6 +300,24 @@ test('runCodex: the whole app-server flow, failing closed', async () => {
     assert.deepStrictEqual(asked.declined, ['item/commandExecution/requestApproval']);
     assert.deepStrictEqual(JSON.parse(asked.finalText), { decision: 'decline' });
     assert.ok(events.some((e) => e.scenario === 'reroute' && e.event === 'model-rerouted' && e.to === 'gpt-other'));
+
+    // Stopping a run ends the whole process tree, not just the wrapper. On Windows, Node puts the
+    // npm wrapper's codex.exe in a job object that ends with the wrapper; this pins that.
+    const pidFile = path.join(dir, 'grandchild.pid');
+    await assert.rejects(run('tree', { timeoutMs: 1500, command: { file: process.execPath, args: [server, 'tree', pidFile] } }), /time limit/);
+    const grandchild = Number(fs.readFileSync(pidFile, 'utf8'));
+    const alive = () => {
+      try {
+        process.kill(grandchild, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    for (let i = 0; i < 20 && alive(); i++) await new Promise((r) => setTimeout(r, 100));
+    const outlived = alive();
+    if (outlived) process.kill(grandchild);
+    if (process.platform === 'win32') assert.strictEqual(outlived, false, 'the server’s child process outlived the run');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }

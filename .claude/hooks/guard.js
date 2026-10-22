@@ -679,11 +679,12 @@ function isAgentProgram(text) {
   return AGENT_PROGRAMS.has(p.split('/').pop().replace(/@[^@]*$/, '').replace(/\.(exe|cmd|bat|ps1|js|mjs|cjs)$/, ''));
 }
 
-// The program a token names, or the one an assignment or option sets: `EDITOR=codex`, `--x=claude …`.
+// The program a token names, or one an assignment or option value runs: `EDITOR=codex`,
+// `--x=claude …`. A value can hold a whole command (`GH_BROWSER="npx claude"`, or PowerShell's
+// `$env:GH_BROWSER = 'npx claude'`), so every word counts.
 function namesAgent(text) {
   if (isAgentProgram(text)) return true;
-  const eq = text.lastIndexOf('=');
-  return eq >= 0 && isAgentProgram(text.slice(eq + 1).trim().split(/\s+/)[0]);
+  return text.split(/[\s=]+/).some((w) => w && isAgentProgram(w));
 }
 
 function checkSegment(seg, input, dialect, command, total, gate) {
@@ -691,7 +692,8 @@ function checkSegment(seg, input, dialect, command, total, gate) {
   checkEnvironment(seg, command);
   for (const t of seg.tokens.filter(isWord)) {
     const lower = norm(t.text);
-    if (lower.includes('--no-veri')) block('`--no-verify` skips the git hooks, including the gitleaks secret scan (AGENTS.md §5)');
+    // Git accepts any unambiguous prefix of a long option, so every prefix down to `--no-v` counts.
+    if (lower.includes('--no-veri') || /^--no-v(e(r(i(fy?)?)?)?)?(=|$)/.test(lower)) block('`--no-verify` skips the git hooks, including the gitleaks secret scan (AGENTS.md §5)');
     if (isPwsh && /^-(e|ec|ea|en\w*)$/.test(lower)) block('an encoded PowerShell command cannot be checked');
     if (lower.includes('hookspath') && !isGitConfigRead(seg)) block('core.hooksPath must stay `.githooks`; git config changes are forbidden (AGENTS.md §5)');
   }

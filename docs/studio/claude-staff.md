@@ -28,7 +28,7 @@ Codex roles (gameplay-programmer, qa-test-engineer, tech-artist, and the read-on
 
 ### The Codex launcher
 `tools/codex-launch.js` (Node.js built-ins only; tests: `node --test tools/codex-launch.test.js`):
-1. Checks the inputs (fixed roles; `qa-test-engineer` and `reviewer` also need a PR), the authority rule (open, opened by `smokim38`, an `### Owner instruction` with a quote and a date, no body edits by other accounts) and the role's WIP slot. Lock files under `.studio/locks/` that name the launcher's process make the slot claim atomic and allow one run per worktree at a time. A lock left by a process that has ended is taken over.
+1. Checks the inputs (fixed roles; `qa-test-engineer` and `reviewer` also need a PR), the authority rule (open, opened by `smokim38`, an `### Owner instruction` with a quote and a date, no body edits by other accounts) and the role's WIP slot. Lock files under `.studio/locks/` that name the launcher's process make the slot claim atomic and allow one run per worktree at a time. A lock left by a process that has ended is taken over under a second, short-lived lock, so only one run recovers it; a run that finds a recovery under way refuses. A run removes only its own lock.
 2. Reads the role file from `main` on GitHub, so a local edit can't change a role's model, effort or instructions.
 3. Prepares a worktree under `.studio/worktrees/` (git-ignored): the Issue's branch for implementation roles, or a detached checkout of the PR's exact head for QA and review.
 4. Runs Codex unattended through `codex app-server`: `workspace-write` (`read-only` for `reviewer`), approval policy `on-request`, approvals reviewer `auto_review`, the role's model and effort. Before the turn starts, it checks Codex's own thread/start reply reports exactly these settings, and stops if any differ. Later in the run, a settings change that departs from them, or a reroute to another model, also stops the run, and nothing is posted. Codex reports `auto_review` under its legacy name `guardian_subagent` in some versions, and the launcher accepts both. Any approval request that reaches the launcher (auto-review didn't answer it) is declined. The launcher never approves anything.
@@ -48,7 +48,7 @@ The agent file sets the model and tools for the whole session, but under `--agen
 ### Example prompts for the Producer
 - "Use the game-designer agent on Issue #12: draft the Allied infantry roster in `docs/design/units.md`."
 - "Use the tech-architect agent on Issue #15: write an ADR that compares DOTS/ECS with pooled GameObjects for 5,000 units."
-- "Use the code-reviewer agent on PR #20 for Issue #18. Return the review to me; don't post it yet."
+- "Use the code-reviewer agent on PR #20 for Issue #18." It posts its verdict record on the PR.
 
 The model, effort and tools for each agent live in its frontmatter. Change them only with a Critical-tier PR. After an agent file changes, restart the session (or check `/agents`) so the new definition loads.
 
@@ -86,9 +86,9 @@ The script installs the committed version from the ref, never the working tree, 
 - shell profiles (`~/.bashrc`, PowerShell `$PROFILE` and similar) and Claude's session environment file, which set the environment of later calls
 - the managed folder
 
-Reading them is fine. Agents describe proposed changes in the PR, and the owner makes them by hand.
+Reading them is fine, except `~/.claude.json` and other credential files, which agents never read (AGENTS.md §5). Agents describe proposed changes in the PR, and the owner makes them by hand.
 
-**Skipping hooks:** `--no-verify` or any abbreviation of it, and `git commit -n`, including clusters like `-anm`.
+**Skipping hooks:** `--no-verify` or any abbreviation git accepts, down to `--no-v` (which also blocks a few prefixes of `--no-verbose`), and `git commit -n`, including clusters like `-anm`.
 
 **Commands that run the git hooks** (`git commit`, `merge`, `pull`, `push`) must be the only command in their call, with nothing before them. Tool calls don't keep environment changes, so nothing can change the environment git and gitleaks start with. Run `git add` and `git commit` as two calls.
 
@@ -130,7 +130,7 @@ Reading them is fine. Agents describe proposed changes in the PR, and the owner 
 **Codex, Claude and indirect execution (every session):**
 - `codex` by any name or path (`codex.exe`, `codex.js`, `codex@<version>`, `npx codex`), and the `@openai/codex` package by any path, except through the Producer's launcher form
 - nested Claude sessions (`claude …`, `claude@<version>`, the `@anthropic-ai/claude-code` package by any path), so no session can act as the Producer
-- an assignment or option that names either program (`EDITOR=codex git commit`, `PAGER=claude git log`)
+- an assignment or option whose value names either program in any word (`EDITOR=codex git commit`, `PAGER=claude git log`, `GH_BROWSER="npx @anthropic-ai/claude-code" gh browse`)
 - the launcher itself, for anyone but the Producer
 - read-command options that run other programs: `rg --pre` and `--pre-glob`, `find -exec`, `-execdir`, `-ok` and `-okdir`, and setting `LESSOPEN` or `LESSCLOSE`
 - rewriting refs: `git update-ref`, `git replace` and `git symbolic-ref` writes
