@@ -258,6 +258,13 @@ const blockedBash = [
   'GH_BROWSER="npx claude" gh browse',
   'EDITOR="cmd /c codex" git commit',
   'export BROWSER="node C:/npm/node_modules/@openai/codex/bin/codex.js"',
+  // PR #43 review, round 3: quotes inside a value, which gh and others strip before running it
+  `GH_BROWSER='npx "@anthropic-ai/claude-code@latest"' gh browse`,
+  `GH_BROWSER='npx "claude"' gh browse`,
+  `GH_BROWSER='npx cl""aude' gh browse`,
+  `GH_BROWSER='co"de"x' gh browse`,
+  `GH_BROWSER='npx \\@openai/codex' gh browse`,
+  `export BROWSER='npx "codex"'`,
 ];
 
 const blockedPowerShell = [
@@ -330,6 +337,10 @@ const blockedPowerShell = [
   // PR #43 review, round 2
   'git merge --no-ver origin/main',
   "$env:GH_BROWSER = 'npx @anthropic-ai/claude-code@latest'; gh browse",
+  // PR #43 review, round 3
+  `$env:GH_BROWSER = 'npx "@anthropic-ai/claude-code@latest"'; gh browse`,
+  `$env:GH_BROWSER = 'npx cl""aude'; gh browse`,
+  `$env:GH_BROWSER = 'co''de''x'; gh browse`,
 ];
 
 const allowedBash = [
@@ -421,6 +432,8 @@ const allowedBash = [
   'git log --no-walk HEAD',
   'git commit -m "fix: GH_BROWSER=npx claude docs"',
   'rg "EDITOR=cmd /c codex" docs',
+  `git commit -m 'docs: GH_BROWSER="npx claude" is blocked'`,
+  `gh pr comment 9 --body 'never set EDITOR="co""dex"'`,
 ];
 
 const allowedPowerShell = [

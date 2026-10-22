@@ -130,7 +130,7 @@ Reading them is fine, except `~/.claude.json` and other credential files, which 
 **Codex, Claude and indirect execution (every session):**
 - `codex` by any name or path (`codex.exe`, `codex.js`, `codex@<version>`, `npx codex`), and the `@openai/codex` package by any path, except through the Producer's launcher form
 - nested Claude sessions (`claude …`, `claude@<version>`, the `@anthropic-ai/claude-code` package by any path), so no session can act as the Producer
-- an assignment or option whose value names either program in any word (`EDITOR=codex git commit`, `PAGER=claude git log`, `GH_BROWSER="npx @anthropic-ai/claude-code" gh browse`)
+- an assignment or option whose value names either program in any word, also once quotes and escapes are removed (`EDITOR=codex git commit`, `PAGER=claude git log`, `GH_BROWSER="npx @anthropic-ai/claude-code" gh browse`, `GH_BROWSER='npx cl""aude' gh browse`)
 - the launcher itself, for anyone but the Producer
 - read-command options that run other programs: `rg --pre` and `--pre-glob`, `find -exec`, `-execdir`, `-ok` and `-okdir`, and setting `LESSOPEN` or `LESSCLOSE`
 - rewriting refs: `git update-ref`, `git replace` and `git symbolic-ref` writes

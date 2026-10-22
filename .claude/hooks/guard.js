@@ -681,10 +681,13 @@ function isAgentProgram(text) {
 
 // The program a token names, or one an assignment or option value runs: `EDITOR=codex`,
 // `--x=claude …`. A value can hold a whole command (`GH_BROWSER="npx claude"`, or PowerShell's
-// `$env:GH_BROWSER = 'npx claude'`), so every word counts.
+// `$env:GH_BROWSER = 'npx claude'`), so every word counts. Programs that run a value strip its
+// quotes and escapes first (`npx "claude"`, `cl""aude`, `cl\aude`), so those forms are checked too.
 function namesAgent(text) {
   if (isAgentProgram(text)) return true;
-  return text.split(/[\s=]+/).some((w) => w && isAgentProgram(w));
+  const unquoted = text.replace(/["'`]/g, '');
+  const unescaped = unquoted.replace(/\\(.)/g, '$1');
+  return [text, unquoted, unescaped].some((v) => v.split(/[\s=]+/).some((w) => w && isAgentProgram(w)));
 }
 
 function checkSegment(seg, input, dialect, command, total, gate) {
