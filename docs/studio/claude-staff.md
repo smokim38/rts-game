@@ -43,6 +43,19 @@ Codex roles (gameplay-programmer, qa-test-engineer, tech-artist, and the read-on
 
 Verified on 2026-10-20 with Codex CLI 0.163.0: thread/start reported the requested model, effort, `workspaceWrite` with no network, `on-request` and `auto_review`, and a network escalation was answered by auto-review (approved, low risk) with nothing reaching the launcher.
 
+### Session records
+Claude Code runs `.claude/hooks/session-marker.js` when a session starts and when it ends (the `SessionStart` and `SessionEnd` hooks in `.claude/settings.json`; tests: `node --test .claude/hooks/session-marker.test.js`).
+- **The record:** each event appends one line to `.studio/sessions/<session id>.jsonl`. The line holds:
+  - the session id
+  - the agent name (the agent type for a session started with `--agent`, such as `producer`, otherwise `main session`)
+  - `start` or `end`, and the time
+  - the process id of the Claude Code session, so a reader can check whether it is still running
+- **When:** a session also gets a start record when it is resumed, cleared or compacted. Subagents get none.
+- **What it never writes:** prompts, transcript paths, the working folder, user names or any other text.
+- **Where:** only inside `.studio/sessions/`, and only when `.studio/.gitignore` exists (the launcher creates it), so the records are never committed. A session id that isn't a plain id, or a folder that is a link, gets no record.
+- **Never in the way:** it prints nothing and always exits successfully. It never delays a session by more than 1 second: Claude Code stops the hook after 1 second (`"timeout": 1` in `.claude/settings.json`), and the script normally stops itself sooner.
+- **A record can be missing:** when the timeout stops the hook, for example while the disk is stalled, that start or end record is missing or its line is incomplete. A reader should skip lines it can't parse, and treat a session with no end record as running only while its process id is alive.
+
 ### How to start the Producer
 From the repository root:
 ```sh
