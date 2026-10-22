@@ -23,10 +23,15 @@ function folders() {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-test-'));
   const claudeDir = path.join(base, 'claude');
   const codexDir = path.join(base, 'logs');
-  fs.mkdirSync(claudeDir);
-  fs.mkdirSync(codexDir);
-  return { base, claudeDir, codexDir, done: () => fs.rmSync(base, { recursive: true, force: true }) };
+  const sessionsDir = path.join(base, 'sessions');
+  for (const dir of [claudeDir, codexDir, sessionsDir]) fs.mkdirSync(dir);
+  return { base, claudeDir, codexDir, sessionsDir, done: () => fs.rmSync(base, { recursive: true, force: true }) };
 }
+
+// Session records as #50's session-marker writes them.
+const record = (session, event, pid, agent = 'main session', at = new Date().toISOString()) => ({ session, agent, event, at, pid });
+const sessionLog = (f, id, records) => fs.appendFileSync(path.join(f.sessionsDir, `${id}.jsonl`), jsonl(records));
+const byName = (s) => Object.fromEntries(s.claude.map((a) => [a.name, a.state]));
 
 // A Claude reply as Claude Code writes it: one record per content block, the same message id and
 // usage on each.
@@ -73,16 +78,48 @@ test('the tailer reads only complete lines and skips malformed ones', () => {
     assert.deepStrictEqual(tail.read(), [{ b: 2 }, { c: 'é' }]);
     fs.writeFileSync(file, '{"d":4}\n'); // replaced by a shorter file
     assert.deepStrictEqual(tail.read(), [{ d: 4 }]);
+
+    // A read that finds no complete line hasn't reached the end yet.
+    const big = path.join(f.base, 'big.jsonl');
+    fs.writeFileSync(big, `${'x'.repeat(40)}\n{"e":5}\n`);
+    const small = D.tailer(big, f.base, { chunk: 16 });
+    assert.deepStrictEqual(small.read(), []);
+    assert.strictEqual(small.atEnd, false);
+    const got = [];
+    do got.push(...small.read()); while (!small.atEnd);
+    assert.deepStrictEqual(got, [{ e: 5 }]);
   } finally {
     f.done();
   }
 });
 
-test('Claude: live sessions and subagents with their tokens, counted once per reply', () => {
+test('the tailer drops an unfinished line once it passes the limit, and carries on after it', () => {
+  const f = folders();
+  try {
+    const file = path.join(f.base, 'long.jsonl');
+    fs.writeFileSync(file, `{"a":1}\n{"long":"${'y'.repeat(100)}"}\n{"b":2}\n`);
+    const tail = D.tailer(file, f.base, { chunk: 16, maxLine: 32 });
+    const got = [];
+    do got.push(...tail.read()); while (!tail.atEnd);
+    assert.deepStrictEqual(got, [{ a: 1 }, { b: 2 }]);
+  } finally {
+    f.done();
+  }
+});
+
+test('a process id counts as running only while that process exists', () => {
+  assert.strictEqual(D.pidAlive(process.pid), true);
+  for (const pid of [0, -1, null, undefined, 1.5, '12', 2 ** 53]) assert.strictEqual(D.pidAlive(pid), false);
+});
+
+test('Claude: sessions run from their start record until their end record or their process is gone', () => {
   const f = folders();
   try {
     const at = (name) => path.join(f.claudeDir, name);
-    // A Producer session running now, with a running subagent and one that finished earlier.
+    const live = new Set([101, 104]);
+    const watch = () => D.studio({ claudeDir: f.claudeDir, codexDir: f.codexDir, sessionsDir: f.sessionsDir, alive: (pid) => live.has(pid) });
+    // The Producer session, running, with a running subagent and one that finished earlier.
+    sessionLog(f, 'live', [record('live', 'start', 101, 'producer')]);
     fs.writeFileSync(at('live.jsonl'), jsonl([
       { type: 'agent-setting', agentSetting: 'producer', sessionId: 'live' },
       { type: 'ai-title', aiTitle: `${PLANTED}-TITLE` },
@@ -97,60 +134,102 @@ test('Claude: live sessions and subagents with their tokens, counted once per re
     fs.writeFileSync(path.join(subs, 'agent-a1.meta.json'), JSON.stringify({ agentType: 'game-designer', finished: false, description: `${PLANTED}-TASK` }));
     fs.writeFileSync(path.join(subs, 'agent-a0.jsonl'), jsonl([...reply('s0', usage(9, 9, 9, 9))]));
     fs.writeFileSync(path.join(subs, 'agent-a0.meta.json'), JSON.stringify({ agentType: 'tech-architect', finished: true }));
-    // A session that last wrote an hour ago: ended before the dashboard started.
-    fs.writeFileSync(at('old.jsonl'), jsonl([prompt(ago(3600e3).toISOString()), ...reply('o1', usage(7, 7, 0, 0), ago(3600e3).toISOString())]));
-    setTime(at('old.jsonl'), ago(3600e3));
+    // A session that ended a minute ago, one whose process is gone with no end record, and one
+    // with a log written just now but no start record: none of them is shown.
+    sessionLog(f, 'ended', [record('ended', 'start', 102, 'main session', ago(120e3).toISOString()), record('ended', 'end', 102, 'main session', ago(60e3).toISOString())]);
+    fs.writeFileSync(at('ended.jsonl'), jsonl([prompt()]));
+    sessionLog(f, 'gone', [record('gone', 'start', 103)]);
+    fs.writeFileSync(at('untracked.jsonl'), jsonl([prompt(), ...reply('u1', usage(5, 5, 5, 5))]));
+    // A session compacted once: a second start record with the same process.
+    const first = ago(600e3).toISOString();
+    sessionLog(f, 'compacted', [record('compacted', 'start', 104, 'tech-architect', first), record('compacted', 'start', 104, 'tech-architect')]);
 
-    const watch = D.studio({ claudeDir: f.claudeDir, codexDir: f.codexDir });
-    watch.poll();
-    let s = watch.state();
-    assert.deepStrictEqual(s.claude.map((a) => [a.kind, a.name, a.state]), [['session', 'producer', 'running'], ['subagent', 'game-designer', 'running']]);
-    const [producer, designer] = s.claude;
+    const w = watch();
+    w.poll();
+    let s = w.state();
+    assert.deepStrictEqual(byName(s), { producer: 'running', 'game-designer': 'running', 'tech-architect': 'running' });
+    const producer = s.claude.find((a) => a.name === 'producer');
+    const designer = s.claude.find((a) => a.name === 'game-designer');
     assert.deepStrictEqual(producer.tokens, { input: 11, output: 6, cache: 120, total: 137 });
     assert.strictEqual(producer.model, 'claude-opus-5-5');
     assert.strictEqual(designer.parent, producer.key);
     assert.deepStrictEqual(designer.tokens, { input: 3, output: 2, cache: 1, total: 6 });
+    assert.strictEqual(s.claude.find((a) => a.name === 'tech-architect').startedAt, first);
 
     // A reply still being written counts only once it is complete; a malformed line is skipped.
-    const [first, ...more] = reply('m3', usage(100, 0, 0, 0));
-    const line = JSON.stringify(first);
+    const [block, ...more] = reply('m3', usage(100, 0, 0, 0));
+    const line = JSON.stringify(block);
     fs.appendFileSync(at('live.jsonl'), `not json\n${line.slice(0, 40)}`);
-    watch.poll();
-    assert.strictEqual(watch.state().claude[0].tokens.input, 11);
+    w.poll();
+    assert.strictEqual(w.state().claude.find((a) => a.name === 'producer').tokens.input, 11);
     fs.appendFileSync(at('live.jsonl'), `${line.slice(40)}\n${jsonl(more)}`);
-    watch.poll();
-    assert.strictEqual(watch.state().claude[0].tokens.input, 111);
+    w.poll();
+    assert.strictEqual(w.state().claude.find((a) => a.name === 'producer').tokens.input, 111);
 
-    // The old session starts again, and a new session starts: both appear.
-    fs.appendFileSync(at('old.jsonl'), jsonl([prompt()]));
-    fs.writeFileSync(at('new.jsonl'), jsonl([prompt()]));
-    // The subagent finishes.
+    // The ended session is resumed, a new session starts, the subagent finishes, and the
+    // compacted session's process goes away without an end record.
+    sessionLog(f, 'ended', [record('ended', 'start', 105, 'qa-lead')]);
+    sessionLog(f, 'new', [record('new', 'start', 106)]);
+    live.add(105).add(106).delete(104);
     fs.writeFileSync(path.join(subs, 'agent-a1.meta.json'), JSON.stringify({ agentType: 'game-designer', finished: true }));
-    watch.poll();
-    s = watch.state();
-    assert.deepStrictEqual(s.claude.map((a) => [a.name, a.state]), [['producer', 'running'], ['game-designer', 'finished'], ['main session', 'running'], ['main session', 'running']]);
+    w.poll();
+    s = w.state();
+    assert.deepStrictEqual(byName(s), { producer: 'running', 'game-designer': 'finished', 'tech-architect': 'finished', 'qa-lead': 'running', 'main session': 'running' });
+
+    // The Producer session ends, taking a subagent started since with it; the compacted
+    // session's process id is reused by another program, and the session stays finished.
+    fs.writeFileSync(path.join(subs, 'agent-a2.jsonl'), jsonl([prompt()]));
+    fs.writeFileSync(path.join(subs, 'agent-a2.meta.json'), JSON.stringify({ agentType: 'code-reviewer', finished: false }));
+    w.poll();
+    assert.strictEqual(byName(w.state())['code-reviewer'], 'running');
+    sessionLog(f, 'live', [record('live', 'end', 101, 'producer')]);
+    live.add(104);
+    w.poll();
+    s = w.state();
+    assert.deepStrictEqual([byName(s).producer, byName(s)['code-reviewer'], byName(s)['tech-architect']], ['finished', 'finished', 'finished']);
+    assert.strictEqual(s.claude.length, 6);
     assert.ok(!JSON.stringify(s).includes(PLANTED));
   } finally {
     f.done();
   }
 });
 
-test('Claude: a running subagent brings its quiet session, and sessions go idle', () => {
+test('links: nothing outside the allowed folders is read', (t) => {
   const f = folders();
   try {
-    let clock = Date.now();
-    const quiet = path.join(f.claudeDir, 'quiet.jsonl');
-    fs.writeFileSync(quiet, jsonl([prompt(ago(3600e3).toISOString())]));
-    setTime(quiet, ago(3600e3));
-    const subs = path.join(f.claudeDir, 'quiet', 'subagents');
-    fs.mkdirSync(subs, { recursive: true });
-    fs.writeFileSync(path.join(subs, 'agent-b1.jsonl'), jsonl([prompt()]));
-    fs.writeFileSync(path.join(subs, 'agent-b1.meta.json'), JSON.stringify({ agentType: 'code-reviewer', finished: false }));
-    const watch = D.studio({ claudeDir: f.claudeDir, codexDir: f.codexDir, now: () => clock });
+    // Lookalike logs outside every allowed folder, full of planted text and tokens.
+    const outside = path.join(f.base, 'outside');
+    fs.mkdirSync(path.join(outside, 'subagents'), { recursive: true });
+    fs.writeFileSync(path.join(outside, 'subagents', 'agent-x.jsonl'), jsonl([prompt(), ...reply('x1', usage(999, 0, 0, 0))]));
+    fs.writeFileSync(path.join(outside, 'subagents', 'agent-x.meta.json'), JSON.stringify({ agentType: `${PLANTED}-AGENT`, finished: false }));
+    fs.writeFileSync(path.join(outside, 'transcript.jsonl'), jsonl([prompt(), ...reply('x2', usage(999, 0, 0, 0))]));
+    fs.writeFileSync(path.join(outside, 'run.jsonl'), jsonl([{ at: new Date().toISOString(), event: 'start', role: 'reviewer', issue: 1, pr: 2 }]));
+    fs.writeFileSync(path.join(outside, 'records.jsonl'), jsonl([record('linked3', 'start', 201, `${PLANTED}-AGENT`)]));
+
+    // A running session whose subagent folder is a junction to the outside folder.
+    sessionLog(f, 'linked', [record('linked', 'start', 201)]);
+    fs.writeFileSync(path.join(f.claudeDir, 'linked.jsonl'), jsonl([prompt()]));
+    fs.symlinkSync(outside, path.join(f.claudeDir, 'linked'), 'junction');
+    // File links, where this PC allows them without extra rights.
+    let fileLinks = true;
+    try {
+      fs.symlinkSync(path.join(outside, 'transcript.jsonl'), path.join(f.claudeDir, 'linked2.jsonl'), 'file');
+      fs.symlinkSync(path.join(outside, 'run.jsonl'), path.join(f.codexDir, 'linked.jsonl'), 'file');
+      fs.symlinkSync(path.join(outside, 'records.jsonl'), path.join(f.sessionsDir, 'linked3.jsonl'), 'file');
+      sessionLog(f, 'linked2', [record('linked2', 'start', 201)]);
+    } catch (err) {
+      if (err.code !== 'EPERM') throw err;
+      fileLinks = false;
+      t.diagnostic('file links need extra rights on this PC, so only the folder link was tested');
+    }
+
+    const watch = D.studio({ claudeDir: f.claudeDir, codexDir: f.codexDir, sessionsDir: f.sessionsDir, alive: (pid) => pid === 201 });
     watch.poll();
-    assert.deepStrictEqual(watch.state().claude.map((a) => [a.name, a.state]), [['code-reviewer', 'running'], ['main session', 'idle']]);
-    clock += D.ACTIVE_MS + 1000;
-    assert.deepStrictEqual(watch.state().claude.map((a) => a.state), ['idle', 'idle']);
+    watch.poll();
+    const s = watch.state();
+    assert.deepStrictEqual(s.claude.map((a) => [a.kind, a.name, a.tokens.total]), fileLinks ? [['session', 'main session', 0], ['session', 'main session', 0]] : [['session', 'main session', 0]]);
+    assert.deepStrictEqual(s.codex, []);
+    assert.ok(!JSON.stringify(s).includes(PLANTED));
   } finally {
     f.done();
   }
@@ -183,25 +262,48 @@ test('Codex: live launcher runs and their helper agents, from the launcher log e
       { at: t(60), event: 'helper-started', threadId: 'h2', name: null, model: null, effort: null, status: null },
       { at: t(50), event: 'token-usage', threadId: 't1', helper: false, total: tokens(1200), last: null, contextWindow: null },
     ]);
-    const watch = D.studio({ claudeDir: f.claudeDir, codexDir: f.codexDir });
+    // The dashboard started 30 seconds ago: the first helper finished before that.
+    const watch = D.studio({ claudeDir: f.claudeDir, codexDir: f.codexDir, sessionsDir: f.sessionsDir, now: () => base - 30e3 });
     watch.poll();
     let [run, ...others] = watch.state().codex;
     assert.deepStrictEqual(others, []);
-    assert.deepStrictEqual([run.role, run.issue, run.pr, run.state, run.endedAt], ['reviewer', 46, 48, 'running', null]);
+    assert.deepStrictEqual([run.role, run.issue, run.pr, run.state, run.endedAt, run.startedAt], ['reviewer', 46, 48, 'running', null, t(120)]);
     assert.deepStrictEqual(run.tokens, { input: 1190, cachedInput: 5, output: 10, total: 1200 });
-    assert.deepStrictEqual(run.helpers.map((h) => [h.name, h.model, h.effort, h.state, h.tokens?.total ?? null]), [['root/worker', 'gpt-mini-r', 'high', 'finished', 120], ['helper', null, null, 'running', null]]);
-    assert.deepStrictEqual([run.startedAt, run.helpers[0].startedAt, run.helpers[0].endedAt], [t(120), t(90), t(70)]);
+    assert.deepStrictEqual(run.helpers.map((h) => [h.name, h.model, h.effort, h.state, h.tokens?.total ?? null, h.startedAt]), [['helper', null, null, 'running', null, t(60)]]);
 
-    // The run ends, and a new run starts.
-    fs.appendFileSync(open, jsonl([{ at: t(0), event: 'helper-ended', threadId: 'h2', status: 'run-ended', tokens: null }, { at: t(0), event: 'end', error: null }]));
+    // The finished helper is given more work and finishes again, the run ends, and a new run starts.
+    fs.appendFileSync(open, jsonl([
+      { at: t(0), event: 'helper-resumed', threadId: 'h1', name: 'root/worker', model: null, effort: null, status: null },
+      { at: t(0), event: 'helper-ended', threadId: 'h1', status: 'completed', tokens: tokens(150) },
+      { at: t(0), event: 'helper-ended', threadId: 'h2', status: 'run-ended', tokens: null },
+      { at: t(0), event: 'end', error: null },
+    ]));
     log('next.jsonl', [{ at: t(0), event: 'start', role: 'gameplay-programmer', issue: 50 }]);
     watch.poll();
     const s = watch.state();
     [run] = s.codex;
-    assert.deepStrictEqual([run.state, run.helpers[1].state], ['finished', 'finished']);
+    assert.deepStrictEqual(run.helpers.map((h) => [h.name, h.model, h.effort, h.state, h.tokens?.total ?? null, h.endedAt]), [['root/worker', 'gpt-mini-r', 'high', 'finished', 150, t(0)], ['helper', null, null, 'finished', null, t(0)]]);
+    assert.strictEqual(run.state, 'finished');
     assert.ok(run.endedAt);
     assert.deepStrictEqual(s.codex.map((r) => [r.role, r.issue, r.state]), [['reviewer', 46, 'finished'], ['gameplay-programmer', 50, 'running']]);
     assert.ok(!JSON.stringify(s).includes(PLANTED));
+  } finally {
+    f.done();
+  }
+});
+
+test('Codex: an ended run stays hidden even when its log starts with a long unreadable stretch', () => {
+  const f = folders();
+  try {
+    // More than one read's worth of a broken line before the records.
+    const junk = `${'x'.repeat(9 * 1024 * 1024)}\n`;
+    const start = { at: new Date().toISOString(), event: 'start', role: 'reviewer', issue: 46, pr: 48 };
+    fs.writeFileSync(path.join(f.codexDir, 'ended.jsonl'), junk + jsonl([start, { at: new Date().toISOString(), event: 'end', error: null }]));
+    fs.writeFileSync(path.join(f.codexDir, 'open.jsonl'), junk + jsonl([{ ...start, issue: 47, pr: 49 }]));
+    const watch = D.studio({ claudeDir: f.claudeDir, codexDir: f.codexDir, sessionsDir: f.sessionsDir });
+    watch.poll();
+    watch.poll();
+    assert.deepStrictEqual(watch.state().codex.map((r) => [r.issue, r.state]), [[47, 'running']]);
   } finally {
     f.done();
   }
@@ -212,11 +314,12 @@ test('read-only: polling writes, changes and deletes nothing', () => {
   const names = ['writeFileSync', 'appendFileSync', 'mkdirSync', 'rmSync', 'unlinkSync', 'renameSync', 'copyFileSync', 'truncateSync', 'utimesSync', 'writeSync', 'writeFile', 'appendFile'];
   const saved = Object.fromEntries([...names, 'openSync'].map((n) => [n, fs[n]]));
   try {
+    sessionLog(f, 's', [record('s', 'start', process.pid)]);
     fs.writeFileSync(path.join(f.claudeDir, 's.jsonl'), jsonl([prompt(), ...reply('m1', usage(1, 1, 1, 1))]));
     fs.writeFileSync(path.join(f.codexDir, 'r.jsonl'), jsonl([{ at: new Date().toISOString(), event: 'start', role: 'reviewer', issue: 1, pr: 2 }]));
     for (const n of names) fs[n] = () => assert.fail(`the dashboard called fs.${n}`);
     fs.openSync = (file, flags, ...rest) => (flags === 'r' ? saved.openSync(file, flags, ...rest) : assert.fail(`the dashboard opened ${file} with ${flags}`));
-    const watch = D.studio({ claudeDir: f.claudeDir, codexDir: f.codexDir });
+    const watch = D.studio({ claudeDir: f.claudeDir, codexDir: f.codexDir, sessionsDir: f.sessionsDir });
     watch.poll();
     watch.poll();
     assert.strictEqual(watch.state().claude.length, 1);
@@ -229,8 +332,9 @@ test('read-only: polling writes, changes and deletes nothing', () => {
 
 test('the server: this PC only, GET only, and only names, times, states and numbers', async () => {
   const f = folders();
+  sessionLog(f, 's', [record('s', 'start', process.pid, 'producer')]);
   fs.writeFileSync(path.join(f.claudeDir, 's.jsonl'), jsonl([{ type: 'agent-setting', agentSetting: 'producer' }, prompt(), ...reply('m1', usage(1, 2, 3, 4))]));
-  const watch = D.studio({ claudeDir: f.claudeDir, codexDir: f.codexDir });
+  const watch = D.studio({ claudeDir: f.claudeDir, codexDir: f.codexDir, sessionsDir: f.sessionsDir });
   watch.poll();
   const srv = D.start(watch, { port: 0, host: '127.0.0.1' });
   await new Promise((r) => srv.once('listening', r));
