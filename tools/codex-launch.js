@@ -502,10 +502,64 @@ function tokenCounts(b) {
   };
 }
 
-// Collab tool states that mean the helper agent has stopped.
-const HELPER_DONE = new Set(['completed', 'errored', 'interrupted', 'shutdown', 'notFound']);
-// Collab tools that give a helper agent more work.
-const HELPER_WORK = new Set(['sendInput', 'resumeAgent', 'followupTask', 'sendMessage']);
+// Tracks the helper agents Codex starts, in `run.helpers`, and logs them with identifiers, names,
+// model, effort and numbers only: never the prompt or messages a collab call carries.
+// - A helper is logged when first seen: from a spawn call, or from its own activity.
+// - Whether it is working or finished follows only Codex's activity reports for it (`started` and
+//   `interacted` mean working, `completed` and `interrupted` mean finished), each counted once,
+//   since Codex reports an item when it starts and again when it completes. Collab calls never
+//   change it: their state snapshots can be stale, a call can fail, and a message doesn't start work.
+// - A spawn call gives the model and effort requested; activity gives the ones Codex resolved, which
+//   replace them. Details that arrive later are logged as an update.
+// - Helpers still working when the run ends finish with it (`run-ended`).
+function helperTracker(run, log) {
+  const counted = new Set();
+  let ended = false;
+  const seen = (threadId, { name = null, model = null, effort = null }, resolved) => {
+    if (typeof threadId !== 'string' || threadId === run.threadId) return null;
+    const details = { name: label(name), model: label(model), effort: label(effort) };
+    const helper = run.helpers[threadId];
+    if (!helper) {
+      run.helpers[threadId] = { threadId, ...details, status: null };
+      log({ event: 'helper-started', ...run.helpers[threadId] });
+      return run.helpers[threadId];
+    }
+    const changed = Object.keys(details).filter((k) => details[k] !== null && (helper[k] === null || (resolved && helper[k] !== details[k])));
+    for (const k of changed) helper[k] = details[k];
+    if (changed.length) log({ event: 'helper-updated', ...helper });
+    return helper;
+  };
+  const finishHelper = (helper, status) => {
+    if (helper.status) return;
+    helper.status = status;
+    log({ event: 'helper-ended', threadId: helper.threadId, status, tokens: run.tokens[helper.threadId] ?? null });
+  };
+  return {
+    item(item) {
+      if (ended) return;
+      if (item.type === 'collabAgentToolCall' && item.tool === 'spawnAgent') {
+        for (const id of item.receiverThreadIds ?? []) seen(id, { model: item.model, effort: item.reasoningEffort }, false);
+      } else if (item.type === 'subAgentActivity') {
+        const helper = seen(item.agentThreadId, { name: item.agentPath, model: item.model, effort: item.reasoningEffort }, true);
+        if (!helper) return;
+        if (typeof item.id === 'string') {
+          if (counted.has(item.id)) return;
+          counted.add(item.id);
+        }
+        if ((item.kind === 'started' || item.kind === 'interacted') && helper.status) {
+          helper.status = null;
+          log({ event: 'helper-resumed', ...helper });
+        }
+        if (item.kind === 'completed' || item.kind === 'interrupted') finishHelper(helper, item.kind);
+      }
+    },
+    end() {
+      if (ended) return;
+      for (const helper of Object.values(run.helpers)) finishHelper(helper, 'run-ended');
+      ended = true;
+    },
+  };
+}
 
 // `command` is Codex's program and leading arguments (codexCommand); tests pass a fake server.
 function runCodex({ cwd, model, effort, sandbox, developerInstructions, prompt, outputSchema, log, timeoutMs = RUN_TIMEOUT_MS, command = codexCommand() }) {
@@ -523,59 +577,7 @@ function runCodex({ cwd, model, effort, sandbox, developerInstructions, prompt, 
       send({ method, id, params });
     });
 
-  // Helper agents are logged when first seen and when they stop, with identifiers, names, model,
-  // effort and numbers only: never the prompt or messages a collab call carries.
-  // A spawn call usually comes before the helper's name, so details that arrive later are logged
-  // as an update. A spawn call gives the model and effort requested; activity gives the ones Codex
-  // resolved, which replace them.
-  let ended = false;
-  const helperStarted = (threadId, { name = null, model = null, effort = null } = {}, resolved = false) => {
-    if (ended || typeof threadId !== 'string' || threadId === run.threadId) return;
-    const details = { name: label(name), model: label(model), effort: label(effort) };
-    const helper = run.helpers[threadId];
-    if (!helper) {
-      run.helpers[threadId] = { threadId, ...details, status: null };
-      log({ event: 'helper-started', ...run.helpers[threadId] });
-      return;
-    }
-    const changed = Object.keys(details).filter((k) => details[k] !== null && (helper[k] === null || (resolved && helper[k] !== details[k])));
-    if (!changed.length) return;
-    for (const k of changed) helper[k] = details[k];
-    log({ event: 'helper-updated', ...helper });
-  };
-  const helperEnded = (threadId, status) => {
-    const helper = run.helpers[threadId];
-    if (!helper || helper.status) return;
-    helper.status = label(status);
-    log({ event: 'helper-ended', threadId, status: helper.status, tokens: run.tokens[threadId] ?? null });
-  };
-  // A helper that finished can be given more work; it is logged as resumed and ends again later.
-  // Codex reports an item when it starts and again when it completes, so each item resumes a
-  // helper at most once: a repeat can't undo a completion reported in between.
-  const resumedBy = new Set();
-  const helperResumed = (threadId, itemId) => {
-    if (typeof itemId === 'string') {
-      const key = `${itemId}\n${threadId}`;
-      if (resumedBy.has(key)) return;
-      resumedBy.add(key);
-    }
-    const helper = run.helpers[threadId];
-    if (ended || !helper?.status) return;
-    helper.status = null;
-    log({ event: 'helper-resumed', ...helper });
-  };
-  const trackHelpers = (item) => {
-    if (item.type === 'subAgentActivity') {
-      helperStarted(item.agentThreadId, { name: item.agentPath, model: item.model, effort: item.reasoningEffort }, true);
-      if (item.kind === 'started' || item.kind === 'interacted') helperResumed(item.agentThreadId, item.id);
-      if (item.kind === 'completed' || item.kind === 'interrupted') helperEnded(item.agentThreadId, item.kind);
-    } else if (item.type === 'collabAgentToolCall') {
-      if (item.tool === 'spawnAgent') for (const id of item.receiverThreadIds ?? []) helperStarted(id, { model: item.model, effort: item.reasoningEffort });
-      for (const [id, state] of Object.entries(item.agentsStates ?? {})) if (HELPER_DONE.has(state?.status)) helperEnded(id, state.status);
-      // Work sent to a helper resumes it, after any (possibly stale) states in the same call.
-      if (HELPER_WORK.has(item.tool)) for (const id of item.receiverThreadIds ?? []) helperResumed(id, item.id);
-    }
-  };
+  const helpers = helperTracker(run, log);
 
   return new Promise((resolve, reject) => {
     let finished = false;
@@ -584,9 +586,7 @@ function runCodex({ cwd, model, effort, sandbox, developerInstructions, prompt, 
       finished = true;
       clearTimeout(timer);
       child.kill();
-      // Helpers Codex never reported as stopped end with the run.
-      for (const id of Object.keys(run.helpers)) helperEnded(id, 'run-ended');
-      ended = true;
+      helpers.end();
       log({
         event: 'run-tokens',
         threadId: run.threadId,
@@ -639,10 +639,10 @@ function runCodex({ cwd, model, effort, sandbox, developerInstructions, prompt, 
           contextWindow: count(params.tokenUsage?.modelContextWindow),
         });
       } else if (method === 'item/started') {
-        trackHelpers(params.item ?? {});
+        helpers.item(params.item ?? {});
       } else if (method === 'item/completed') {
         const item = params.item ?? {};
-        trackHelpers(item);
+        helpers.item(item);
         run.items[item.type] = (run.items[item.type] ?? 0) + 1;
         if (item.type === 'agentMessage') run.finalText = item.text;
         if (item.type === 'commandExecution') log({ event: 'command', command: item.command, exitCode: item.exitCode, status: item.status });
@@ -831,6 +831,7 @@ module.exports = {
   verifySettings,
   verifySettingsUpdate,
   declineRequest,
+  helperTracker,
   runCodex,
   summarize,
   SCHEMAS,
