@@ -5,6 +5,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
+const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -183,6 +184,72 @@ test('worktrees: one per Issue and role, or per role and PR', () => {
   const studio = path.join(os.tmpdir(), 's');
   assert.strictEqual(L.worktreeDir({ kind: 'implement', role: 'tech-artist', issue: 42 }, studio), path.join(studio, 'worktrees', '42-tech-artist'));
   assert.strictEqual(L.worktreeDir({ kind: 'review', role: 'reviewer', issue: 42, pr: 50 }, studio), path.join(studio, 'worktrees', 'reviewer-pr50'));
+});
+
+const changedFiles = (status) => {
+  const dir = path.resolve(__dirname, '..');
+  return L.changedFiles(dir, (args, cwd, options) => {
+    assert.deepStrictEqual(args, ['status', '--porcelain', '-z']);
+    assert.strictEqual(cwd, dir);
+    assert.deepStrictEqual(options, { trim: false });
+    return status;
+  });
+};
+
+const changedFilesLine = (changed) => L.summarize({
+  args: { role: 'gameplay-programmer', issue: 64 },
+  dir: path.resolve(__dirname, '..'),
+  logFile: path.join(__dirname, 'run.jsonl'),
+  run: { reviews: [], reroutes: [], tokens: {}, helpers: {}, declined: [] },
+  changed,
+}).split('\n').find((line) => line.startsWith('Changed files:'));
+
+for (const status of [' M', 'M ', 'MM', '??', 'A ', 'D ', ' D', ' T', 'UU']) {
+  test(`changed files: preserves the first path for status ${JSON.stringify(status)}`, () => {
+    const files = changedFiles(`${status} AGENTS.md\0 M tools/codex-launch.js\0?? notes.txt\0`);
+    assert.deepStrictEqual(files, ['AGENTS.md', 'tools/codex-launch.js', 'notes.txt']);
+    assert.strictEqual(changedFilesLine(files), 'Changed files: AGENTS.md, tools/codex-launch.js, notes.txt');
+  });
+}
+
+test('changed files: renames and copies use the new path and skip the source record', () => {
+  for (const status of ['R ', ' R', 'RM', 'RD', 'C ', ' C']) {
+    const files = changedFiles(`${status} new path/\u5355\u4f4d.cs\0old path/\u00e9.cs\0 M next.txt\0R  another.txt\0 M source.txt\0?? last.txt\0`);
+    assert.deepStrictEqual(files, ['new path/\u5355\u4f4d.cs', 'next.txt', 'another.txt', 'last.txt']);
+    assert.strictEqual(changedFilesLine(files), 'Changed files: new path/\u5355\u4f4d.cs, next.txt, another.txt, last.txt');
+  }
+});
+
+test('changed files: preserves spaces, Unicode and literal quoting or line breaks in paths', () => {
+  const paths = [' leading and trailing ', 'folder with spaces/\u5355\u4f4d \u00e9.cs', 'quote" and \\ slash.txt', 'literal -> arrow.txt'];
+  const files = changedFiles(paths.map((name) => ` M ${name}\0`).join(''));
+  assert.deepStrictEqual(files, paths);
+  assert.strictEqual(changedFilesLine(files), `Changed files: ${paths.join(', ')}`);
+  assert.deepStrictEqual(changedFiles(' M line\nbreak\r.txt\0'), ['line\nbreak\r.txt']);
+});
+
+test('changed files: a clean worktree reports none', () => {
+  const files = changedFiles('');
+  assert.deepStrictEqual(files, []);
+  assert.strictEqual(changedFilesLine(files), 'Changed files: none');
+});
+
+test('changed files: reads untrimmed NUL-delimited output from git', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-status-'));
+  const git = (args) => execFileSync(L.findProgram('git'), ['-C', dir, ...args], { encoding: 'utf8' });
+  try {
+    git(['init', '--quiet']);
+    const first = 'a space \u5355\u4f4d.txt';
+    const second = 'z space \u00e9.txt';
+    fs.writeFileSync(path.join(dir, first), 'new file\n');
+    git(['add', '--intent-to-add', '--', first]);
+    fs.writeFileSync(path.join(dir, second), 'untracked file\n');
+    assert.ok(git(['status', '--porcelain', '-z']).startsWith(' A '));
+    assert.deepStrictEqual(L.changedFiles(dir), [first, second]);
+    assert.strictEqual(changedFilesLine(L.changedFiles(dir)), `Changed files: ${first}, ${second}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('the .studio folder ignores itself', () => {
