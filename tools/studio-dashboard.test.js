@@ -401,8 +401,8 @@ test('Codex: an ended run stays hidden even when its log starts with a long unre
   try {
     // More than one read's worth of a broken line before the records.
     const junk = `${'x'.repeat(9 * 1024 * 1024)}\n`;
-    const start = { at: new Date().toISOString(), event: 'start', role: 'reviewer', issue: 46, pr: 48 };
-    fs.writeFileSync(path.join(f.codexDir, 'ended.jsonl'), junk + jsonl([start, { at: new Date().toISOString(), event: 'end', error: null }]));
+    const start = { at: ago(60e3).toISOString(), event: 'start', role: 'reviewer', issue: 46, pr: 48 };
+    fs.writeFileSync(path.join(f.codexDir, 'ended.jsonl'), junk + jsonl([start, { at: ago(30e3).toISOString(), event: 'end', error: null }]));
     fs.writeFileSync(path.join(f.codexDir, 'open.jsonl'), junk + jsonl([{ ...start, issue: 47, pr: 49 }]));
     const watch = D.studio({ ...f.dirs });
     watch.poll();
@@ -420,7 +420,7 @@ test('live only: a Codex run that ended before the dashboard opened stays hidden
   try {
     const now = () => new Date().toISOString();
     const ended = path.join(f.codexDir, 'ended.jsonl');
-    fs.writeFileSync(ended, jsonl([{ at: now(), event: 'start', role: 'reviewer', issue: 46, pr: 48 }, { at: now(), event: 'end', error: null }]));
+    fs.writeFileSync(ended, jsonl([{ at: ago(60e3).toISOString(), event: 'start', role: 'reviewer', issue: 46, pr: 48 }, { at: ago(30e3).toISOString(), event: 'end', error: null }]));
     const stale = path.join(f.codexDir, 'stale.jsonl');
     fs.writeFileSync(stale, jsonl([{ at: ago(6 * 3600e3).toISOString(), event: 'start', role: 'qa-test-engineer', issue: 8, pr: 7 }]));
     setTime(stale, ago(6 * 3600e3));
@@ -737,6 +737,76 @@ test('large logs: a big backlog shows its current tokens within moments', async 
     assert.ok(Date.now() - started < 5000, `took ${Date.now() - started} ms`);
   } finally {
     stop();
+    f.done();
+  }
+});
+
+// The dashboard notes its start time before its first read of the logs. Agents that start in
+// between are new, even if they have finished by the time of that first read.
+test('startup: a Claude session that starts and ends just before the first read is kept, with its subagent', () => {
+  const f = folders();
+  try {
+    const base = Date.now();
+    const at = (s) => new Date(base + s * 1000).toISOString();
+    sessionLog(f, 'quick', [record('quick', 'start', 901, 'qa-lead', at(1)), record('quick', 'end', 901, 'qa-lead', at(4))]);
+    const subs = path.join(f.claudeDir, 'quick', 'subagents');
+    fs.mkdirSync(subs, { recursive: true });
+    fs.writeFileSync(path.join(subs, 'agent-q.jsonl'), jsonl([prompt(at(2)), ...reply('q1', usage(2, 3, 0, 0), at(3))]));
+    fs.writeFileSync(path.join(subs, 'agent-q.meta.json'), JSON.stringify({ agentType: 'game-designer', finished: true }));
+    const watch = D.studio({ ...f.dirs, now: () => base, alive: () => false });
+    watch.poll();
+    const s = watch.state();
+    assert.deepStrictEqual(byName(s), { 'qa-lead': 'finished', 'game-designer': 'finished' });
+    assert.strictEqual(s.claude.find((a) => a.name === 'game-designer').tokens.total, 5);
+  } finally {
+    f.done();
+  }
+});
+
+test('startup: a Codex run that starts and ends just before the first read is kept, with its helper', () => {
+  const f = folders();
+  try {
+    const base = Date.now();
+    const at = (s) => new Date(base + s * 1000).toISOString();
+    fs.writeFileSync(path.join(f.codexDir, 'quick.jsonl'), jsonl([
+      { at: at(1), event: 'start', role: 'reviewer', issue: 47, pr: 49 },
+      { at: at(2), event: 'helper-started', threadId: 'h1', name: 'root/worker', model: null, effort: null, status: null },
+      { at: at(3), event: 'helper-ended', threadId: 'h1', status: 'completed', tokens: { total: 9 } },
+      { at: at(4), event: 'end', error: null },
+      { at: at(5), event: 'record-posted', url: `${PLANTED}-URL` },
+    ]));
+    const watch = D.studio({ ...f.dirs, now: () => base });
+    watch.poll();
+    const s = watch.state();
+    assert.deepStrictEqual(s.codex.map((r) => [r.issue, r.state, r.helpers.map((h) => [h.name, h.state, h.tokens?.total])]), [[47, 'finished', [['root/worker', 'finished', 9]]]]);
+    assert.ok(!JSON.stringify(s).includes(PLANTED));
+  } finally {
+    f.done();
+  }
+});
+
+test('startup: agents that ended before the dashboard started still stay hidden', () => {
+  const f = folders();
+  try {
+    const base = Date.now();
+    const at = (s) => new Date(base + s * 1000).toISOString();
+    sessionLog(f, 'old', [record('old', 'start', 911, 'qa-lead', at(-60)), record('old', 'end', 911, 'qa-lead', at(-30))]);
+    const subs = path.join(f.claudeDir, 'old', 'subagents');
+    fs.mkdirSync(subs, { recursive: true });
+    fs.writeFileSync(path.join(subs, 'agent-o.jsonl'), jsonl([prompt(at(-50))]));
+    fs.writeFileSync(path.join(subs, 'agent-o.meta.json'), JSON.stringify({ agentType: 'game-designer', finished: true }));
+    fs.writeFileSync(path.join(f.codexDir, 'old.jsonl'), jsonl([
+      { at: at(-60), event: 'start', role: 'reviewer', issue: 46, pr: 48 },
+      { at: at(-50), event: 'helper-started', threadId: 'h1', name: 'root/worker', model: null, effort: null, status: null },
+      { at: at(-40), event: 'helper-ended', threadId: 'h1', status: 'completed', tokens: null },
+      { at: at(-30), event: 'end', error: null },
+      { at: at(1), event: 'record-posted', url: 'x' },
+    ]));
+    const watch = D.studio({ ...f.dirs, now: () => base, alive: () => false });
+    watch.poll();
+    watch.poll();
+    assert.deepStrictEqual([watch.state().claude, watch.state().codex], [[], []]);
+  } finally {
     f.done();
   }
 });

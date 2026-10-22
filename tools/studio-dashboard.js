@@ -381,22 +381,24 @@ function studio({ codexDir, claudeDir, sessionsDir, repoDir = ROOT, homeDir = os
     if (!tail.atEnd) behind = true;
   };
 
-  // A session is shown if it is running at the first poll, or when a start record arrives later,
-  // even if it has already ended by then.
+  // A session is shown if it is running at the first poll, or on a new start record, even if it
+  // has already ended by then.
   function pollSessions() {
     for (const f of list(sessionsDir, sessionsDir)) {
       const id = f.endsWith('.jsonl') ? f.slice(0, -'.jsonl'.length) : '';
       if (!SESSION_ID.test(id)) continue;
       let session = sessions.get(id);
       if (!session) sessions.set(id, (session = claudeSession(id, path.join(sessionsDir, f), sessionsDir, opts)));
+      // A start is new if it is read after the first poll, or timed after the dashboard started
+      // (so a session that started and ended just before the first poll is kept).
       let startedNow = false;
       drain(session.tail, (r) => {
-        startedNow = session.add(r) || startedNow;
+        if (session.add(r) && (polled || Date.parse(r.at) >= started)) startedNow = true;
       });
       // Once its process is gone the session stays finished, even if the id is reused later.
       if (session.open && !session.gone && !alive(session.pid)) session.gone = true;
       const file = path.join(claudeDir, `${id}.jsonl`);
-      if (!claude.has(file) && (polled ? startedNow : session.running)) claude.set(file, claudeOf('session', file, { session }));
+      if (!claude.has(file) && (startedNow || (!polled && session.running))) claude.set(file, claudeOf('session', file, { session }));
     }
   }
 
@@ -440,8 +442,9 @@ function studio({ codexDir, claudeDir, sessionsDir, repoDir = ROOT, homeDir = os
   }
 
   // A run is shown if, at the first poll, its log has a start less than a run's time limit ago and
-  // no end, or when a start arrives later. At the first poll, a log untouched for longer than that
-  // limit belongs to a finished or stopped run, so only lines added later are read from it.
+  // no end, or on a new start, even if it has already ended. At the first poll, a log untouched
+  // for longer than that limit belongs to a finished or stopped run, so only lines added later are
+  // read from it.
   function pollRuns(t) {
     for (const f of list(codexDir, codexDir)) {
       if (!f.endsWith('.jsonl')) continue;
@@ -453,13 +456,14 @@ function studio({ codexDir, claudeDir, sessionsDir, repoDir = ROOT, homeDir = os
         if (s && t - s.mtimeMs > RUN_LIMIT_MS) run.tail.skipToEnd();
       }
       // The first poll reads to the end of the file, past any chunk with no complete record.
+      // As for sessions, a start is new if read after the first poll or timed after the dashboard started.
       let startedNow = false;
       drain(run.tail, (r) => {
-        if (r.event === 'start') startedNow = true;
+        if (r.event === 'start' && (polled || Date.parse(r.at) >= started)) startedNow = true;
         run.add(r);
       });
       const runningAtStart = run.startedAt !== null && run.endedAt === null && t - Date.parse(run.startedAt) <= RUN_LIMIT_MS;
-      if (!codex.has(file) && (polled ? startedNow : runningAtStart)) codex.set(file, run);
+      if (!codex.has(file) && (startedNow || (!polled && runningAtStart))) codex.set(file, run);
     }
   }
 
