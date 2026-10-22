@@ -166,17 +166,53 @@ test('refuses links that lead outside the repository', () => {
   assert.deepStrictEqual(fs.readdirSync(studioOutside), ['.gitignore']);
 });
 
-test('stops within a second when stdin stays open', async () => {
-  const root = repo();
+// Runs the script and measures it from spawn to exit, the time a session would wait.
+async function timed(root, input, { close = true, nodeArgs = [] } = {}) {
   const started = Date.now();
-  const child = spawn(process.execPath, [scriptIn(root)], { env: env('4242') });
+  const child = spawn(process.execPath, [...nodeArgs, scriptIn(root)], { env: env('4242') });
   let output = '';
   child.stdout.on('data', (chunk) => { output += chunk; });
   child.stderr.on('data', (chunk) => { output += chunk; });
-  child.stdin.write(JSON.stringify(hook('SessionStart')).slice(0, 20));
+  child.stdin.on('error', () => {});
+  child.stdin.write(input);
+  if (close) child.stdin.end();
   const code = await new Promise((resolve) => child.on('close', resolve));
-  assert.strictEqual(code, 0);
-  assert.strictEqual(output, '');
-  assert.ok(Date.now() - started < 3000, 'took too long');
+  return { code, output, ms: Date.now() - started };
+}
+
+test('stops within a second when stdin stays open', async () => {
+  const root = repo();
+  const result = await timed(root, JSON.stringify(hook('SessionStart')).slice(0, 20), { close: false });
+  assert.deepStrictEqual([result.code, result.output], [0, '']);
+  assert.ok(result.ms < 1000, `took ${result.ms} ms`);
   assert.deepStrictEqual(fs.readdirSync(studioDir(root)), ['.gitignore']);
+});
+
+// Every file call the script could make stalls for 1.3 s: the promise calls by waiting, and the
+// synchronous ones by blocking the thread, so a return to blocking calls also fails this test.
+const STALL = `'use strict';
+const fs = require('node:fs');
+const fsp = require('node:fs/promises');
+const STALL_MS = 1300;
+for (const name of ['lstat', 'stat', 'mkdir', 'appendFile', 'writeFile', 'open']) {
+  const real = fsp[name];
+  fsp[name] = (...args) => new Promise((resolve) => setTimeout(resolve, STALL_MS)).then(() => real(...args));
+}
+for (const name of ['lstatSync', 'statSync', 'mkdirSync', 'appendFileSync', 'writeFileSync', 'openSync', 'writeSync', 'existsSync']) {
+  const real = fs[name];
+  fs[name] = (...args) => {
+    const until = Date.now() + STALL_MS;
+    while (Date.now() < until);
+    return real(...args);
+  };
+}
+`;
+
+test('stops within a second when the disk is slow', async () => {
+  const preload = path.join(tempDir(), 'stall.js');
+  fs.writeFileSync(preload, STALL);
+  const root = repo();
+  const result = await timed(root, JSON.stringify(hook('SessionStart')), { nodeArgs: ['--require', preload] });
+  assert.deepStrictEqual([result.code, result.output], [0, '']);
+  assert.ok(result.ms < 1000, `took ${result.ms} ms`);
 });
