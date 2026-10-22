@@ -177,3 +177,13 @@ Tokens:        Codex <total> (<PR or Issue #n>: <tokens>, <runs> runs; ...), Cla
 Write "none" on a line with nothing to report. "In progress" covers the Ready, In progress and In review cards, so every card outside Backlog and Done appears exactly once.
 
 "Tokens" is the session's Codex token total, added up from the launcher's run summaries and broken down by PR or Issue with the number of runs for each. Note any runs that reported no tokens. Claude usage is "not available" unless the Producer has a figure. The line is "none" when no Codex runs happened.
+
+## Sessions and context
+
+The owner's standing rules (2026-10-20). State lives in the repo and on the board, not in chat history.
+
+1. **One Producer session per sitting.** Each sitting starts fresh with `claude --agent producer --effort high`, not by continuing or resuming an old session. The Producer picks up state from the board, Issues and PRs, not from earlier chats. At the end of each sitting, it gives the status report ([Reporting to the owner](#reporting-to-the-owner)) and tells the owner it's a good point to exit.
+2. **Long sessions.** When a session is getting long (checked with `/context`, or when the Producer notices it), the Producer tells the owner and gives the status report so the owner can restart, rather than relying on auto-compaction.
+3. **One fresh subagent per Issue.** A subagent instance works on one Issue only and is never reused across Issues. Revision rounds on the same Issue use a fresh instance of the same agent type, given the Issue, what was already done and the feedback.
+4. **Short reports.** Every delegation asks for a short report in the AGENTS.md §8 "Report to the Producer" format: what was done, the file paths changed, and any open questions. No full documents are pasted back.
+5. **No forking.** The Producer doesn't fork the conversation for delegation. It delegates only to the agent types its Agent tool allows.
