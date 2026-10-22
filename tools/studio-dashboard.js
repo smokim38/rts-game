@@ -131,6 +131,14 @@ function tailer(file, root = path.dirname(file), { chunk = READ_CHUNK, maxLine =
     get atEnd() {
       return offset >= size;
     },
+    // Leaves what the file holds now unread; later reads return only lines added after this.
+    skipToEnd() {
+      size = stat(root, file)?.size ?? 0;
+      offset = size;
+      rest = '';
+      skipping = false;
+      decoder = new StringDecoder('utf8');
+    },
     read() {
       size = stat(root, file)?.size ?? 0;
       if (size < offset) {
@@ -180,6 +188,8 @@ function tailer(file, root = path.dirname(file), { chunk = READ_CHUNK, maxLine =
 
 // One Claude session or subagent. Claude Code writes each reply as one record per content
 // block, all with the same message id and usage, so usage counts once per message id.
+// Only messages (user and assistant records, tool results included) count as activity, because
+// other lines can be added after an agent has ended. `add` returns an activity's time.
 function claudeAgent(kind, file, root) {
   const usage = new Map();
   return {
@@ -193,22 +203,23 @@ function claudeAgent(kind, file, root) {
     usage,
     add(r) {
       const at = time(r.timestamp);
-      if (at) {
-        this.startedAt ??= at;
-        if (!this.lastAt || at > this.lastAt) this.lastAt = at;
-      }
+      if (at) this.startedAt ??= at;
+      const activity = at !== null && (r.type === 'user' || r.type === 'assistant') ? at : null;
+      if (activity && (!this.lastAt || activity > this.lastAt)) this.lastAt = activity;
       if (r.type === 'agent-setting') this.name = name(r.agentSetting) ?? this.name;
-      if (r.type !== 'assistant' || !r.message || typeof r.message !== 'object') return;
-      this.model = name(r.message.model) ?? this.model;
-      const u = r.message.usage;
-      const id = typeof r.message.id === 'string' ? r.message.id : r.requestId;
-      if (u && typeof u === 'object' && typeof id === 'string') {
-        usage.set(id, {
-          input: count(u.input_tokens) ?? 0,
-          output: count(u.output_tokens) ?? 0,
-          cache: (count(u.cache_read_input_tokens) ?? 0) + (count(u.cache_creation_input_tokens) ?? 0),
-        });
+      if (r.type === 'assistant' && r.message && typeof r.message === 'object') {
+        this.model = name(r.message.model) ?? this.model;
+        const u = r.message.usage;
+        const id = typeof r.message.id === 'string' ? r.message.id : r.requestId;
+        if (u && typeof u === 'object' && typeof id === 'string') {
+          usage.set(id, {
+            input: count(u.input_tokens) ?? 0,
+            output: count(u.output_tokens) ?? 0,
+            cache: (count(u.cache_read_input_tokens) ?? 0) + (count(u.cache_creation_input_tokens) ?? 0),
+          });
+        }
       }
+      return activity;
     },
     tokens() {
       const t = { input: 0, output: 0, cache: 0, total: 0 };
@@ -303,16 +314,21 @@ function codexRun(file, root) {
       } else if (r.event === 'token-usage' && typeof r.threadId === 'string') {
         this.tokens[r.threadId] = tokenTotal(r.total);
       } else if (['helper-started', 'helper-updated', 'helper-resumed', 'helper-ended'].includes(r.event) && typeof r.threadId === 'string') {
-        const h = this.helpers.get(r.threadId) ?? { name: null, model: null, effort: null, startedAt: at, endedAt: null };
+        const h = this.helpers.get(r.threadId) ?? { name: null, model: null, effort: null, startedAt: at, ended: false, endedAt: null };
         this.helpers.set(r.threadId, h);
         if (r.event !== 'helper-ended') {
           h.name = name(r.name) ?? h.name;
           h.model = name(r.model) ?? h.model;
           h.effort = name(r.effort) ?? h.effort;
         }
-        if (r.event === 'helper-resumed') h.endedAt = null;
+        // Only a resume brings a finished helper back; later updates or token reports don't.
+        if (r.event === 'helper-resumed') {
+          h.ended = false;
+          h.endedAt = null;
+        }
         if (r.event === 'helper-ended') {
-          h.endedAt = at;
+          if (!h.ended) h.endedAt = at;
+          h.ended = true;
           if (r.tokens) this.tokens[r.threadId] = tokenTotal(r.tokens);
         }
       } else if (r.event === 'end') {
@@ -329,9 +345,10 @@ function codexRun(file, root) {
 function studio({ codexDir, claudeDir, sessionsDir, repoDir = ROOT, homeDir = os.homedir(), now = () => Date.now(), alive = pidAlive }) {
   const started = now();
   const sessions = new Map(); // session id -> its start and end records, for every records file
+  const subagents = new Map(); // file -> subagent of a shown session, shown or not
+  const runs = new Map(); // file -> run, for every launcher log
   const claude = new Map(); // file -> session or subagent, once shown
   const codex = new Map(); // file -> run, once shown
-  const waiting = new Map(); // file -> size, for logs not shown yet
   let polled = false;
   let keys = 0;
   const keyOf = new Map();
@@ -340,25 +357,10 @@ function studio({ codexDir, claudeDir, sessionsDir, repoDir = ROOT, homeDir = os
     return keyOf.get(id);
   };
 
-  // Live only. At the first poll a log is shown if what it belongs to is running then; a log
-  // first seen later was written after the dashboard started. A log left out is shown once it
-  // grows, because what it belongs to has started again.
-  const shouldShow = (root, file, runningAtStart) => {
-    const s = stat(root, file);
-    if (!s) return false;
-    if (!waiting.has(file)) {
-      waiting.set(file, s.size);
-      return polled ? s.mtimeMs >= started : runningAtStart(s);
-    }
-    return s.size !== waiting.get(file);
-  };
-  const showClaude = (kind, file, extra) => {
-    const agent = claudeAgent(kind, file, claudeDir);
-    Object.assign(agent, { parent: null, info: null, session: null, finished: false }, extra);
-    claude.set(file, agent);
-    waiting.delete(file);
-    return agent;
-  };
+  // Live only, everywhere the dashboard decides what to show: an agent is shown if it is running
+  // at the first poll, or later on a real new start or real new activity. A line added after an
+  // agent ended (a posted record, metadata) never shows it.
+  const claudeOf = (kind, file, extra) => Object.assign(claudeAgent(kind, file, claudeDir), { parent: null, info: null, session: null, finished: false }, extra);
 
   // A session is shown if it is running at the first poll, or when a start record arrives later,
   // even if it has already ended by then.
@@ -375,23 +377,68 @@ function studio({ codexDir, claudeDir, sessionsDir, repoDir = ROOT, homeDir = os
       // Once its process is gone the session stays finished, even if the id is reused later.
       if (session.open && !session.gone && !alive(session.pid)) session.gone = true;
       const file = path.join(claudeDir, `${id}.jsonl`);
-      if (!claude.has(file) && (polled ? startedNow : session.running)) showClaude('session', file, { session });
+      if (!claude.has(file) && (polled ? startedNow : session.running)) claude.set(file, claudeOf('session', file, { session }));
     }
   }
 
   // A shown session's subagents: at the first poll those not finished that were written during the
-  // session's current run, later those that start.
+  // session's current run. After that, a subagent not shown yet is shown once it records activity
+  // timed after the dashboard started and within the session's current run.
   function pollSubagents() {
     for (const parent of [...claude.values()].filter((a) => a.kind === 'session')) {
-      const runStart = parent.session.startedAt === null ? -Infinity : Date.parse(parent.session.startedAt);
-      const subDir = path.join(claudeDir, parent.session.id, 'subagents');
+      const { session } = parent;
+      const runStart = session.startedAt === null ? -Infinity : Date.parse(session.startedAt);
+      const subDir = path.join(claudeDir, session.id, 'subagents');
       for (const s of list(claudeDir, subDir)) {
         if (!s.endsWith('.jsonl')) continue;
         const file = path.join(subDir, s);
         if (claude.has(file)) continue;
-        const info = path.join(subDir, `${s.slice(0, -'.jsonl'.length)}.meta.json`);
-        if (shouldShow(claudeDir, file, (st) => st.mtimeMs >= runStart && !subagentInfo(claudeDir, info).finished)) showClaude('subagent', file, { parent: parent.file, info, session: parent.session, shownRun: parent.session.run });
+        let agent = subagents.get(file);
+        if (!agent) {
+          const info = path.join(subDir, `${s.slice(0, -'.jsonl'.length)}.meta.json`);
+          subagents.set(file, (agent = claudeOf('subagent', file, { parent: parent.file, info, session, shownRun: session.run })));
+          const st = polled ? null : stat(claudeDir, file);
+          if (st && st.mtimeMs >= runStart && !subagentInfo(claudeDir, info).finished) {
+            claude.set(file, agent);
+            continue;
+          }
+        }
+        const since = Math.max(started, runStart);
+        let active = false;
+        for (const r of agent.tail.read()) {
+          const at = agent.add(r);
+          if (at && Date.parse(at) >= since) active = true;
+        }
+        if (active) {
+          agent.shownRun = session.run;
+          claude.set(file, agent);
+        }
       }
+    }
+  }
+
+  // A run is shown if its log has a start and no end at the first poll, or when a start arrives
+  // later. At the first poll, a log untouched for longer than a run can last belongs to a finished
+  // or stopped run, so only lines added later are read from it.
+  function pollRuns(t) {
+    for (const f of list(codexDir, codexDir)) {
+      if (!f.endsWith('.jsonl')) continue;
+      const file = path.join(codexDir, f);
+      let run = runs.get(file);
+      if (!run) {
+        runs.set(file, (run = codexRun(file, codexDir)));
+        const s = polled ? null : stat(codexDir, file);
+        if (s && t - s.mtimeMs > RUN_LIMIT_MS) run.tail.skipToEnd();
+      }
+      // The first poll reads to the end of the file, past any chunk with no complete record.
+      let startedNow = false;
+      do {
+        for (const r of run.tail.read()) {
+          if (r.event === 'start') startedNow = true;
+          run.add(r);
+        }
+      } while (!polled && !run.tail.atEnd);
+      if (!codex.has(file) && (polled ? startedNow : run.startedAt !== null && run.endedAt === null)) codex.set(file, run);
     }
   }
 
@@ -411,28 +458,7 @@ function studio({ codexDir, claudeDir, sessionsDir, repoDir = ROOT, homeDir = os
         }
       }
     }
-    for (const f of expected(repoDir, codexDir) ? list(codexDir, codexDir) : []) {
-      if (!f.endsWith('.jsonl')) continue;
-      const file = path.join(codexDir, f);
-      let run = codex.get(file);
-      if (!run) {
-        // A run is running at start if its log has no end and its launcher could still be alive.
-        // The probe reads to the end of the file, past any chunk with no complete record.
-        const open = (s) => {
-          if (t - s.mtimeMs > RUN_LIMIT_MS) return false;
-          const probe = codexRun(file, codexDir);
-          do {
-            for (const r of probe.tail.read()) probe.add(r);
-          } while (!probe.tail.atEnd);
-          return probe.endedAt === null;
-        };
-        if (!shouldShow(codexDir, file, open)) continue;
-        run = codexRun(file, codexDir);
-        codex.set(file, run);
-        waiting.delete(file);
-      }
-      for (const r of run.tail.read()) run.add(r);
-    }
+    if (expected(repoDir, codexDir)) pollRuns(t);
     polled = true;
   }
 
@@ -472,14 +498,15 @@ function studio({ codexDir, claudeDir, sessionsDir, repoDir = ROOT, homeDir = os
         state: r.endedAt ? (r.failed ? 'failed' : 'finished') : stopped ? 'stopped' : 'running',
         tokens: (r.threadId && r.tokens[r.threadId]) || null,
         // Live only: a helper that finished before the dashboard started is left out unless it resumes.
-        helpers: [...r.helpers.entries()].filter(([, h]) => !(h.endedAt && Date.parse(h.endedAt) < started)).map(([thread, h]) => ({
+        // An end with no readable time counts as before the start.
+        helpers: [...r.helpers.entries()].filter(([, h]) => !(h.ended && (h.endedAt === null || Date.parse(h.endedAt) < started))).map(([thread, h]) => ({
           key: key(`${r.file}#${thread}`),
           name: h.name ?? 'helper',
           model: h.model,
           effort: h.effort,
           startedAt: h.startedAt,
           endedAt: h.endedAt,
-          state: h.endedAt || r.endedAt ? 'finished' : 'running',
+          state: h.ended || r.endedAt ? 'finished' : 'running',
           tokens: r.tokens[thread] ?? null,
         })),
       };

@@ -17,6 +17,9 @@ It uses Node.js only: no packages, and the page loads nothing from the internet.
 ## What it shows
 
 - **Live only.** An agent appears if it is running when the dashboard starts, or when it starts later. Nothing that ended before the dashboard started is shown, and nothing is kept after you stop it.
+  - A line added to a log after its agent ended never brings the agent back. Examples are the record the launcher posts after a run, or metadata Claude Code adds.
+  - Only a real new start brings an agent back: a session's start record, a run's start, a helper being resumed. Real new activity does too: a message in a subagent's log.
+  - "Last activity" is the time of the last message.
 - **Claude:** each session, with its subagents under it. Each row shows:
   - the name: the agent type for a session started with `--agent` (such as `producer`) or for a subagent, otherwise "main session"
   - the model, the start time and the last activity time

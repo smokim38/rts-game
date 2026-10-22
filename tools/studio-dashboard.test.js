@@ -413,6 +413,133 @@ test('Codex: an ended run stays hidden even when its log starts with a long unre
   }
 });
 
+// Live only: for each kind of agent, lines added after it ended never make it appear; only a real
+// new start or real new activity does.
+test('live only: a Codex run that ended before the dashboard opened stays hidden after later lines', () => {
+  const f = folders();
+  try {
+    const now = () => new Date().toISOString();
+    const ended = path.join(f.codexDir, 'ended.jsonl');
+    fs.writeFileSync(ended, jsonl([{ at: now(), event: 'start', role: 'reviewer', issue: 46, pr: 48 }, { at: now(), event: 'end', error: null }]));
+    const stale = path.join(f.codexDir, 'stale.jsonl');
+    fs.writeFileSync(stale, jsonl([{ at: ago(6 * 3600e3).toISOString(), event: 'start', role: 'qa-test-engineer', issue: 8, pr: 7 }]));
+    setTime(stale, ago(6 * 3600e3));
+    const watch = D.studio({ ...f.dirs });
+    watch.poll();
+    assert.deepStrictEqual(watch.state().codex, []);
+    // The launcher posts its record after the end line; a stopped run's log gets a late line too.
+    fs.appendFileSync(ended, jsonl([{ at: now(), event: 'record-posted', record: 'verdict' }]));
+    fs.appendFileSync(stale, jsonl([{ at: now(), event: 'record-posted', record: 'qa' }, { at: now(), event: 'token-usage', threadId: 't1', total: { total: 5 } }]));
+    watch.poll();
+    assert.deepStrictEqual(watch.state().codex, []);
+    // A real new run appears.
+    fs.writeFileSync(path.join(f.codexDir, 'new.jsonl'), jsonl([{ at: now(), event: 'start', role: 'tech-artist', issue: 9 }]));
+    watch.poll();
+    assert.deepStrictEqual(watch.state().codex.map((r) => [r.issue, r.state]), [[9, 'running']]);
+  } finally {
+    f.done();
+  }
+});
+
+test('live only: a Codex helper that finished before the dashboard opened stays hidden after later lines', () => {
+  const f = folders();
+  try {
+    const base = Date.now();
+    const t = (s) => new Date(base - s * 1000).toISOString();
+    const open = path.join(f.codexDir, 'open.jsonl');
+    fs.writeFileSync(open, jsonl([
+      { at: t(120), event: 'start', role: 'reviewer', issue: 46, pr: 48 },
+      { at: t(90), event: 'helper-started', threadId: 'h1', name: 'root/worker', model: null, effort: null, status: null },
+      { at: t(70), event: 'helper-ended', threadId: 'h1', status: 'completed', tokens: null },
+      { at: t(80), event: 'helper-started', threadId: 'h2', name: 'root/other', model: null, effort: null, status: null },
+      { at: null, event: 'helper-ended', threadId: 'h2', status: 'completed', tokens: null },
+    ]));
+    const watch = D.studio({ ...f.dirs, now: () => base - 30e3 });
+    watch.poll();
+    assert.deepStrictEqual(watch.state().codex[0].helpers, []);
+    // Updates, token reports and a repeated end after the helpers ended don't show them.
+    fs.appendFileSync(open, jsonl([
+      { at: t(0), event: 'helper-updated', threadId: 'h1', name: 'root/worker', model: 'gpt-mini', effort: 'low', status: null },
+      { at: t(0), event: 'token-usage', threadId: 'h1', helper: true, total: { total: 50 } },
+      { at: t(0), event: 'helper-ended', threadId: 'h1', status: 'completed', tokens: null },
+      { at: t(0), event: 'helper-updated', threadId: 'h2', name: 'root/other', model: 'gpt-mini', effort: 'low', status: null },
+    ]));
+    watch.poll();
+    assert.deepStrictEqual(watch.state().codex[0].helpers, []);
+    // Real new activity: the helper resumes.
+    fs.appendFileSync(open, jsonl([{ at: t(0), event: 'helper-resumed', threadId: 'h1', name: null, model: null, effort: null, status: null }]));
+    watch.poll();
+    assert.deepStrictEqual(watch.state().codex[0].helpers.map((h) => [h.name, h.state]), [['root/worker', 'running']]);
+  } finally {
+    f.done();
+  }
+});
+
+test('live only: a Claude session that ended before the dashboard opened stays hidden after later lines', () => {
+  const f = folders();
+  try {
+    const live = new Set([601]);
+    sessionLog(f, 'done', [record('done', 'start', 600, 'main session', ago(120e3).toISOString()), record('done', 'end', 600, 'main session', ago(60e3).toISOString())]);
+    sessionLog(f, 'lost', [record('lost', 'start', 602, 'tech-architect', ago(120e3).toISOString())]);
+    const watch = D.studio({ ...f.dirs, alive: (pid) => live.has(pid) });
+    watch.poll();
+    assert.deepStrictEqual(watch.state().claude, []);
+    // Repeated end records, and activity in their logs, don't show them.
+    sessionLog(f, 'done', [record('done', 'end', 600)]);
+    sessionLog(f, 'lost', [record('lost', 'end', 602, 'tech-architect')]);
+    fs.writeFileSync(path.join(f.claudeDir, 'done.jsonl'), jsonl([prompt()]));
+    fs.writeFileSync(path.join(f.claudeDir, 'lost.jsonl'), jsonl([prompt()]));
+    watch.poll();
+    assert.deepStrictEqual(watch.state().claude, []);
+    // A real new start shows it.
+    sessionLog(f, 'done', [record('done', 'start', 601, 'qa-lead')]);
+    watch.poll();
+    assert.deepStrictEqual(byName(watch.state()), { 'qa-lead': 'running' });
+  } finally {
+    f.done();
+  }
+});
+
+test('live only: a finished Claude subagent stays hidden after later lines until it really does something', () => {
+  const f = folders();
+  try {
+    const live = new Set([701, 702]);
+    sessionLog(f, 'p', [record('p', 'start', 701, 'producer', ago(600e3).toISOString())]);
+    const subs = path.join(f.claudeDir, 'p', 'subagents');
+    fs.mkdirSync(subs, { recursive: true });
+    const subagent = (id, type, finished, records) => {
+      fs.writeFileSync(path.join(subs, `${id}.jsonl`), jsonl(records));
+      fs.writeFileSync(path.join(subs, `${id}.meta.json`), JSON.stringify({ agentType: type, finished }));
+    };
+    subagent('agent-fin', 'tech-architect', true, [prompt(ago(300e3).toISOString())]);
+    subagent('agent-run', 'game-designer', false, [prompt(ago(200e3).toISOString())]);
+    const watch = D.studio({ ...f.dirs, alive: (pid) => live.has(pid) });
+    watch.poll();
+    assert.deepStrictEqual(byName(watch.state()), { producer: 'running', 'game-designer': 'running' });
+
+    // Lines that aren't activity, and activity timed before the dashboard opened, don't show it.
+    const late = [{ type: 'system', timestamp: new Date().toISOString(), content: `${PLANTED}-SYSTEM` }, { type: 'summary', summary: `${PLANTED}-SUMMARY` }, prompt(ago(250e3).toISOString())];
+    fs.appendFileSync(path.join(subs, 'agent-fin.jsonl'), jsonl(late));
+    watch.poll();
+    assert.deepStrictEqual(byName(watch.state()), { producer: 'running', 'game-designer': 'running' });
+
+    // A shown subagent that ended with its session stays finished after the same kind of lines.
+    sessionLog(f, 'p', [record('p', 'end', 701, 'producer', ago(100e3).toISOString()), record('p', 'start', 702, 'producer', ago(50e3).toISOString())]);
+    fs.appendFileSync(path.join(subs, 'agent-run.jsonl'), jsonl(late));
+    watch.poll();
+    assert.deepStrictEqual(byName(watch.state()), { producer: 'running', 'game-designer': 'finished' });
+
+    // Real new activity shows the finished subagent again.
+    fs.writeFileSync(path.join(subs, 'agent-fin.meta.json'), JSON.stringify({ agentType: 'tech-architect', finished: false }));
+    fs.appendFileSync(path.join(subs, 'agent-fin.jsonl'), jsonl([prompt()]));
+    watch.poll();
+    assert.deepStrictEqual(byName(watch.state()), { producer: 'running', 'game-designer': 'finished', 'tech-architect': 'running' });
+    assert.ok(!JSON.stringify(watch.state()).includes(PLANTED));
+  } finally {
+    f.done();
+  }
+});
+
 test('read-only: polling writes, changes and deletes nothing', () => {
   const f = folders();
   const names = ['writeFileSync', 'appendFileSync', 'mkdirSync', 'rmSync', 'unlinkSync', 'renameSync', 'copyFileSync', 'truncateSync', 'utimesSync', 'writeSync', 'writeFile', 'appendFile'];
