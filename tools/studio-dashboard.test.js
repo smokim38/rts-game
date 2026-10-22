@@ -540,6 +540,207 @@ test('live only: a finished Claude subagent stays hidden after later lines until
   }
 });
 
+test('Claude: a subagent from an earlier run whose log was touched later is not shown at startup', () => {
+  const f = folders();
+  try {
+    const live = new Set([801]);
+    sessionLog(f, 'p', [
+      record('p', 'start', 800, 'producer', ago(900e3).toISOString()),
+      record('p', 'end', 800, 'producer', ago(800e3).toISOString()),
+      record('p', 'start', 801, 'producer', ago(300e3).toISOString()),
+    ]);
+    const subs = path.join(f.claudeDir, 'p', 'subagents');
+    fs.mkdirSync(subs, { recursive: true });
+    // Unfinished, last message in the earlier run, and a line without a message written just now.
+    fs.writeFileSync(path.join(subs, 'agent-old.jsonl'), jsonl([prompt(ago(850e3).toISOString()), { type: 'system', timestamp: new Date().toISOString() }]));
+    fs.writeFileSync(path.join(subs, 'agent-old.meta.json'), JSON.stringify({ agentType: 'tech-architect', finished: false }));
+    const watch = D.studio({ ...f.dirs, alive: (pid) => live.has(pid) });
+    watch.poll();
+    assert.deepStrictEqual(byName(watch.state()), { producer: 'running' });
+  } finally {
+    f.done();
+  }
+});
+
+test('Claude: a subagent from a run that ended and was resumed between two polls is shown, finished', () => {
+  const f = folders();
+  try {
+    const live = new Set([812]);
+    const watch = D.studio({ ...f.dirs, alive: (pid) => live.has(pid) });
+    watch.poll();
+    const at = (ms) => new Date(Date.now() + ms).toISOString();
+    const subs = path.join(f.claudeDir, 'p', 'subagents');
+    fs.mkdirSync(subs, { recursive: true });
+    sessionLog(f, 'p', [record('p', 'start', 811, 'producer', at(1000))]);
+    fs.writeFileSync(path.join(subs, 'agent-s.jsonl'), jsonl([prompt(at(2000)), ...reply('s1', usage(4, 4, 0, 0), at(2000))]));
+    fs.writeFileSync(path.join(subs, 'agent-s.meta.json'), JSON.stringify({ agentType: 'game-designer', finished: false }));
+    sessionLog(f, 'p', [record('p', 'end', 811, 'producer', at(3000)), record('p', 'start', 812, 'producer', at(4000))]);
+    watch.poll();
+    const s = watch.state();
+    assert.deepStrictEqual(byName(s), { producer: 'running', 'game-designer': 'finished' });
+    assert.strictEqual(s.claude.find((a) => a.name === 'game-designer').tokens.total, 8);
+  } finally {
+    f.done();
+  }
+});
+
+test('Claude: a late end record from an earlier process does not end the resumed session', () => {
+  const f = folders();
+  try {
+    const live = new Set([821, 822]);
+    sessionLog(f, 's', [record('s', 'start', 821, 'qa-lead')]);
+    const watch = D.studio({ ...f.dirs, alive: (pid) => live.has(pid) });
+    watch.poll();
+    // Resumed in a new process, then the first process's end record arrives late.
+    sessionLog(f, 's', [record('s', 'start', 822, 'qa-lead'), record('s', 'end', 821, 'qa-lead')]);
+    live.delete(821);
+    watch.poll();
+    assert.deepStrictEqual(byName(watch.state()), { 'qa-lead': 'running' });
+    sessionLog(f, 's', [record('s', 'end', 822, 'qa-lead')]);
+    watch.poll();
+    assert.deepStrictEqual(byName(watch.state()), { 'qa-lead': 'finished' });
+  } finally {
+    f.done();
+  }
+});
+
+test('Claude: a new start that reuses the process id of a session seen gone is a new run', () => {
+  const f = folders();
+  try {
+    const live = new Set([831]);
+    sessionLog(f, 's', [record('s', 'start', 831, 'qa-lead', ago(60e3).toISOString())]);
+    const watch = D.studio({ ...f.dirs, alive: (pid) => live.has(pid) });
+    watch.poll();
+    live.delete(831);
+    watch.poll();
+    assert.deepStrictEqual(byName(watch.state()), { 'qa-lead': 'finished' });
+    const again = new Date().toISOString();
+    sessionLog(f, 's', [record('s', 'start', 831, 'qa-lead', again)]);
+    live.add(831);
+    watch.poll();
+    const [session] = watch.state().claude;
+    assert.deepStrictEqual([session.state, session.startedAt], ['running', again]);
+  } finally {
+    f.done();
+  }
+});
+
+test('Claude: a subagent keeps its last known state while its info file is unreadable', () => {
+  const f = folders();
+  try {
+    sessionLog(f, 'p', [record('p', 'start', process.pid, 'producer', ago(60e3).toISOString())]);
+    const subs = path.join(f.claudeDir, 'p', 'subagents');
+    fs.mkdirSync(subs, { recursive: true });
+    const meta = path.join(subs, 'agent-a.meta.json');
+    fs.writeFileSync(path.join(subs, 'agent-a.jsonl'), jsonl([prompt()]));
+    fs.writeFileSync(meta, JSON.stringify({ agentType: 'game-designer', finished: false }));
+    const watch = D.studio({ ...f.dirs });
+    watch.poll();
+    fs.writeFileSync(meta, JSON.stringify({ agentType: 'game-designer', finished: true }));
+    watch.poll();
+    assert.deepStrictEqual(byName(watch.state()), { producer: 'running', 'game-designer': 'finished' });
+    // Half written, then gone for a moment.
+    fs.writeFileSync(meta, '{"agentType":"game-des');
+    watch.poll();
+    assert.deepStrictEqual(byName(watch.state()), { producer: 'running', 'game-designer': 'finished' });
+    fs.rmSync(meta);
+    watch.poll();
+    assert.deepStrictEqual(byName(watch.state()), { producer: 'running', 'game-designer': 'finished' });
+  } finally {
+    f.done();
+  }
+});
+
+test('Codex: a run already stopped before the dashboard opened stays hidden despite a recent line', () => {
+  const f = folders();
+  try {
+    // Started 5 hours ago, past a run's time limit, with no end; a line was added just now.
+    fs.writeFileSync(path.join(f.codexDir, 'old.jsonl'), jsonl([
+      { at: ago(5 * 3600e3).toISOString(), event: 'start', role: 'qa-test-engineer', issue: 8, pr: 7 },
+      { at: new Date().toISOString(), event: 'record-posted', url: `${PLANTED}-URL` },
+    ]));
+    const watch = D.studio({ ...f.dirs });
+    watch.poll();
+    watch.poll();
+    assert.deepStrictEqual(watch.state().codex, []);
+  } finally {
+    f.done();
+  }
+});
+
+test('Codex: helpers stop with their run when it passes its time limit', () => {
+  const f = folders();
+  try {
+    let clock = Date.now();
+    const t = (s) => new Date(clock - s * 1000).toISOString();
+    fs.writeFileSync(path.join(f.codexDir, 'open.jsonl'), jsonl([
+      { at: t(3600), event: 'start', role: 'gameplay-programmer', issue: 50 },
+      { at: t(3500), event: 'helper-started', threadId: 'h1', name: 'root/worker', model: null, effort: null, status: null },
+      { at: t(3400), event: 'helper-started', threadId: 'h2', name: 'root/done', model: null, effort: null, status: null },
+      { at: t(0), event: 'helper-ended', threadId: 'h2', status: 'completed', tokens: null },
+    ]));
+    const watch = D.studio({ ...f.dirs, now: () => clock - 1000 });
+    watch.poll();
+    let [run] = watch.state().codex;
+    assert.deepStrictEqual([run.state, ...run.helpers.map((h) => h.state)], ['running', 'running', 'finished']);
+    clock += D.RUN_LIMIT_MS;
+    [run] = watch.state().codex;
+    assert.deepStrictEqual([run.state, ...run.helpers.map((h) => h.state)], ['stopped', 'stopped', 'finished']);
+  } finally {
+    f.done();
+  }
+});
+
+test('Codex: a failed turn shows the run as failed, without its error text', () => {
+  const f = folders();
+  try {
+    const watch = D.studio({ ...f.dirs });
+    watch.poll();
+    const now = () => new Date().toISOString();
+    // The launcher's sequence for a failed turn: turn-completed with status failed, then end with no error.
+    fs.writeFileSync(path.join(f.codexDir, 'failed.jsonl'), jsonl([
+      { at: now(), event: 'start', role: 'gameplay-programmer', issue: 50 },
+      { at: now(), event: 'thread-started', threadId: 't1' },
+      { at: now(), event: 'turn-completed', status: 'failed', error: { message: `${PLANTED}-ERROR`, codexErrorInfo: `${PLANTED}-INFO` } },
+      { at: now(), event: 'run-tokens', threadId: 't1', total: null, helpers: [] },
+      { at: now(), event: 'end', error: null },
+    ]));
+    fs.writeFileSync(path.join(f.codexDir, 'ok.jsonl'), jsonl([
+      { at: now(), event: 'start', role: 'reviewer', issue: 47, pr: 49 },
+      { at: now(), event: 'turn-completed', status: 'completed', error: null },
+      { at: now(), event: 'end', error: null },
+    ]));
+    watch.poll();
+    const s = watch.state();
+    assert.deepStrictEqual(s.codex.map((r) => [r.issue, r.state]).sort(), [[47, 'finished'], [50, 'failed']]);
+    assert.ok(!JSON.stringify(s).includes(PLANTED));
+  } finally {
+    f.done();
+  }
+});
+
+test('large logs: a big backlog shows its current tokens within moments', async () => {
+  const f = folders();
+  let stop = () => {};
+  try {
+    sessionLog(f, 'big', [record('big', 'start', process.pid, 'producer')]);
+    const replies = [];
+    for (let i = 0; i < 400; i++) replies.push(...reply(`m${i}`, usage(1, 1, 0, 0)));
+    fs.writeFileSync(path.join(f.claudeDir, 'big.jsonl'), jsonl(replies));
+    // Small chunks stand in for a log many times the real 8 MiB chunk: hundreds of reads to catch up.
+    const watch = D.studio({ ...f.dirs, chunk: 1024 });
+    const started = Date.now();
+    stop = D.follow(watch, { interval: 1000 });
+    const total = () => watch.state().claude[0]?.tokens.input ?? 0;
+    while (total() < 400 && Date.now() - started < 10000) await new Promise((r) => setTimeout(r, 20));
+    assert.strictEqual(total(), 400);
+    assert.ok(Date.now() - started < 5000, `took ${Date.now() - started} ms`);
+  } finally {
+    stop();
+    f.done();
+  }
+});
+
 test('read-only: polling writes, changes and deletes nothing', () => {
   const f = folders();
   const names = ['writeFileSync', 'appendFileSync', 'mkdirSync', 'rmSync', 'unlinkSync', 'renameSync', 'copyFileSync', 'truncateSync', 'utimesSync', 'writeSync', 'writeFile', 'appendFile'];
