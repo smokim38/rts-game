@@ -31,8 +31,10 @@ AGENTS.md is the rulebook, and `docs/studio/workflow.md` covers the lifecycle, t
 - Aim for PRs under ~400 changed lines. Split bigger work.
 - Budget each complete Bash tool call that posts text to **7,000 UTF-8 bytes, counting each ASCII apostrophe as four bytes**. Include the command, body, last-line marker and here-document delimiter: if `B` is the actual UTF-8 byte count and `A` the apostrophe count, require `B + 3A <= 7,000`. Estimate conservatively from the text you write; your shell cannot run size-counting helpers. Issue #65 measured an 8,186-character native Git Bash `-c` limit; the model `eval '<escaped command>'` adds seven characters plus three per apostrophe. This budget leaves at least `8,186 - 7,000 - 7 = 1,179` characters for other wrapper overhead; counting UTF-8 bytes is conservative for non-ASCII text. Claude Code's exact wrapper was not inspected.
 - Issue body sections and PR template fields always stay in their bodies, never in comments. Shorten an Issue that exceeds the budget or split it into more Issues; keep every resulting Issue complete. Each split-off or replacement Issue needs its own `### Owner instruction` under the authorisation rule above; ask the owner if that rule cannot be met. Shorten an oversized PR body while retaining every template field. Supplementary findings may go in numbered comments (`Part 1/N`, etc.), each a separate `gh issue comment <n> --repo smokim38/rts-game --body-file -` or `gh pr comment ...` call with its own quoted here-document. Choose a delimiter absent from the body and put it alone on its closing line. Keep owner instructions and studio-record evidence intact. The guard permits these forms.
-- End every body or comment with a known last line, e.g. `End of Issue #65` or `End of part 1/4`. After every post or body edit, even with exit code 0, confirm that line and the complete text arrived. For bodies, use `gh issue view <n> --json body` or `gh pr view <n> --json body`. Use `--comments` or `--json comments` only to check comments. Also check after any shell error or `here-document ... delimited by end-of-file` warning. The reproduction's plain `-c` call returned a partial body with exit code 0; its quoted wrapper normally failed with exit code 2, though a cut immediately after an escaped apostrophe can also return partial output with exit code 0.
-- Repair a truncated Issue or PR body in place with `gh issue edit <n> --body-file -` or `gh pr edit <n> --body-file -`, using a quoted here-document within the budget and leaving every existing `### Owner instruction` section unchanged. Body text never moves into a comment. A truncated Issue is not Ready: repair it before delegation, or create complete replacement Issues under the authorisation rule above and close the truncated original.
+- The known-last-line rule applies only to Issue bodies, PR bodies and comments posted with `gh`. End each with a known last line, e.g. `End of Issue #65` or `End of part 1/4`. A new Issue's last line needs no Issue number: use `End of Issue: <title>`. Commit messages get no last line; `Codex-Run:` stays in the final trailer block.
+- For studio records, keep the marker on the first line and, for an owner approval, the `Owner approval for PR` line on the second. Put the known last line after the record text; that last line must never contain the keyword `studio-record`.
+- After every post or body edit, even with exit code 0, confirm the known last line and the complete text arrived. For bodies, use `gh issue view <n> --json body` or `gh pr view <n> --json body`. Use `--comments` or `--json comments` only to check comments. Also check after any shell error or `here-document ... delimited by end-of-file` warning. The reproduction's plain `-c` call returned a partial body with exit code 0; its quoted wrapper normally failed with exit code 2, though a cut immediately after an escaped apostrophe can also return partial output with exit code 0.
+- Repair a truncated Issue or PR body in place with `gh issue edit <n> --body-file -` or `gh pr edit <n> --body-file -`, using a quoted here-document within the budget and leaving every existing `### Owner instruction` section unchanged. If a cut falls inside an `### Owner instruction` section, replace the Issue with a new complete Issue under the authorisation rule above and close the truncated original; never repair that section, because it is never edited. Body text never moves into a comment. A truncated Issue is not Ready: repair it before delegation where permitted, or create complete replacement Issues under the authorisation rule above and close the truncated original.
 - Correction comments are only for truncated comments: post the complete affected text within the budget (number supplementary findings if needed). Never edit or delete a truncated studio record; its authorised poster posts a new complete record instead. The **owner** runs the local, non-posting reproduction, `node .claude/hooks/guard.test.js --repro-65`; the guard blocks the Producer from running it.
 - Create Issues with a quoted here-document, so nothing in the text runs:
   ```bash
@@ -47,6 +49,8 @@ AGENTS.md is the rulebook, and `docs/studio/workflow.md` covers the lifecycle, t
 
   ### Acceptance criteria
   - [ ] <criterion>
+
+  End of Issue: <title>
   EOF
   ```
 - Never edit the `### Owner instruction` of an existing Issue. A scope change gets the owner's new answer, recorded as a new owner instruction with its date.
@@ -97,6 +101,8 @@ You handle the branch, the commit and the PR. Use `git -C <path>` for a launcher
    ```bash
    gh pr create --base main --head <branch> --title "<title>" --body-file - <<'EOF'
    <template>
+
+   End of PR: <title>
    EOF
    ```
 7. To update a branch, merge `main` into it (`git merge origin/main`, as a call of its own). Never rewrite pushed history.
@@ -124,6 +130,7 @@ Route each PR by the tier that counts (AGENTS.md §6, minimum tiers included):
   gh pr comment <n> --body-file - <<'EOF'
   <!-- studio-record v1 type=owner-approval pr=<n> sha=<full head sha> result=approved -->
   Owner approval for PR #<n> at <sha>: "<the owner's reply>" (Producer session, <YYYY-MM-DD>)
+  End of owner approval for PR #<n>
   EOF
   ```
   Never post one without the owner's reply in this session, and never for another commit than the one the owner approved. For a guard change, tell the owner to reinstall the guard (`pwsh -File tools/install-claude-guard.ps1`, as administrator) once it merges.

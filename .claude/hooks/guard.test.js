@@ -13,6 +13,36 @@ const GUARD = path.join(__dirname, 'guard.js');
 const ROOT = path.resolve(__dirname, '..', '..');
 const TEMPLATE = path.join(__dirname, 'managed-settings.template.json');
 
+test('Issue #65: documented post forms pass without widening Producer permissions', () => {
+  const guard = require('./guard.js');
+  const body = 'Part 1/2\n\nA short finding.\n\nEnd of part 1/2\n';
+  const post = (body) => `gh issue comment 65 --repo smokim38/rts-game --body-file - <<'REPRO_65_END'\n${body}REPRO_65_END\n`;
+  const check = (command) => guard.check({
+    cwd: ROOT, agent_type: 'producer', tool_name: 'Bash', tool_input: { command },
+  });
+  const comments = [
+    post(body),
+    post(body).replace('gh issue comment', 'gh pr comment'),
+  ];
+  for (const command of [
+    ...comments,
+    post(body).replace('gh issue comment 65', 'gh issue create --title finding'),
+    post(body).replace('gh issue comment 65', 'gh pr create --title finding'),
+    post(body).replace('gh issue comment 65', 'gh issue edit 65'),
+    post(body).replace('gh issue comment 65', 'gh pr edit 67'),
+    'gh issue view 65 --comments',
+    'gh pr view 67 --comments',
+    'gh issue view 65 --json body',
+    'gh pr view 67 --json body',
+  ]) assert.strictEqual(check(command), null, command);
+  for (const command of [
+    'gh issue comment 65 --body-file finding.md',
+    'gh pr comment 65 --body-file finding.md',
+    ...comments.map((command) => command.replace("<<'REPRO_65_END'", '<<REPRO_65_END')),
+    'node .claude/hooks/guard.test.js --repro-65',
+  ]) assert.throws(() => check(command), guard.Blocked, command);
+});
+
 // Issue #65: standalone, local-only diagnostic; no git/gh or fixture writes.
 // Owner runs: node .claude/hooks/guard.test.js --repro-65 (blocked for Producer).
 // Observed on Windows, Node v24.20.0, Git Bash 5.3.15(2)-release:
@@ -152,27 +182,6 @@ if (process.argv.includes('--repro-65')) {
     }
   });
 
-  test('Issue #65: documented post forms pass without widening Producer permissions', () => {
-    const body = 'Part 1/2\n\nA short finding.\n';
-    for (const command of [
-      post(body),
-      post(body).replace('gh issue comment', 'gh pr comment'),
-      post(body).replace('gh issue comment 65', 'gh issue create --title finding'),
-      post(body).replace('gh issue comment 65', 'gh pr create --title finding'),
-      'gh issue view 65 --comments',
-      'gh pr view 67 --comments',
-    ]) allowed(command);
-    for (const command of [
-      'gh issue comment 65 --body-file finding.md',
-      'gh pr comment 65 --body-file finding.md',
-      post(body).replace("<<'REPRO_65_END'", '<<REPRO_65_END'),
-      'node .claude/hooks/guard.test.js --repro-65',
-    ]) {
-      assert.throws(() => guard.check({
-        cwd: ROOT, agent_type: 'producer', tool_name: 'Bash', tool_input: { command },
-      }), guard.Blocked);
-    }
-  });
   return;
 }
 
