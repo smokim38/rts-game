@@ -16,7 +16,7 @@ The Producer is the main Claude Code session. It delegates to three subagents. A
 What each one never does:
 - **producer** never approves on GitHub, never posts verdict or QA records, never merges outside the merge gate, and doesn't author content. It has no Edit or Write tool, and the guard limits its shell to `git`, `gh`, the merge form and the launcher form. It can delegate only to the three agents below and start Codex only through the launcher. It starts work only on an authorised Issue (AGENTS.md §3).
 - **game-designer** never touches code, `Game/` or `Art/`, and has no shell.
-- **tech-architect** never implements features, never edits the ADR template or an accepted ADR, and has no shell.
+- **tech-architect** never implements features, never edits the ADR template or an accepted ADR, and has no shell. The guard lets it edit an ADR only if the ADR isn't on `origin/main` yet or is Proposed there, so it can revise its own ADR until the PR merges.
 - **code-reviewer** never edits, commits, pushes, approves on GitHub or merges. It runs one read command per call (`gh pr view|diff|checks`, `gh issue view`, `git diff|log|show`), and posts its verdict record only with `gh pr comment <n> --body-file -` and a quoted here-document.
 
 The game-designer and tech-architect have no shell, so the Producer creates the branch, commits their docs and opens the PR (one Issue, one branch, one PR).
