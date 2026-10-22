@@ -210,8 +210,22 @@ const github = {
   comment: (pr, body) => gh(['pr', 'comment', String(pr), '--repo', REPO, '--body-file', '-'], body).trim(),
 };
 
-function git(args, cwd = ROOT) {
-  return execFileSync(program('git'), ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
+function git(args, cwd = ROOT, { trim = true } = {}) {
+  const output = execFileSync(program('git'), ['-C', cwd, ...args], { encoding: 'utf8' });
+  return trim ? output.trim() : output;
+}
+
+function changedFiles(dir, readGit = git) {
+  const entries = readGit(['status', '--porcelain', '-z'], dir, { trim: false }).split('\0');
+  const files = [];
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    if (entry === '') continue;
+    files.push(entry.slice(3));
+    // In porcelain -z, a rename/copy gives the new path first, then a separate source path.
+    if (/[RC]/.test(entry.slice(0, 2))) i++;
+  }
+  return files;
 }
 
 const gitOk = (args, cwd) => {
@@ -792,7 +806,7 @@ async function main(argv) {
     } catch (err) {
       failure = err;
     }
-    const changed = args.kind === 'implement' ? git(['status', '--porcelain'], dir).split('\n').filter(Boolean).map((l) => l.slice(3)) : undefined;
+    const changed = args.kind === 'implement' ? changedFiles(dir) : undefined;
     process.stdout.write(`${summarize({ args, branch, sha, dir, run, logFile, result, record, changed })}\n`);
     if (failure) throw failure;
   } finally {
@@ -820,6 +834,7 @@ module.exports = {
   pathDirs,
   findProgram,
   codexCommand,
+  changedFiles,
   ensureStudio,
   acquire,
   takeSlot,
