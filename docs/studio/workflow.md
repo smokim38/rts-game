@@ -40,6 +40,8 @@ There is one consolidated review per round, with a verdict of Approve, Request c
 
 **Every verdict names the commit SHA it reviewed.** An Approve covers that commit only. Any later push, including fixes after a QA failure, needs a new review of the new head, and that review counts as a round.
 
+For gameplay-programmer and tech-artist fix runs, the launcher automatically includes the latest valid request-changes verdicts per vendor and failed QA record for the open PR's head commit as untrusted feedback; the Issue's acceptance criteria still set the scope. An escalate verdict stops the run for an owner decision.
+
 ### QA (step 6)
 
 Every PR that changes anything under `Game/` needs a `QA: pass` record for its head commit, whatever the labels say. The Producer runs `node tools/codex-launch.js qa-test-engineer <issue> <pr>` once the review approves. The launcher checks out the PR's exact head commit, and the record names that commit. If the PR moves while QA runs, the new head has no QA record and can't merge. The check takes the QA engineer's one WIP slot until its result is posted. QA:
