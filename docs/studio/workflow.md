@@ -104,7 +104,7 @@ git worktree prune
 
 Remove only idle worktrees with no uncommitted changes, including untracked files; never force removal. Check existing QA and review worktrees before a launcher rerun, which recreates them. Never delete a branch you didn't create ([AGENTS.md §5](../../AGENTS.md#5-security-rules)).
 
-**Unity cache.** Each worktree has its own `Game/Library/`, which is never committed ([AGENTS.md §2](../../AGENTS.md#2-repository-map)). Plan for a slow first batch import and disk use per worktree; fresh QA checkouts pay the import cost again. [Spike #82](https://github.com/smokim38/rts-game/issues/82) is the source for measured cold/warm import times and cache size.
+**Unity cache.** Each worktree has its own `Game/Library/`, which is never committed ([AGENTS.md §2](../../AGENTS.md#2-repository-map)). Plan for a slow first batch import and disk use per worktree; fresh QA checkouts pay the import cost again. #82 was blocked; its checks were re-run in [#92](https://github.com/smokim38/rts-game/issues/92): cold import from an empty `Library/` took about 68 s, warm import about 6.6 s, with peak memory about 1.35 GiB. `Library/` disk size was not measured.
 
 Do not copy or share a `Library` folder between worktrees: its cached imports can reflect different assets, packages or Editor state. Let each worktree's batch Editor create its own cache.
 
