@@ -1,0 +1,14 @@
+{
+  "name": "Northwatch.Simulation",
+  "rootNamespace": "Northwatch.Simulation",
+  "references": ["Unity.Collections","Unity.Mathematics","Unity.Burst"],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

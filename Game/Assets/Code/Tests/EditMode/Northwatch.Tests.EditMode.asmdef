@@ -1,0 +1,14 @@
+{
+  "name": "Northwatch.Tests.EditMode",
+  "rootNamespace": "Northwatch.Tests.EditMode",
+  "references": ["Northwatch.Simulation","Northwatch.Presentation","Northwatch.EditorTools","UnityEngine.TestRunner","UnityEditor.TestRunner"],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": true,
+  "precompiledReferences": ["nunit.framework.dll"],
+  "autoReferenced": false,
+  "defineConstraints": ["UNITY_INCLUDE_TESTS"],
+  "versionDefines": [],
+  "noEngineReferences": false
+}
