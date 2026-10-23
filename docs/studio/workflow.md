@@ -78,11 +78,19 @@ with the same PR and SHA as its marker.
 - A record with a malformed first line, one edited after posting, or one that names another PR blocks the merge. Never edit or delete a record; post a new one.
 - The guard stops the Producer from posting verdict or QA records, and stops everyone else from posting owner-approval records.
 
+## Unity work
+
+1. Every Issue that creates or changes Unity assets (scenes, prefabs, ScriptableObjects, materials or settings) lists those asset paths in its acceptance criteria.
+2. The Producer doesn't start an Issue whose asset list overlaps that of another open, started Issue.
+3. No Unity run (builder, tests or build) happens on the ladder PC while a performance ladder runs ([ADR 0004](../adr/0004-unit-simulation-architecture.md#performance-ladder)).
+4. Assets are created and changed by builders run in batch mode, following [ADR 0006](../adr/0006-unity-editor-automation.md#rules-for-agents-working-with-unity) and [AGENTS.md §4](../../AGENTS.md#4-engineering-standards).
+
 ## Definition of Ready
 
 An Issue moves to **Ready** only when it has all of these:
 - [ ] a goal (one or two sentences)
 - [ ] testable acceptance criteria
+- [ ] for Unity work, the asset paths it creates or changes
 - [ ] an `### Owner instruction` section with the owner's words and the date, and no body edits by another account
 - [ ] a `role:*` label (exactly one)
 - [ ] a `type:*` label (exactly one)
