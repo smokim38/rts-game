@@ -41,7 +41,7 @@ Steering and target search both ask "who is near me?". If each unit checks every
 - **Pillar 4, armies at scale.** Per-unit work runs as native code. Burst "translates from IL/.NET bytecode to highly optimized native code using LLVM" ([Burst][burst-pkg]). The job system is part of the core engine and lets code "use all available CPU cores" ([job system][jobs]). Main-thread work grows with draw calls, not units. One `Graphics.RenderMeshInstanced` call draws at most 1023 instances, or 511 with Unity's default per-instance matrices ([RenderMeshInstanced][rmi]). So 2,000 cubes in two faction materials take four instanced draws per pass.
 - **Mono stays.** Burst code runs as native code under either backend (ADR 0001). A Windows build puts it in one native library, and Windows-to-Windows builds need no external toolchain ([Burst builds][burst-build]), unlike IL2CPP.
 - **Pillar 3, movement.** Every unit queries its neighbours every tick, and a spatial grid rebuilt in a job keeps that cheap. Unity's job-friendly NavMesh query API "has been deprecated without replacement" ([NavMeshQuery][navquery]), so in any option we build large-group pathfinding ourselves (later ADR).
-- **Pillar 2, smarter AI.** A unit's decision is the same small calculation for every unit, which is what parallel jobs do best. The enemy commander runs in plain C# on summaries that the jobs produce. It gives orders through the same command queue as the player, so it can't read hidden information.
+- **Pillar 2, smarter AI.** A unit's decision is the same small calculation for every unit, which is what parallel jobs do best. The enemy commander runs in plain C# and gives orders through the same command queue as the player, so it can't change unit state directly. A queue alone doesn't limit what it reads, so it never reads the unit arrays. It reads only its own faction's summaries, which jobs build from what that faction can see, because Pillar 2 rules out "information the AI shouldn't have" (`docs/design/vision.md`). The GDD sets the visibility rules, and the AI ADR (follow-up 8) defines the summaries and the filter.
 - **AGENTS.md §4.** With no GameObject per unit, `Find*`, `GetComponent` and `SendMessage` can't appear in unit code. Burst doesn't support "any methods related to managed objects", catching exceptions, or storing to static fields except through `SharedStatic` ([HPC#][hpc]). So the Burst compiler rejects per-unit code that uses managed objects, which is where managed allocations come from.
 - **The team.** The API surface is small: `NativeArray`, `IJobFor` or `IJobParallelFor`, `[BurstCompile]`, `Unity.Mathematics` and `Graphics.RenderMeshInstanced`. There's no baking or SubScene workflow. Jobs are plain structs, so EditMode tests can run them without a scene.
 - **The next upgrade.** Unity is moving ECS into the engine core in 6.4: "This change does involve structural changes to our API", rolled out over the releases "leading up to the next LTS in Unity 6.7" ([ECS status][ecs-status]). Building on the core job system keeps that upgrade small and leaves Entities open for a later ADR once its API settles.
@@ -55,7 +55,7 @@ Steering and target search both ask "who is near me?". If each unit checks every
 | Spatial grid | Burst job, rebuilt every tick | Shared by steering, targeting and selection |
 | Movement | Burst jobs: path following, separation and avoidance, integration | Pathfinding method (for example flow fields), avoidance and formations: later ADR |
 | Unit AI and targeting | Burst jobs: a state machine per unit, and target search through the grid, spread across ticks | Rules and time-slicing: later ADR |
-| Commander AI | Main thread, plain C#, a few times per second | Reads summaries the jobs write, and issues orders through the command queue |
+| Commander AI | Main thread, plain C#, a few times per second | Reads only its faction's visibility-filtered summaries, which the jobs write, and issues orders through the command queue |
 | Player orders and selection | Input on the main thread (Input System, already in the manifest). Box and click selection run as a Burst job over unit positions. | No colliders per unit |
 | Drawing | A Burst job fills per-instance matrices, and the driver calls `Graphics.RenderMeshInstanced` per mesh and material | Prebuilt URP materials with GPU instancing enabled ([GPU instancing][gpu-instancing]). Animation, LOD and the BatchRendererGroup: later rendering ADR |
 | Everything else | Camera, UI, lights, ground and match setup stay ordinary GameObjects | Anything whose count grows with the unit count (projectiles, health bars, selection markers) follows the unit rules |
@@ -67,16 +67,21 @@ Steering and target search both ask "who is near me?". If each unit checks every
 | `com.unity.burst` | 1.8.30 | Unity Technologies | Source code: Unity Companion License; otherwise: Unity Package Distribution License ([license][burst-license]) | No. In `packages-lock.json` at 1.8.30, depth 2, through URP | Compiles the per-unit jobs to native code |
 | `com.unity.collections` | 2.6.8 | Unity Technologies | Unity Companion License ([license][collections-license]) | No. In the lock at 2.6.8, depth 2 | Job-safe containers beyond `NativeArray` (lists, queues, hash maps) for the command queue, the grid and AI |
 | `com.unity.mathematics` | 1.3.3 | Unity Technologies | Unity Companion License ([license][mathematics-license]) | No. In the lock at 1.3.3, depth 2 | Vector types and math functions that Burst compiles to SIMD code |
+| `com.unity.render-pipelines.universal` | 17.3.0 | Unity Technologies | Unity Companion License ([license][urp-license]) | Yes | Renders the game, including the instanced unit materials |
+| `com.unity.inputsystem` | 1.20.0 | Unity Technologies | Unity Companion License ([license][inputsystem-license]) | Yes | Player input for orders and selection |
+| `com.unity.test-framework` | 1.6.0 | Unity Technologies | Unity Companion License ([license][test-framework-license]) | Yes | EditMode tests that run the jobs without a scene |
+| `com.unity.ext.nunit` | 2.0.5 | Unity Technologies | Unity Package Distribution License ([license][nunit-license]) | No. In the lock at 2.0.5, depth 1, through Test Framework | Test Framework tests "must be in a test assembly, which is any assembly that references NUnit" ([test assembly][test-assembly]), and this package holds `nunit.framework.dll` |
 
 - **Support for 6000.3.23f1.**
   - Burst 1.8.30 "Changed minimum Editor version to 6.0" ([Burst changelog][burst-changelog]).
   - Collections 2.6.8 declares Unity 2022.3.20f1 as its minimum in its own `package.json` (in the project's Package Manager cache). Collections 2.7.1 is the release that "Updated the minimum editor version to 6000.0" ([Collections 2.7 changelog][collections-changelog]).
   - Mathematics 1.3.3 is the version Unity lists as released for 6000.3 ([Mathematics][mathematics-pkg]).
   - All three already resolve and compile in this project under 6000.3.23f1, because URP 17.3.0 depends on them.
-- **Why these exact versions.** They are what `packages-lock.json` resolves today. Listing them in the manifest should therefore change no resolved version, and nothing URP compiles against. Unity's 6000.3 manual now lists newer releases for the 6000.3 line: Burst 1.8.31 and Collections 2.7.1 ([Burst][burst-pkg], [Collections][collections-pkg]). Moving to them is an upgrade, which needs its own ADR (AGENTS.md §4).
+- **Why these exact versions** of Burst, Collections and Mathematics. They are what `packages-lock.json` resolves today. Listing them in the manifest should therefore change no resolved version, and nothing URP compiles against. Unity's 6000.3 manual now lists newer releases for the 6000.3 line: Burst 1.8.31 and Collections 2.7.1 ([Burst][burst-pkg], [Collections][collections-pkg]). Moving to them is an upgrade, which needs its own ADR (AGENTS.md §4).
 - **Burst's license and §5.** The §5 exception covers Unity packages under "the Unity Companion License or the Unity Terms of Service". Burst's non-source parts are under the Unity Package Distribution License ([UPDL][updl]), which the exception doesn't name. ADR 0002 also treats that license as outside the list. So this ADR approves Collections and Mathematics, but **Burst's approval takes effect only once AGENTS.md §5 covers the Unity Package Distribution License**. That is owner decision 1 (see Consequences). Burst also bundles third-party components under their own licenses, listed in its `Third Party Notices.md` (for example LLVM, under "Apache 2.0 with LLVM Exceptions").
+- **NUnit's license and §5.** `com.unity.ext.nunit` is under the same Unity Package Distribution License and is in the lock only because Test Framework depends on it. Test assemblies reference it directly, so it gets the same treatment as Burst: **its approval for direct use takes effect only with owner decision 1**. It stays out of the manifest, at the version Test Framework pins.
 - **Used from the engine, with no package:** the C# Job System, `NativeArray<T>` (in `UnityEngine.CoreModule`, [NativeArray][nativearray]), `Graphics.RenderMeshInstanced` and the `FrameTimingManager`.
-- **Already in the manifest and used:** `com.unity.render-pipelines.universal` 17.3.0, `com.unity.inputsystem` 1.20.0 and `com.unity.test-framework` 1.6.0.
+- **Already in the manifest and used:** URP, Input System and Test Framework need no ADR for direct use (AGENTS.md §5). Their rows put the publisher and license of every package the choice uses on record.
 - **`com.unity.ai.navigation` 2.0.14 is not used.** Units get no `NavMeshAgent`, and the job-friendly NavMesh query is deprecated ([NavMeshQuery][navquery]). This ADR doesn't remove the package, because removal needs its own ADR (AGENTS.md §4). The pathfinding ADR may decide whether NavMesh baking has any role.
 - **Not approved here:** `com.unity.entities`, `com.unity.entities.graphics` and `com.unity.physics`. The packages that Collections pulls in (`com.unity.test-framework.performance` 3.5.0 and `com.unity.nuget.mono-cecil` 1.11.6) stay indirect and are not approved for direct use.
 
@@ -87,10 +92,10 @@ These rules are for the gameplay-programmer and the reviewers, and they add to A
 1. **A unit is a row, not an object.** No GameObject, MonoBehaviour, Collider, Rigidbody, NavMeshAgent, Animator or Renderer per unit, or per anything else whose count grows with the unit count.
 2. **Per-unit work runs only in `[BurstCompile]` jobs** (`IJobFor`, `IJobParallelFor` or `IJob`) over native containers. Main-thread code handles only summaries, orders and draw calls, and never loops over all units.
 3. **Job structs hold only** blittable fields, native containers and `Unity.Mathematics` types: no classes, managed arrays, strings, `try`/`catch`, or writes to static fields. Mark inputs `[ReadOnly]`.
-4. **Allocate once.** Unit arrays and scratch buffers use `Allocator.Persistent`, sized at match start and disposed at match end. Don't create containers per frame on the main thread. `Allocator.Temp` is allowed only inside a job.
+4. **Allocate once.** Unit arrays, the grid and every scratch buffer use `Allocator.Persistent`, sized at match start for the match's full capacity and disposed at match end. Per-frame and per-unit code allocates nothing, on the main thread or in a job (AGENTS.md §4): no `Allocator.Temp` or `Allocator.TempJob` containers, and no container that grows. Containers are cleared and reused, and jobs add with the `NoResize` methods, which "will not increase the capacity" ([NativeList][nativelist]). A job that needs scratch space uses its own slice of a preallocated buffer: one slice per unit index, or one per worker thread through `[NativeSetThreadIndex]` ([NativeSetThreadIndex][set-thread-index]), with the buffer sized by `JobsUtility.ThreadIndexCount` ([ThreadIndexCount][thread-index-count]).
 5. **One sync point per frame.** Chain a tick's jobs with `JobHandle` dependencies and complete them once, at one fixed place in the frame. Never call `Complete()` inside a loop, and never read a job's output before its handle completes.
 6. **Hold handles, not indices.** Anything kept across ticks stores a unit handle and checks its generation before use.
-7. **All orders go through the command queue,** applied at the start of a tick, whether they come from the player or the commander AI. No system writes another system's arrays outside the scheduled job chain.
+7. **All orders go through the command queue,** applied at the start of a tick, whether they come from the player or the commander AI. No system writes another system's arrays outside the scheduled job chain. The commander AI never reads the unit arrays, only its faction's visibility-filtered summaries.
 8. **Neighbour and target searches use the spatial grid,** never a loop over every unit.
 9. **Drawing.** A job fills the per-instance data, and the driver draws each mesh and material in chunks within the documented instance limit ([RenderMeshInstanced][rmi]). Share one material per unit type and faction. Never use `renderer.material`, per-unit materials or per-unit property blocks.
 10. **Keep safety checks on.** Leave the job and Burst safety checks at their Editor defaults, and keep Burst warnings out of the console (AGENTS.md §4).
@@ -125,15 +130,22 @@ Projectiles, effects, buildings, dead units and markers don't count.
   - Frame time is `FrameTiming.cpuFrameTime`, "the time between ends of two frames", which includes all waiting ([FrameTiming][frame-timing]).
   - `cpuMainThreadFrameTime` and `gpuFrameTime` are recorded too, to tell CPU-bound from GPU-bound.
   - Samples go into a buffer allocated before the window starts.
+  - Results arrive "with a set delay of four frames", and the GPU "might fail to return them correctly" ([FrameTimingManager][ftm]). `GetLatestTimings` returns "the number of FrameTimings it actually was able to get", which can be fewer than requested ([GetLatestTimings][ftm-latest]). So the harness matches each sample to the frame it describes, and counts the frames the window renders separately from the samples. The harness Issue decides how.
 - **One run:** launch a fresh Player with the unit count on the command line, spawn the units and give orders, discard 10 s of warm-up, measure 60 s, write the summary, and quit.
   - The warm-up covers spawning, first-use shader and pipeline work, and loading Burst's library, which happens "the first time a Burst compiled method is invoked" ([Burst builds][burst-build]). 10 s is a judgment call. If the baseline shows start-up spikes after it, a new ADR lengthens it.
   - 60 s at 60 fps or more is at least 3,600 frames. The slowest 1% is then at least 36 frames, so one hitch can't decide a result. 60 s also covers several order cycles.
-- **Three runs per step.** Each reported number is the median of the three runs.
+- **Invalid runs.** A run is invalid, neither a pass nor a fail, when any of these happens:
+  - `FrameTimingManager.IsFeatureEnabled()` returns false ([IsFeatureEnabled][ftm-enabled]).
+  - Any frame in the window has no `cpuFrameTime` sample, more than one, or a value that isn't positive. A missing frame could be the slow one, so the run can't show a pass.
+  - The Player is paused or loses focus during the window. The FrameTimingManager "automatically excludes" paused time from CPU timings ([FrameTimingManager][ftm]), so a pause would hide time.
+
+  Missing or non-positive `cpuMainThreadFrameTime` and `gpuFrameTime` samples don't invalidate a run, because the pass rule doesn't use them. Their averages cover only the valid samples, and the run's summary records how many were missing. The summary also records an invalid run and why, and the harness replaces it with a new run. A step that still lacks three valid runs after six attempts (a judgment call) has the result `invalid`. An `invalid` step never counts as a pass: not for the ladder height, the vision target or a PR's evidence.
+- **Three valid runs per step.** Each reported number is the median of the three valid runs.
 - **Numbers per run:** frame count, average frame time, 1% low frame time, maximum frame time, average CPU main-thread time and average GPU time. Average fps is 1000 ÷ average frame time.
 - **1% low frame time** is the 99th-percentile frame time by nearest rank: sort the window's frame times and take the one at position ⌈0.99 × n⌉. 99% of frames took that long or less.
 - **The machine:** Windows power mode set to best performance, and no other heavy programs running.
 
-**Pass rule.** A step passes when the medians of its three runs show both of these:
+**Pass rule.** A step passes when the medians of its three valid runs show both of these:
 1. average frame time ≤ 16.67 ms (60 fps)
 2. 1% low frame time ≤ 16.67 ms
 
@@ -155,7 +167,7 @@ Why:
 - the scenario version and the simulation tick rate
 - the build: Unity version, scripting backend, graphics API, quality level, resolution, VSync off
 - a hardware summary: CPU model, cores and threads; GPU model, VRAM and driver version; RAM; Windows version and build; reference-class yes or no. The harness Issue decides how to read the driver version without personal information.
-- per step: the medians (average, 1% low and maximum frame time, CPU main-thread and GPU time, average fps), the three runs' average frame times, and the result. The result is `pass` or `fail`, plus `regressed` when that applies.
+- per step: the medians (average, 1% low and maximum frame time, CPU main-thread and GPU time, average fps), the three valid runs' average frame times, any invalid runs with their reasons, and the result. The result is `pass`, `fail` or `invalid`, plus `regressed` when that applies.
 
 An entry never records the computer name, the Windows user name, a local path (the Player's `Application.persistentDataPath`, for example, can contain the user name), serial numbers, device IDs, or IP or MAC addresses (AGENTS.md §5). The harness never reads `SystemInfo.deviceName` or `SystemInfo.deviceUniqueIdentifier`. Raw per-frame files stay on the machine and are never committed.
 
@@ -212,9 +224,9 @@ An entry never records the computer name, the Windows user name, a local path (t
 
 - **Benefits.** Per-unit cost stays low and parallel, and main-thread cost stays nearly flat as the unit count grows. Burst turns part of the no-allocation rule into compile errors. The game adds only three packages, all already in the project as indirect dependencies. The ladder gives a dated history for tracing any regression.
 - **Tradeoffs.** We build what GameObjects or Entities would give us: the spatial grid, selection picking, unit handles, instanced drawing, and per-instance culling when it's needed. (`RenderMeshInstanced` uses one call's bounds to "cull and sort all the instances of this Mesh as a single entity" ([RenderMeshInstanced][rmi]).) Units don't appear in the Hierarchy or Inspector, so the sandbox needs a debug overlay that shows a selected unit's data.
-- **Ladder time.** A full ladder is 27 runs of about 75 s each, roughly 35 minutes of machine time. This is an estimate.
+- **Ladder time.** A full ladder is 27 runs of about 75 s each, roughly 35 minutes of machine time, plus any runs that replace invalid ones. This is an estimate.
 - **Risks.**
-  - Burst can't be approved until §5 covers its license (owner decision 1).
+  - Burst and NUnit can't be approved until §5 covers their license (owner decision 1).
   - Absolute passes count only on reference-class hardware (owner decision 2).
   - The ladder needs Player builds. The harness Issue must show that the agent who runs the ladder can build and run the Player with one command.
   - Burst 1.8.30 lists a known issue: Windows Smart App Control or WDAC policies may block its JIT-compiled libraries at load time ([Burst changelog][burst-changelog]). That affects Burst's JIT compilation in the Editor, not the ahead-of-time library in Player builds.
@@ -222,17 +234,17 @@ An entry never records the computer name, the Windows user name, a local path (t
 - **Reversibility.** Moving from (c) to Entities later is a port, not a rewrite, because job structs and data layouts carry over into systems. Changing the data layout is cheap while only the sandbox exists. Dropping Burst would leave the same code running, only slower.
 - **ADR 0001.** This ADR answers ADR 0001's follow-up "an ADR on the unit simulation architecture" and doesn't supersede it. Burst code is native under either backend, so ADR 0001's IL2CPP evaluation only concerns main-thread managed code.
 - **Owner decisions:**
-  1. **Burst's license.** Approve a Critical handbook change (security perimeter) that adds the Unity Package Distribution License to the AGENTS.md §5 exception for Unity packages. *Recommended:* Burst comes from Unity's registry like the packages the exception already covers, URP already depends on it, and both options that scale need it. The install Issue waits for that change, so all three packages arrive together. If the owner declines, a superseding ADR revisits this decision before any unit code is written.
+  1. **Burst's and NUnit's license.** Approve a Critical handbook change (security perimeter) that adds the Unity Package Distribution License to the AGENTS.md §5 exception for Unity packages. *Recommended:* Burst comes from Unity's registry like the packages the exception already covers, URP already depends on it, and both options that scale need it. The install Issue waits for that change, so all three packages arrive together. The same change lets this ADR's approval of `com.unity.ext.nunit` take effect. Every Unity test needs that package, so declining the change also leaves Unity tests without an approved route, a studio-wide question beyond this ADR. If the owner declines, a superseding ADR revisits this decision before any unit code is written.
   2. **The ladder machine.** Which PC runs the ladder, and does it count as reference-class? *Recommended:* run every ladder on one fixed studio PC for trends. If that PC isn't reference-class, certify the 2,000 step on one that is before release.
 - **Follow-up Issues,** in order:
   1. The handbook change for owner decision 1 (Critical, security perimeter; the Issue names `AGENTS.md`).
-  2. Add the three packages to `Game/Packages/manifest.json` at the versions above. `packages-lock.json` should change only their `depth`. Critical, security perimeter, after this ADR and Issue 1 merge.
+  2. Add Burst, Collections and Mathematics to `Game/Packages/manifest.json` at the versions above. `packages-lock.json` should change only their `depth`. Critical, security perimeter, after this ADR and Issue 1 merge.
   3. The folder-layout ADR (0005, already planned).
   4. A spike (`type:spike`, time box one day): 2,000 cubes, a simple seek-and-separate job over a grid, and instanced drawing. Measure the 1,000 and 2,000 steps with the ladder method, and report frame, main-thread and GPU times and whether `RenderMeshInstanced` is enough. It can become the first sandbox Issue.
   5. The grey-box sandbox: ladder scene, scenario ScriptableObject, simulation driver, spawner, instanced drawing, move orders and the debug overlay.
   6. The ladder harness: unit count from the command line, warm-up and measurement, summary output, Frame Timing Stats on, one command that builds and runs the full ladder, and the baseline entry in `docs/performance/unit-ladder/`.
   7. A movement and pathfinding ADR (flow fields or another method, avoidance, formations, tick rate).
-  8. A unit AI, targeting and commander AI ADR.
+  8. A unit AI, targeting and commander AI ADR, including the commander's summaries and their visibility filter.
   9. A rendering-at-scale ADR when art starts (animation, LOD, the BatchRendererGroup, custom shaders and the SRP Batcher).
   10. game-designer: mark open question 3 in `docs/design/vision.md` as answered by this ADR (Owner tier).
   11. Suggested: add the hot-path rules to the gameplay-programmer and code-reviewer role files. These are protected paths, so that Issue must name them.
@@ -245,6 +257,11 @@ An entry never records the computer name, the Windows user name, a local path (t
 [burst-license]: https://docs.unity3d.com/Packages/com.unity.burst@1.8/license/LICENSE.html
 [collections-license]: https://docs.unity3d.com/Packages/com.unity.collections@2.6/license/LICENSE.html
 [mathematics-license]: https://docs.unity3d.com/Packages/com.unity.mathematics@1.3/license/LICENSE.html
+[urp-license]: https://docs.unity3d.com/Packages/com.unity.render-pipelines.universal@17.3/license/LICENSE.html
+[inputsystem-license]: https://docs.unity3d.com/Packages/com.unity.inputsystem@1.20/license/LICENSE.html
+[test-framework-license]: https://docs.unity3d.com/Packages/com.unity.test-framework@1.6/license/LICENSE.html
+[nunit-license]: https://docs.unity3d.com/Packages/com.unity.ext.nunit@2.0/license/LICENSE.html
+[test-assembly]: https://docs.unity.com/en-us/engine/6000.3/manual/programming-environment/test-framework-introduction/getting-started/workflow-create-test-assembly
 [entities-license]: https://docs.unity3d.com/Packages/com.unity.entities@1.5/license/LICENSE.html
 [entities-graphics-license]: https://docs.unity3d.com/Packages/com.unity.entities.graphics@1.5/license/LICENSE.html
 [updl]: https://unity.com/legal/licenses/unity-package-distribution-license
@@ -255,6 +272,9 @@ An entry never records the computer name, the Windows user name, a local path (t
 [hpc]: https://docs.unity3d.com/Packages/com.unity.burst@1.8/manual/csharp-hpc-overview.html
 [jobs]: https://docs.unity3d.com/6000.3/Documentation/Manual/job-system-overview.html
 [nativearray]: https://docs.unity3d.com/6000.3/Documentation/ScriptReference/Unity.Collections.NativeArray_1.html
+[nativelist]: https://docs.unity3d.com/Packages/com.unity.collections@2.6/api/Unity.Collections.NativeList-1.html
+[set-thread-index]: https://docs.unity3d.com/6000.3/Documentation/ScriptReference/Unity.Collections.LowLevel.Unsafe.NativeSetThreadIndexAttribute.html
+[thread-index-count]: https://docs.unity3d.com/6000.3/Documentation/ScriptReference/Unity.Jobs.LowLevel.Unsafe.JobsUtility.ThreadIndexCount.html
 [rmi]: https://docs.unity3d.com/6000.3/Documentation/ScriptReference/Graphics.RenderMeshInstanced.html
 [gpu-instancing]: https://docs.unity3d.com/6000.3/Documentation/Manual/GPUInstancing.html
 [brg]: https://docs.unity3d.com/6000.3/Documentation/Manual/batch-renderer-group.html
@@ -268,4 +288,6 @@ An entry never records the computer name, the Windows user name, a local path (t
 [target-fps]: https://docs.unity3d.com/6000.3/Documentation/ScriptReference/Application-targetFrameRate.html
 [ftm]: https://docs.unity3d.com/6000.3/Documentation/Manual/frame-timing-manager.html
 [ftm-enable]: https://docs.unity3d.com/6000.3/Documentation/Manual/frame-timing-manager-enable.html
+[ftm-latest]: https://docs.unity3d.com/6000.3/Documentation/ScriptReference/FrameTimingManager.GetLatestTimings.html
+[ftm-enabled]: https://docs.unity3d.com/6000.3/Documentation/ScriptReference/FrameTimingManager.IsFeatureEnabled.html
 [frame-timing]: https://docs.unity3d.com/6000.3/Documentation/ScriptReference/FrameTiming.html
