@@ -124,7 +124,8 @@ Each tick, every unit runs five stages in order:
    - Footprints are tested exactly, with the separating axis test that [OBBTree][obbtree] uses for oriented boxes ("tests for overlaps between oriented bounding boxes based on a separating axis theorem"). Two squares need four axes.
    - It tests every unit whose footprint could touch, not a capped few. Footprints don't overlap, so that is at most about 20 in the densest packing.
    - A unit that fails keeps its new position with its old heading. If that still fails, it goes back to its start-of-tick pose with zero velocity.
-   - Units next to a fallback are checked again, in rounds, until none falls back. Each round decides from the poses at its start, so the result doesn't depend on order. Each unit falls back at most twice, so the rounds end.
+   - Units next to a fallback are checked again, in rounds, until none falls back. Each round decides from the poses at its start, so the result doesn't depend on order. Each unit falls back at most twice, so N units have at most 2N fallbacks, and the rounds end.
+   - These later rounds loop inside one single job, which "processes all loop elements in a single worker thread" ([Schedule][schedule]), so no extra core shortens them. A fallback can make the unit behind it fall back in the next round, so a chain can run down a dense queue or a block's column, one round per link (Cost).
    - So a tick that starts with no overlapping footprints ends with none. The spawn tool places units without overlaps.
 
 **What is guaranteed.** ORCA's own guarantee is conditional. Of `neighborDist` and `maxNeighbors`, RVO2's documentation says "If the number is too low, the simulation will not be safe" ([RVO2 parameters][rvo2-params]), and ours are capped for cost: two small cubes closing head-on at 8 cells/s first see each other about 0.4 s before contact, under half the time horizon. Acceleration limits also mean a unit can't always take the velocity ORCA chose, and in a dense crowd the linear program may have no solution. One capped, parallel overlap pass can leave an overlap, or push a unit into a third. So ORCA and the overlap pass keep contacts rare and shallow, and only the move check guarantees S2.2's and S2.5's "no overlaps" and S3.1's "never through obstacles". It turns what would be an overlap into a stall: a unit that falls back doesn't move that tick. The spike and the S3 tests count fallbacks and the stalls they cause, including in dense-contact and wall-contact scenes (Consequences).
@@ -166,13 +167,18 @@ Here `v_group` is the group's slowest top speed, `k_pace` is 0.5 per second by d
 - Units in their slots face forward and are formation pairs, tested as aligned squares (Contact shapes). So with `slotSpacing` above 1, no two slots' squares overlap, whatever the widths. `slotSpacing` is 1.25 by default and must stay between 1.05 and 1.3.
   - **S2.2:** 100 small cubes fill 15 × 7 slots at 0.625 cells. The rectangle holding their squares is 9.25 × 4.25 cells, 1.57 times their combined footprint of 25 cells² (1.69 at 1.3).
   - **S2.3:** 50 small and 10 large cubes form a 10 × 5 block at 0.625 cells (6.1 cells wide, 3 deep) and a 5 × 2 block at 1.25 cells (6 wide, 2.25 deep), with facing rows 0.94 cells apart. Each unit's pace counts its own slot's offset, so both blocks come in together.
-- A slot is valid when the unit's disc there clears every blocked cell, and the slot is in the goal's region for the unit's class, has a clear line from the goal, has its disc clear of every stationary unit from outside the order, and keeps the spacing above from every other slot. Each invalid slot moves to the nearest valid, unused point of its block's lattice, extended outward.
+- A slot is valid when the unit's disc there clears every blocked cell, and the slot is in the goal's region for the unit's class, has a clear line from the goal (however long), has its disc clear of every stationary unit from outside the order, and keeps the spacing above from every other slot.
+- **The search is bounded.** Each invalid slot is replaced by a valid, unused point of its block's lattice from the `slotSearchRings` rings around the block (8 by default), nearest the goal first, ties in a fixed lattice order. A block of c columns and r rows looks at no more than (c + 16) × (r + 16) points at the default, so the layout always ends.
+- **Too little room.** A block can still run short, as in a small room reached through a bent corridor. Its last units in the assignment order below, the furthest back, then get no slot. These *overflow* units follow the field with the rest, with pace counting a slot one pitch behind the block's rear row. Each one stops and becomes idle, with that point as its home, where its disc first comes within 0.1 cells of an idle unit of its group. So they fill in back along the route from the units already there, the nearest places outside, and each is reachable because the unit stops on its own way in. The overlay counts them.
 - **Assignment keeps relative positions.** Within each block, units sorted by forward position fill the rows front to back, and within each row they are sorted by sideways position. Slots are ordered the same way and paired in order, so paths rarely cross. Sorting uses `NativeSortExtension` from Collections ([NativeSortExtension][nativesort]).
 
 **Arrival and stillness (S2.2, S2.4)**
-- Within `arrivalRange` (6 cells) of its slot, with a clear line to it, a unit seeks the slot directly and turns to face forward. The move check holds a turn back until the unit has room, so it finishes turning before it joins the formation.
+- A unit seeks its slot directly and turns to face forward once it has a clear line to the slot, however long, and either is within `arrivalRange` (6 cells) of it, or its distance to the goal along the field (in a straight line while it has no field) is at most `arrivalRange` plus the slot's distance from the goal. Every valid slot has a clear line from the goal, so every unit finds one on its way in, at the latest at the goal, including on the wings of a block wider than `arrivalRange`. The move check holds a turn back until the unit has room, so it finishes turning before it joins the formation.
 - Within 0.05 cells and nearly still, it stops and becomes idle, with the slot as its home.
-- A unit within a quarter pitch of its slot that gains less than 0.1 cells on it in 1 s settles where it is. One further away settles after 2 s without such progress, and the debug overlay counts it, because it can widen the block.
+- **Progress** is a new best on a unit's remaining route. While it follows the field, that is its distance to the goal along the field (in a straight line while it has no field) plus its slot's distance from the goal (none for an overflow unit). While it seeks its slot directly, it is its straight-line distance to the slot. By the triangle inequality that is no more than the first, give or take the field's rounding, so switching doesn't hide progress. A unit progresses when its route falls at least 0.1 cells below its best so far. Being shoved back and forth doesn't count, and each unit can progress only finitely often.
+- **Congestion isn't arrival.** A unit within a quarter pitch of its slot that hasn't progressed for 1 s settles where it is. A unit further away never settles on its own: waiting behind others, as at a gap, is congestion, so it keeps its order, field and pace, and the right-turn rule keeps working on it (S3.3).
+- **Group stall.** When no moving unit of a group has progressed for `groupStallTime` (6 s by default, after the right-turn rule reaches 60° at 5 s), its moving units settle where they are, and the overlay counts it. The timer doesn't run while any unit of the group waits for a field. This ends orders whose last slots can't be reached, for example a slot under an enemy or a unit on hold position. While a queue files through a gap, its front units progress, so the queue never trips it. Because progress is finite, every order ends, so S2.4 can always be measured.
+- **Checks.** The S2 and S3 tests expect no overflow units and no group stalls, and every unit ends idle within a quarter pitch of its slot.
 - An idle unit's preferred velocity is zero, and ORCA keeps a velocity that is already safe. Settled units of a group are apart under their pair rule, so they don't push each other, and an arrived group stays still unless something pushes it.
 - An own-side unit can still pass through an arrived block: idle units give way (rule 3 above) and walk back to their slots.
 - **S2.2's margin.** Even with a unit settled a quarter pitch outside the block on every side, the 100 small cubes would fill 1.75 times their footprint at the default spacing, and 1.88 at 1.3.
@@ -203,12 +209,12 @@ The tick's chain, in order. "Parallel" means `IJobFor.ScheduleParallel`, and "si
 | `RebuildStaticMapsJob`, only after a walkability change | single | `walkable` | passability per class, regions |
 | `ApplyOrdersJob` | single | command queue, regions, last tick's grid | unit order state, group table, slots, field requests |
 | `BuildSpatialGridJob` | parallel bucket pass, then a single counting sort | positions | grid |
-| `GroupPaceJob` | single | fields, units | group sums |
+| `GroupPaceJob` | single | fields, units | group sums, latest progress tick |
 | `PreferredVelocityJob` | parallel | fields, groups, slots, static maps | preferred velocity |
 | `AvoidanceJob` | parallel | grid, poses, velocities, static maps | new velocity |
 | `IntegrateJob` | parallel | new velocity, unit types | pose, previous pose, velocity, state |
 | `ResolveOverlapJob` | parallel | grid, poses | corrected pose |
-| `CheckMovesJob` | parallel first round, then single rounds for fallbacks | grid, start and corrected poses, static maps | accepted pose |
+| `CheckMovesJob` | parallel first round, then one single job looping over the fallback rounds | grid, start and corrected poses, static maps | accepted pose |
 | `BuildFlowFieldJob`, up to 2 | single each, outside the chain, due `buildLatencyTicks` later | static maps | its own scratch |
 
 Unit AI and targeting (a later ADR) slot in between the grid and preferred velocity.
@@ -229,7 +235,7 @@ Unit AI and targeting (a later ADR) slot in between the grid and preferred veloc
 | Static maps for classes 0 and 1: walkable, passability, regions | 0.5 MB (2 MB) |
 | Field pool: 64 fields × cells × 3 B | 12 MB (48 MB) |
 | Build scratch for 2 slots, sized from the cell count; the fields Issue tests the bound | about 3 MB (10 MB) |
-| Slot and sort scratch | about 0.1 MB |
+| Slot, ring-search and sort scratch | about 0.2 MB |
 
 Nothing is allocated per tick or per order.
 
@@ -241,20 +247,21 @@ These are estimates for one tick with 2,000 moving units, from operation counts,
 
 | Stage | Cost per tick |
 |---|---|
-| Grid, group pace, preferred velocity, integration | about 0.3–0.5 ms of worker time |
+| Grid, group pace, preferred velocity with its line tests to slots, integration | about 0.3–0.7 ms of worker time |
 | ORCA: about 150 grid candidates and 10 constraints per unit in a dense crowd, about 1–3 µs per unit | about 2–6 ms of worker time |
 | Overlap pass | about 0.3–1 ms of worker time |
-| Move check: up to about 20 footprint tests per unit, then a few fallbacks | about 0.2–0.5 ms of worker time |
-| **Total** | **about 3–8 ms of worker time, so about 1–2 ms wall time**, assuming about five cores' worth of parallel speed-up on a 6-core CPU |
+| Move check, first round: up to about 20 footprint tests per unit | about 0.2–0.5 ms of worker time |
+| Move check, fallback rounds: serial, about 5–10 µs per fallback to re-test the units round it | about 0.1–0.5 ms of wall time for tens of fallbacks. A chain down a dense 200-unit queue, two fallbacks per unit, would take about 2–4 ms. The bound, 2N fallbacks, is about 20–40 ms at 2,000 units, which the cap on serial fallbacks (Levers) removes |
+| **Total** | **about 3–8 ms of worker time for the parallel stages, so about 1–2 ms wall time**, assuming about five cores' worth of parallel speed-up on a 6-core CPU, **plus the fallback rounds**, which no extra core shortens |
 | Main thread: drain commands, schedule, complete | at most 0.3 ms, flat in the unit count, plus the wait for a build that overruns its tick |
 | One field build, outside the chain, on one worker | about 1–6 ms at 256², 4–25 ms at 512² |
-| An order for 2,000 units (sort and slots), only on that tick | about 0.2 ms |
+| An order for 2,000 units (sort and slots), only on that tick | about 0.2 ms, up to about 1 ms when the ring search runs to its limit |
 
 Per unit, that is about 1.5–4 µs of worker time per tick and about 90 bytes. Movement adds no GPU cost.
 
-**Against the pass rule.** At 60 fps, movement adds about 1–2 ms to every other frame and nothing to the rest. That leaves most of the 16.67 ms for drawing and for the systems still to come.
+**Against the pass rule.** At 60 fps, movement adds about 1–2 ms plus the fallback rounds to every other frame and nothing to the rest. That leaves most of the 16.67 ms for drawing and for the systems still to come.
 
-**Budget.** At 2,000 units on the reference PC, the movement chain takes at most 3 ms of wall time and 0.5 ms of main-thread time on tick frames. Both are read from the Profiler's timeline in a development build. A PR over budget either fixes it or states the cost and why, as ADR 0004's regression rule asks. The budget is a judgment, and the spike checks it.
+**Budget.** At 2,000 units on the reference PC, the movement chain takes at most 3 ms of wall time and 0.5 ms of main-thread time on tick frames. Both are read from the Profiler's timeline in a development build. The fallback rounds count within the 3 ms and may use about 0.5 ms of it in 99% of ticks. If the spike measures more, the cap on serial fallbacks applies (Levers). A PR over budget either fixes it or states the cost and why, as ADR 0004's regression rule asks. The budget is a judgment, and the spike checks it.
 
 ### Rules for hot paths
 
@@ -337,6 +344,7 @@ None are added. Burst, Collections and Mathematics (ADR 0004) and the engine's j
   - Every cost figure is an estimate until the spike.
   - ORCA may still stall at the 3-cell gap (S3.3) despite the right-turn rule. The response is to tune within the parameters. If S3.3 or S3.4 still fails after two review rounds, the Producer brings it back to the architect.
   - The move check turns leftover overlaps into one-tick stalls. If they stall units at the gap (S3.3) or in crossings (S3.4), the levers below come first.
+  - A group stall could end an order whose jam would have cleared later. Its 6 s outlasts the right-turn rule, the overlay counts stalls, and the S2 and S3 tests expect none.
   - Drawn frames blend two tick poses. Between two overlap-free ticks, a frame can show a corner contact no deeper than half of how far the pair moved relative to each other in that tick. QA measures overlap on tick poses. At rest, as in S2.2 and at S2.5's arrival, frames and ticks are the same.
   - The acknowledgement reads the Fight section's "units reacting" as visible feedback on the next frame, with movement following within S2.1. If the designer meant visible movement on that frame, a fixed tick with interpolation can't give it, and that would be a GDD question for the owner.
   - Maps for four sides larger than 512² would need the tiled method.
@@ -353,6 +361,7 @@ None are added. Burst, Collections and Mathematics (ADR 0004) and the engine's j
   - no ORCA for units with no neighbour within `neighbourDistance`
   - no movement stages for idle units with no mover nearby
   - a second overlap pass per tick
+  - a cap on the move check's serial work (`maxSerialFallbacks`, the fallbacks after its first round). When it is reached, the units still to be checked, and every unit that could touch one of them, directly or through others, go back to their start-of-tick poses. Those units then overlap no more than at the start of the tick and can't touch any unit outside the set, so the guarantee holds, at the price of a one-tick stall for the set. The serial time is then at most the cap times 5–10 µs, plus one pass to find the set.
   - a different bucket size for the grid
   - `fieldCapacity`, `minLease` and `buildLatencyTicks`, within the memory trigger
 - **ADR 0004.** This ADR is ADR 0004's follow-up 7 and supersedes nothing. It sets the tick rate (30 Hz) and the grid's layout, and adds the rules above to ADR 0004's hot-path rules. ADR 0004's one sync point still holds: a field build completes through the chain of its due tick, at that sync point.
@@ -366,6 +375,7 @@ None are added. Burst, Collections and Mathematics (ADR 0004) and the engine's j
      - field saturation at 256²: 200 single-unit orders to 200 different goal cells in one tick, then 10 orders per second to new goal cells for 60 s. It records the wait from request to publish (median, 95th percentile and maximum), replacements per second, the share of moving unit-ticks on direct seek, and the time from each order to its units moving.
      - the share of builds that miss their due tick at each map size, which sets `buildLatencyTicks`
      - footprint overlaps per tick (expected 0), move-check fallbacks per tick and the stalls they cause, and units stalled for more than 5 s with somewhere to go. It runs in both scenes above, a dense-contact scene (200 units ordered onto one point from four sides) and a wall-contact scene (a crowd pushed along a wall and into a concave corner).
+     - in the same scenes, at 1,000 and 2,000 units: the move check's serial rounds and fallbacks per tick, its longest chain, and the rounds' serial wall time (median, 99th percentile and maximum) against their 0.5 ms share. Five-core scaling doesn't apply to them.
      - 0 B GC Alloc after warm-up
 
      Its finding says which trigger or lever above applies. If the time box runs out first, the finding reports what was measured, and the rest is measured in the ladder entries of Issues 3 to 5.
@@ -374,13 +384,15 @@ None are added. Burst, Collections and Mathematics (ADR 0004) and the engine's j
      - The debug overlay draws field directions and regions.
   3. **The 30 Hz movement tick** (S2.1, S3.1, Fight feedback): movement state, footprints and discs, the grid, preferred velocity, integration with the static clamp, the overlap pass, the move check, interpolation and the next-frame acknowledgement. Orders move units, without slots yet. With two gameplay-programmers, Issues 2 and 3 can run in parallel once they agree the sampling function's signature.
      - EditMode tests: squares turned 45° whose discs just touch don't overlap, and no tick adds a footprint overlap in a crowd squeezed together or against a wall and into a concave corner.
-  4. **Groups and arrival** (S2.2, S2.3, S2.4): the group table, blocks per width, slots and their assignment, formation pairs, pace, arrival, settling and facing. The overlay draws slots.
-  5. **ORCA and making way** (S3.3, S3.4, S3.5, S2.5): the avoidance job, the share rules, idle units walking home, and the right-turn rule. Its tests include the dense-contact and wall-contact scenes, and its ladder entry shows S2.5.
+  4. **Groups and arrival** (S2.2, S2.3, S2.4): the group table, blocks per width, the bounded slot search and overflow units, slot assignment, formation pairs, pace, arrival, progress, group stalls and facing. The overlay draws slots.
+     - EditMode tests: a room too small for the order behind a bent corridor (the layout ends within its bound, every unit ends idle, and the overflow units stand back along the corridor), a unit put on hold position on a slot after the order (one group stall, then all idle), and a 2,000-unit block whose wing units reach their slots.
+  5. **ORCA and making way** (S3.3, S3.4, S3.5, S2.5): the avoidance job, the share rules, idle units walking home, and the right-turn rule. Its tests include the dense-contact and wall-contact scenes and check the S3 expectations under Arrival and stillness, and its ladder entry shows S2.5.
   6. **Suggested:** add rules 1 to 9 to the gameplay-programmer and code-reviewer role files, together with ADR 0004's follow-up 11. These are protected paths, so that Issue must name them.
 - **Later Issues.** Issues 3 to 5 each include their ladder entry (ADR 0004). Later Issues use these rules without new movement work: S4 (stop, hold, waypoints), S5 (moving targets), the S6.4 test, S9 (walkability changes) and the units section (wider size classes).
 
 [navquery]: https://docs.unity3d.com/6000.3/Documentation/ScriptReference/Experimental.AI.NavMeshQuery.html
 [ijobfor]: https://docs.unity3d.com/6000.3/Documentation/ScriptReference/Unity.Jobs.IJobFor.html
+[schedule]: https://docs.unity3d.com/6000.3/Documentation/ScriptReference/Unity.Jobs.IJobForExtensions.Schedule.html
 [is-completed]: https://docs.unity3d.com/6000.3/Documentation/ScriptReference/Unity.Jobs.JobHandle.IsCompleted.html
 [batched]: https://docs.unity3d.com/6000.3/Documentation/ScriptReference/Unity.Jobs.JobHandle.ScheduleBatchedJobs.html
 [native-container]: https://docs.unity3d.com/6000.3/Documentation/Manual/job-system-native-container.html
