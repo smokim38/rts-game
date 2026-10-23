@@ -19,12 +19,13 @@ namespace Northwatch.Presentation.Diagnostics
             if (index < 0) return;
             if (index + 1 >= arguments.Length || !int.TryParse(arguments[index + 1], out int count) || (count != 0 && count != 2000))
                 throw new System.ArgumentException("Use -sandbox-check 0 or -sandbox-check 2000.");
+            string output = OutputPrefix(Application.dataPath, count);
             var check = new GameObject("SandboxPlayerCheck").AddComponent<SandboxPlayerCheck>();
             check.unitCount = count;
             check.driver = FindFirstObjectByType<MatchDriver>();
             if (check.driver == null || check.driver.Simulation.Count != 0)
                 throw new System.InvalidOperationException("Sandbox must start with an empty match.");
-            check.output = System.IO.Path.GetFullPath(System.IO.Path.Combine(Application.dataPath, "../../../Logs/sandbox-" + count));
+            check.output = output;
             check.captureCamera = Camera.main;
             check.captureTarget = new RenderTexture(1920, 1080, 24);
             if (!check.captureTarget.Create()) throw new System.InvalidOperationException("Could not create validation render target.");
@@ -37,6 +38,14 @@ namespace Northwatch.Presentation.Diagnostics
                 if (!check.driver.Simulation.QueueAdd(side, size, new Vector3((i % 50 - 25) * 2, 0, (i / 50 - 20) * 2)))
                     throw new System.InvalidOperationException("Sandbox check could not queue all units.");
             }
+        }
+
+        private static string OutputPrefix(string dataPath, int count)
+        {
+            string project = System.IO.Path.GetFullPath(System.IO.Path.Combine(dataPath, "../../.."));
+            if (!System.IO.File.Exists(System.IO.Path.Combine(project, "ProjectSettings", "ProjectVersion.txt")))
+                throw new System.InvalidOperationException("Sandbox checks must run from a build inside the Unity project.");
+            return System.IO.Path.Combine(project, "Logs", "sandbox-" + count);
         }
 
         private void LateUpdate()

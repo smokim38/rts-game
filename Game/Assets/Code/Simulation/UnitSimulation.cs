@@ -14,6 +14,7 @@ namespace Northwatch.Simulation
         private NativeArray<Matrix4x4> matrices;
         private JobHandle pending;
         private int commandCount, queuedAdds;
+        private ulong commandBatch;
         private bool scheduled, disposed;
         public ulong TickCount { get; private set; }
 
@@ -27,12 +28,29 @@ namespace Northwatch.Simulation
         public int Count { get { RequireComplete(); return State.Summary[0]; } }
 
         public bool QueueAdd(Side side, UnitSize size, Vector3 position)
+            => QueueAdd(side, size, position, out _);
+
+        // Resolve the request after a tick, before later commands overwrite its queue entry.
+        public bool QueueAdd(Side side, UnitSize size, Vector3 position, out ulong requestId)
         {
             RequireComplete();
+            requestId = 0;
             if ((byte)side > 1 || (byte)size > 1 || !math.all(math.isfinite((float3)position)) ||
                 Count + queuedAdds >= Capacity || commandCount == commands.Length) return false;
-            commands[commandCount++] = new UnitCommand { Side = side, Size = size, Position = position };
+            requestId = commandBatch * (ulong)commands.Length + (uint)commandCount + 1;
+            commands[commandCount++] = new UnitCommand { Side = side, Size = size, Position = position, RequestId = requestId };
             queuedAdds++;
+            return true;
+        }
+
+        public bool TryGetAddedHandle(ulong requestId, out UnitHandle handle)
+        {
+            RequireComplete();
+            handle = default;
+            if (requestId == 0) return false;
+            UnitCommand command = commands[(int)((requestId - 1) % (ulong)commands.Length)];
+            if (command.RequestId != requestId || !command.Applied || !IsAlive(command.Handle)) return false;
+            handle = command.Handle;
             return true;
         }
 
@@ -62,7 +80,7 @@ namespace Northwatch.Simulation
                 }.Schedule(pending);
                 TickCount++;
             }
-            if (ticks > 0) { commandCount = 0; queuedAdds = 0; }
+            if (ticks > 0) { commandCount = 0; queuedAdds = 0; commandBatch++; }
             pending = new FillDrawDataJob
             {
                 Positions = State.Positions, Sides = State.Sides, Sizes = State.Sizes,

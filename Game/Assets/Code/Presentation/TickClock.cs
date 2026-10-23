@@ -11,7 +11,7 @@ namespace Northwatch.Presentation
         {
             if (seconds < 0 || double.IsNaN(seconds) || double.IsInfinity(seconds))
                 throw new ArgumentOutOfRangeException(nameof(seconds));
-            accumulator += seconds;
+            accumulator = Math.Min(accumulator + seconds, 2 * TickDuration);
             int ticks = (int)Math.Floor((accumulator + 1e-10) / TickDuration);
             accumulator -= ticks * TickDuration;
             return ticks;

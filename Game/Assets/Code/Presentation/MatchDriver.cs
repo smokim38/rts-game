@@ -37,7 +37,7 @@ namespace Northwatch.Presentation
         {
             using (SimulationMarker.Auto())
             {
-                // Unity clamps deltaTime on very slow frames; do not discard simulation ticks.
+                // Chain at most two ticks, dropping excess time, then complete once per frame.
                 simulation.ScheduleFrame(clock.Advance(Time.unscaledDeltaTime));
                 simulation.CompleteFrame();
             }

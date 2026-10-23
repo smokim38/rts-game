@@ -5,7 +5,7 @@ namespace Northwatch.Simulation
         public readonly int Slot;
         public readonly uint Generation;
 
-        public UnitHandle(int slot, uint generation)
+        internal UnitHandle(int slot, uint generation)
         {
             Slot = slot;
             Generation = generation;

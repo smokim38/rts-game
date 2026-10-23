@@ -16,14 +16,19 @@ namespace Northwatch.Tests.EditMode.Presentation
             Assert.That(ticks, Is.EqualTo(30));
         }
 
-        [Test]
-        public void SlowFramesCatchUpWithoutDroppingTicks()
+        [TestCase(0.5)]
+        [TestCase(double.MaxValue)]
+        public void SlowFrameRunsTwoTicksAndDropsBacklog(double seconds)
         {
             var clock = new TickClock();
-            Assert.That(clock.Advance(0.5), Is.EqualTo(15));
-            Assert.That(clock.Advance(0), Is.Zero);
             Assert.That(clock.Advance(1.0 / 60), Is.Zero);
-            Assert.That(clock.Advance(1.0 / 60), Is.EqualTo(1));
+            Assert.That(clock.Advance(seconds), Is.EqualTo(2));
+            Assert.That(clock.Advance(0), Is.Zero);
+            for (int i = 0; i < 60; i++)
+            {
+                Assert.That(clock.Advance(1.0 / 60), Is.Zero);
+                Assert.That(clock.Advance(1.0 / 60), Is.EqualTo(1));
+            }
         }
     }
 }

@@ -1,7 +1,9 @@
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using Northwatch.EditorTools;
 using Northwatch.Presentation;
+using Northwatch.Presentation.Diagnostics;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEditor.SceneManagement;
@@ -11,6 +13,21 @@ namespace Northwatch.Tests.EditMode.EditorTools
 {
     public sealed class SandboxSceneBuilderTests
     {
+        [Test]
+        public void PlayerCheckOutputStaysInProjectAndRejectsRelocatedBuild()
+        {
+            MethodInfo outputPrefix = typeof(SandboxPlayerCheck).GetMethod("OutputPrefix", BindingFlags.NonPublic | BindingFlags.Static);
+            string dataPath = Path.GetFullPath("Builds/Sandbox/Sandbox_Data");
+            Assert.That(outputPrefix.Invoke(null, new object[] { dataPath, 0 }),
+                Is.EqualTo(Path.GetFullPath("Logs/sandbox-0")));
+            Assert.That(outputPrefix.Invoke(null, new object[] { dataPath, 2000 }),
+                Is.EqualTo(Path.GetFullPath("Logs/sandbox-2000")));
+            // An extra export directory no longer places the project marker beside Logs.
+            string relocated = Path.GetFullPath("Builds/Export/Sandbox/Sandbox_Data");
+            var error = Assert.Throws<TargetInvocationException>(() => outputPrefix.Invoke(null, new object[] { relocated, 0 }));
+            Assert.That(error.InnerException, Is.TypeOf<System.InvalidOperationException>());
+        }
+
         [Test]
         public void BuilderPreservesAssetBytesOnRepeatRun()
         {

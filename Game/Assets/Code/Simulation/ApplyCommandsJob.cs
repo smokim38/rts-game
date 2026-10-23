@@ -7,7 +7,7 @@ namespace Northwatch.Simulation
     [BurstCompile]
     internal struct ApplyCommandsJob : IJob
     {
-        [ReadOnly] internal NativeArray<UnitCommand> Commands;
+        internal NativeArray<UnitCommand> Commands;
         internal int CommandCount;
         internal UnitState State;
 
@@ -34,6 +34,9 @@ namespace Northwatch.Simulation
                     State.Sizes[slot] = command.Size;
                     State.Alive[slot] = 1;
                     State.Summary[0]++;
+                    command.Handle = new UnitHandle(slot, State.Generations[slot]);
+                    command.Applied = true;
+                    Commands[i] = command;
                 }
             }
         }
