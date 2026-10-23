@@ -20,12 +20,17 @@ The grey-box sandbox (ADR 0004, follow-up 5) is the first Issue where agents mus
 - **Parallel work.** Two agents never edit the same scene at once (AGENTS.md §4). ADR 0004's ladder runs a Player with the Editor closed and no other heavy programs running.
 - **Batch mode is needed in every option.** QA runs tests from the command line, which ADR 0002 already allows, and ADR 0004's harness must build and run the Player with one command. So the real question is how agents create and change content, and whether to add a live Editor channel on top.
 
-**Evidence gap.** Nobody has run Unity under the launcher's sandbox yet. Codex's Windows sandbox runs commands as "dedicated lower-privilege sandbox users" on "a private desktop" ([Windows sandbox][codex-windows]). Unity, meanwhile, keeps per-user state outside the project:
+**Evidence gap.** Nobody has run Unity under the launcher's sandbox yet. How that sandbox isolates Unity depends on which of Codex's three Windows implementations runs ([Windows sandbox][codex-windows]), and the launcher checks the sandbox policy Codex reports, not the implementation (`verifySettings` in `tools/codex-launch.js`):
+- `mxc` is "the recommended sandbox on compatible Windows devices" and uses "native process isolation without administrator-approved setup, additional Windows accounts, or local firewall rules".
+- The legacy `elevated` mode "uses dedicated lower-privilege sandbox users". The legacy `unelevated` mode uses "a restricted Windows token derived from your current user" and "provides weaker network isolation than `elevated`".
+- "By default, both legacy sandbox modes also use a private desktop". The page doesn't say whether MXC does.
+
+Unity, meanwhile, keeps per-user state outside the project:
 - EditorPrefs, in the `HKCU` registry ([EditorPrefs][editorprefs])
 - the package cache, in `%LOCALAPPDATA%\Unity\cache\upm` ([package cache][upm-cache])
 - the license. A Unity Personal license is activated only by signing in to the Hub ([licenses][licenses]).
 
-Nobody knows yet whether a batch-mode Editor inside the sandbox finds the license and resolves packages with the network off. A spike measures this (Consequences, follow-up 1).
+Which user's state Unity sees, and whether it may write there, can differ between the three implementations. Nobody knows yet whether a batch-mode Editor inside the sandbox finds the license and resolves packages with the network off. A spike measures this and records the implementation it ran under (Consequences, follow-up 1).
 
 ## Decision
 
@@ -35,7 +40,7 @@ Nobody knows yet whether a batch-mode Editor inside the sandbox finds the licens
 
 - **AGENTS.md §4, working through Unity.** Unity's own Editor API makes every scene, prefab, ScriptableObject and material (`EditorSceneManager.NewScene`, [NewScene][new-scene]; `PrefabUtility.SaveAsPrefabAsset`, [SaveAsPrefabAsset][save-prefab]; `AssetDatabase`). Unity writes the YAML, the `.meta` files and the GUIDs. Each change is a C# script that reviewers can read and anyone can re-run, the same thing §4 asks of Blender export scripts. Through MCP, the same change is a series of tool calls, and only the YAML is left to review.
 - **AGENTS.md §5, dependencies.** Nothing is added. Batch mode is part of the Editor we already use, and "using Unity in batch mode is subject to Unity's Terms of Service" ([command line][cli-args]), the Editor's existing terms (ADR 0001). Unity's current route is beta and experimental, and its older MCP server is deprecated. The open-source servers bring in Python, uv and packages from outside Unity's registry.
-- **AGENTS.md §5, permissions.** In batch mode, Unity runs as a child of the agent's Codex command, so Editor code the agent writes runs inside the same sandbox, with the same writable roots and no network. An MCP server instead drives an Editor that someone started outside the sandbox, so code reaching it runs with the owner's full rights. Filtering tools doesn't close that gap. An `[InitializeOnLoad]` class runs "when Unity loads, and when your scripts are recompiled" ([InitializeOnLoad][init-on-load]), so any script an agent saves into an open project runs at the next recompile.
+- **AGENTS.md §5, permissions.** In batch mode, Unity runs as a child of the agent's Codex command, so Editor code the agent writes runs inside the same sandbox, with the same writable roots and network rules: the sandbox "enforces the active filesystem and network permissions for commands and their child processes" ([Windows sandbox][codex-windows]). An MCP server instead drives an Editor that someone started outside the sandbox, so code reaching it runs with the owner's full rights. Filtering tools doesn't close that gap. An `[InitializeOnLoad]` class runs "when Unity loads, and when your scripts are recompiled" ([InitializeOnLoad][init-on-load]), so any script an agent saves into an open project runs at the next recompile.
 - **No network listener,** so nothing needs to be authenticated (ADR 0002's requirement).
 - **Parallel work is natural.** Unity refuses only a second Editor on the same project: "You can't open a project in batch mode while the Editor has the same project open" ([command line][cli-args]). Each worktree is its own project.
 - **Cheap to extend.** Builders are plain static methods. A later ADR that adds an Editor channel can call the same methods as custom commands: the Pipeline package runs static methods marked `[CliCommand]` ([Unity CLI blog][cli-blog]), and MCP for Unity has `execute_custom_tool` ([tools][coplay-tools]).
@@ -57,7 +62,7 @@ Unity.exe -batchmode -nographics -projectPath <worktree>\Game -logFile <worktree
 
 For the gameplay-programmer, tech-artist and qa-test-engineer, and for reviewers checking their PRs:
 
-1. **Batch mode, your own worktree.** Every Unity run uses `-batchmode`, with `-projectPath` set to the `Game/` folder of your own worktree and `-logFile` under that worktree's `Game/Logs/`. Never open an Editor window, and never point Unity at the main checkout or at another worktree.
+1. **Batch mode, your own worktree.** Every Unity run uses `-batchmode`, with `-projectPath` set to the `Game/` folder of your own worktree and `-logFile` under that worktree's `Game/Logs/`. Never open an Editor window, and never point Unity at the main checkout or at another worktree. Unity runs inside the launcher's sandbox: never ask for an escalation to run it, unless a merged AGENTS.md change allows one (owner decision 2).
 2. **Only 6000.3.23f1,** the version in `Game/ProjectSettings/ProjectVersion.txt`. Changing the Editor version needs an ADR (AGENTS.md §4).
 3. **Builders make every Unity asset.** Scenes, prefabs, ScriptableObjects, materials and Build Settings are created and changed only by static methods in `Rts.EditorTools`, run with `-executeMethod`. Never hand-edit `.unity`, `.prefab`, `.asset` or `.mat` YAML, and never write a `.meta` file or a GUID.
 4. **Builders can be re-run.** A builder:
@@ -100,7 +105,7 @@ For the gameplay-programmer, tech-artist and qa-test-engineer, and for reviewers
 
 ### Packages, tools and configuration
 
-None are added. This choice uses the Unity Editor 6000.3.23f1 (Unity Technologies, Unity Terms of Service, already installed; ADR 0001), the Test Framework 1.6.0 (already in the manifest; license in ADR 0004), and Node.js, which the launcher already uses, for the wrapper in follow-up 2.
+None are added. This choice uses the Unity Editor 6000.3.23f1 (Unity Technologies, Unity Terms of Service, already installed; ADR 0001), the Test Framework 1.6.0 (already in the manifest; license in ADR 0004), and Node.js, which the launcher already uses, for the wrapper in follow-up 3.
 
 | Files the follow-ups add or change | Protected or in the security perimeter? |
 |---|---|
@@ -120,7 +125,7 @@ None are added. This choice uses the Unity Editor 6000.3.23f1 (Unity Technologie
 | Editor running on the project? | No. Each run starts and quits a headless Editor | Yes: a window Editor, or a headless one from `unity open --batchmode --until-ready` ([release notes][cli-notes]) | Yes. The plugin "Receives commands on the Unity main thread" ([docs][coplay-docs]) |
 | Code an agent can run | Its own Editor scripts and tests, inside its sandbox (menu items too, through `EditorApplication.ExecuteMenuItem`) | Any C#: `eval` is "compiled with Roslyn and run on the Editor's main thread" ([blog][cli-blog]). Unity says to "treat it like remote code execution" ([walkthrough][cli-walkthrough]). ADR 0002 also found `package_add` and `build` | Any C# (`execute_code`), menu items (`execute_menu_item`), package installs and removals (`manage_packages`), and third-party AI services (`asset_gen`) ([tools][coplay-tools]) |
 | Network listener | None added | Local HTTP. "By default the server binds to localhost" ([walkthrough][cli-walkthrough]), on ports 7800–7849 with a token in `Library/Pipeline/` (ADR 0002, from the 0.8 docs). `eval` is "gated behind a security token" ([blog][cli-blog]) | HTTP on `localhost:8080`, loopback by default. No authentication is described for local use ([transports][coplay-transports]) |
-| Codex sandbox | Unity is a child of a sandboxed command: same writable roots, no network, provided Unity runs there at all (spike) | The Editor runs outside the agent's sandbox. Codex's network proxy "does not filter … MCP server connections" ([approvals][codex-security]) | As B. The agent itself picks which Editor to drive (`set_active_instance`, or `unity_instance` on a call) ([instances][coplay-instances]) |
+| Codex sandbox | Unity is a child of a sandboxed command: same writable roots and network rules, provided Unity runs there at all (spike) | The Editor runs outside the agent's sandbox. Codex's network proxy "does not filter … MCP server connections" ([approvals][codex-security]) | As B. The agent itself picks which Editor to drive (`set_active_instance`, or `unity_instance` on a call) ([instances][coplay-instances]) |
 | Claude guard | No change | `.mcp.json` is owner-only, and the guard doesn't inspect MCP tool calls | As B |
 | What it adds | Nothing | The CLI binary, with sign-in (`unity auth login`, [Pipeline install][pipeline-install]); `com.unity.pipeline` in the manifest (reversing ADR 0002); MCP configuration | Python 3.10+ and uv on the PC, the server from PyPI, the Unity package by git URL or OpenUPM in the manifest, and MCP configuration ([install][coplay-install]) |
 
@@ -149,20 +154,21 @@ None are added. This choice uses the Unity Editor 6000.3.23f1 (Unity Technologie
 - **Benefits.** No new dependency, no listener and no change to the perimeter. Every asset change is a reviewable, re-runnable script. QA can prove that the committed assets match their builder. Nothing is added to Player builds, so the ladder is unaffected.
 - **Tradeoffs.** Agents get no live view of the Editor. Each change costs a batch run, including a full import on a fresh worktree. Look-and-feel work (the tech-artist) has to come from scripts and rendered captures rather than interactive tuning. AGENTS.md §4's "later the Unity MCP tools" stays deferred.
 - **Risks.**
-  - Unity may not run under the launcher's sandbox (Context, evidence gap). If it needs a run outside the sandbox, agent-written Editor code runs with the owner's rights, much as in B and C. It would also clash with §5's ban on writes outside the repository. That is owner decision 2.
-  - A Player started from the sandbox runs on a private desktop ([Windows sandbox][codex-windows]), so it may not go full screen or keep focus. ADR 0004 treats a focus loss as an invalid ladder run.
+  - Unity may not run under the launcher's sandbox (Context, evidence gap). If it needs a run outside the sandbox, agent-written Editor code runs with the owner's rights, much as in B and C. If it needs to write outside the worktree, AGENTS.md §5 forbids that today, whoever starts Unity, and only a merged change to the handbook can allow it. That is owner decision 2.
+  - Under either legacy mode, a Player started from the sandbox runs on a private desktop by default ([Windows sandbox][codex-windows]), so it may not go full screen or keep focus. The page doesn't say what MXC does, so the spike checks it. ADR 0004 treats a focus loss as an invalid ladder run.
   - Batch imports may be slow, or memory-heavy with several worktrees running at once. Nobody has measured either.
 - **Reversibility.** Easy. A later ADR can add B or C, and builders become their custom commands. Leaving A behind deletes no work.
 - **Owner decisions:**
   1. **Command line now, MCP later.** Approve option A and defer MCP. *Recommended:* it adds no dependency or listener, keeps agent code inside the sandbox, and leaves a reviewable script for every asset. Unity's own route is still beta and experimental.
   2. **If the spike shows Unity can't run inside the launcher's sandbox,** choose how it runs instead:
-     - allow sandbox escalations for Unity (a handbook change to §5)
-     - add fixed writable roots for Unity (a launcher change)
-     - have the launcher run a fixed set of Unity commands itself after the agent's turn (a launcher change)
+     - allow sandbox escalations for Unity
+     - add fixed writable roots outside the worktree for Unity
+     - have the launcher run a fixed set of Unity commands itself after the agent's turn
 
-     All three are Critical and in the security perimeter. *Recommended:* decide with the spike's findings, and prefer whichever keeps Unity sandboxed. Don't rely on auto-review approving unsandboxed Unity runs one at a time.
+     All three let Unity write outside the worktree, which AGENTS.md §5 forbids today ("Writing, deleting, installing or changing configuration outside the repository stays forbidden"). A launcher change can't lift that. So whichever is chosen needs, before it is used, a merged change to AGENTS.md §5 that allows exactly the access the spike found Unity needs. The second and third also need a launcher change: the launcher stops any run that reports writable roots outside the worktree, and it doesn't run Unity. All of these are Critical and in the security perimeter, and they merge before any Unity work that depends on them starts (follow-up 2). Until then, Unity runs only inside the sandbox. *Recommended:* decide with the spike's findings, and prefer whichever keeps Unity sandboxed. Don't rely on auto-review approving unsandboxed Unity runs one at a time.
 - **Follow-up Issues,** in order:
-  1. **Spike** (`type:spike`, gameplay-programmer through the launcher, time box one day; the Issue names the Unity install folder; throwaway branch, only the finding is kept). In the role's worktree, measure:
+  1. **Spike** (`type:spike`, gameplay-programmer through the launcher, time box one day; the Issue names the Unity install folder; throwaway branch, only the finding is kept). Unity runs only inside the sandbox, under the rules in force: a block is recorded, not escalated. In the role's worktree, measure:
+     - which Windows sandbox implementation ran (`mxc`, `elevated` or `unelevated`). The launcher doesn't log it, so the spike Issue says how it is read; Codex's docs point to `/status` and `/debug-config` ([Windows sandbox][codex-windows]). The findings hold only for that implementation.
      - a batch import from an empty `Library/` (exit code, wall time, peak memory), then a warm re-run
      - a builder that makes a scene, a prefab, a ScriptableObject and a URP material, run with and without `-nographics`, then run again to check that `git status` stays clean
      - the exit code and the log output for a deliberate compile error
@@ -172,14 +178,14 @@ None are added. This choice uses the Unity Editor 6000.3.23f1 (Unity Technologie
      - whether Unity found its license and resolved packages with the network off
      - any sandbox block or auto-review escalation, from the launcher log
      - the paths outside the worktree that Unity wrote or tried to write, summarized without user names (AGENTS.md §5)
-  2. **`tools/unity-batch.js`** with `node --test` tests (Standard tier, Node built-ins only), after the spike. It:
+  2. **Only if owner decision 2 is needed:** the AGENTS.md §5 change it needs, and the launcher change if the chosen option needs one (Critical, security perimeter; each Issue names the files it changes: `AGENTS.md`, and `tools/codex-launch.js` if needed). These merge before follow-ups 3 and 4, or any other Unity Issue that relies on them, start.
+  3. **`tools/unity-batch.js`** with `node --test` tests (Standard tier, Node built-ins only), after the spike, and after follow-up 2 if it is needed. It:
      - finds the Editor for the version in `ProjectVersion.txt` and refuses any other version
      - always passes `-batchmode` and the worktree's own `-projectPath` and `-logFile`
      - offers three commands: run a builder, run tests, build the Player
      - fails on compiler errors or warnings in the log
-  3. **The grey-box sandbox** (ADR 0004 follow-up 5), built by builders under these rules, with its asset list in its acceptance criteria.
-  4. **`docs/studio/workflow.md`:** asset lists in Unity Issues, no overlapping open Issues, and no Unity work during ladder runs.
-  5. **If owner decision 2 is needed,** the handbook or launcher change it picks (Critical, security perimeter; the Issue names `AGENTS.md` or `tools/codex-launch.js`).
+  4. **The grey-box sandbox** (ADR 0004 follow-up 5), built by builders under these rules, with its asset list in its acceptance criteria.
+  5. **`docs/studio/workflow.md`:** asset lists in Unity Issues, no overlapping open Issues, and no Unity work during ladder runs.
   6. **Suggested:** add these rules to the gameplay-programmer, tech-artist and qa-test-engineer role files. `.codex/agents/` is a protected path, so that Issue must name the files.
   7. **A superseding ADR** if the Unity CLI and the Pipeline package leave beta and experimental with a license §5 covers and a way to isolate each worktree's Editor, or if Issues show work that builders can't do.
 
