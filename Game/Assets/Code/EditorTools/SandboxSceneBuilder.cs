@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Text;
 using Northwatch.Presentation;
 using UnityEditor;
 using UnityEditor.Build.Reporting;
@@ -18,6 +19,38 @@ namespace Northwatch.EditorTools
 
         [MenuItem("Northwatch/Build sandbox assets")]
         public static void Build()
+        {
+            string[] paths = { ScenePath, DriverPath, CameraPath, "Assets/Materials/FirstSide.mat",
+                "Assets/Materials/SecondSide.mat", "ProjectSettings/EditorBuildSettings.asset" };
+            var before = new byte[paths.Length][];
+            for (int i = 0; i < paths.Length; i++)
+                if (File.Exists(paths[i])) before[i] = File.ReadAllBytes(paths[i]);
+            const string templateSettings = "ProjectSettings/SceneTemplateSettings.json";
+            byte[] templateSettingsBefore = File.Exists(templateSettings) ? File.ReadAllBytes(templateSettings) : null;
+            try
+            {
+                BuildAssets();
+            }
+            finally
+            {
+                // Unity serializes with LF even when Git checked out identical assets with CRLF.
+                // Restore the checkout bytes only when no serialized property has changed.
+                for (int i = 0; i < paths.Length; i++)
+                {
+                    if (before[i] == null || !File.Exists(paths[i])) continue;
+                    string original = Encoding.UTF8.GetString(before[i]);
+                    string saved = Encoding.UTF8.GetString(File.ReadAllBytes(paths[i]));
+                    if (original != saved && original.Replace("\r\n", "\n") == saved.Replace("\r\n", "\n"))
+                        File.WriteAllBytes(paths[i], before[i]);
+                }
+                // Loading prefab contents initializes unrelated scene-template defaults on a fresh checkout.
+                // Leave these settings as they were, including preserving a pre-existing file.
+                if (templateSettingsBefore != null) File.WriteAllBytes(templateSettings, templateSettingsBefore);
+                else if (File.Exists(templateSettings)) File.Delete(templateSettings);
+            }
+        }
+
+        private static void BuildAssets()
         {
             EnsureFolder("Prefabs");
             EnsureFolder("Materials");

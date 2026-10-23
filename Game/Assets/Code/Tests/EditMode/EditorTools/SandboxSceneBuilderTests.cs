@@ -1,6 +1,7 @@
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using Northwatch.EditorTools;
 using Northwatch.Presentation;
 using Northwatch.Presentation.Diagnostics;
@@ -28,16 +29,46 @@ namespace Northwatch.Tests.EditMode.EditorTools
             Assert.That(error.InnerException, Is.TypeOf<System.InvalidOperationException>());
         }
 
-        [Test]
-        public void BuilderPreservesAssetBytesOnRepeatRun()
+        [TestCase("\n", false, TestName = "BuilderPreservesLfCheckoutOnRepeatRun")]
+        [TestCase("\r\n", false, TestName = "BuilderPreservesCrLfCheckoutOnRepeatRun")]
+        [TestCase("\n", true, TestName = "BuilderPreservesExistingSceneTemplateSettings")]
+        public void BuilderPreservesAssetBytesOnRepeatRun(string lineEnding, bool existingSettings)
         {
-            string[] paths = Directory.GetFiles("Assets/Scenes").Concat(Directory.GetFiles("Assets/Prefabs"))
-                .Concat(Directory.GetFiles("Assets/Materials")).Concat(Directory.GetFiles("Assets/Settings"))
-                .Concat(Directory.GetFiles("ProjectSettings")).ToArray();
+            string[] paths = AssetAndSettingsPaths();
             byte[][] before = paths.Select(File.ReadAllBytes).ToArray();
-            SandboxSceneBuilder.Build();
-            for (int i = 0; i < paths.Length; i++) Assert.That(File.ReadAllBytes(paths[i]), Is.EqualTo(before[i]), paths[i]);
+            const string templateSettings = "ProjectSettings/SceneTemplateSettings.json";
+            try
+            {
+                if (existingSettings) File.WriteAllText(templateSettings, "{}");
+                else if (File.Exists(templateSettings)) File.Delete(templateSettings);
+                // Model both checkout conventions without changing any serialized properties.
+                for (int i = 0; i < paths.Length; i++)
+                    if (paths[i].EndsWith(".unity") || paths[i].EndsWith(".prefab") || paths[i].EndsWith(".mat") ||
+                        paths[i] == "ProjectSettings/EditorBuildSettings.asset")
+                        File.WriteAllBytes(paths[i], Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(before[i])
+                            .Replace("\r\n", "\n").Replace("\n", lineEnding)));
+                string[] expectedPaths = AssetAndSettingsPaths();
+                byte[][] expected = expectedPaths.Select(File.ReadAllBytes).ToArray();
+                for (int run = 0; run < 2; run++)
+                {
+                    SandboxSceneBuilder.Build();
+                    Assert.That(AssetAndSettingsPaths(), Is.EqualTo(expectedPaths), "The builder must not add assets or settings.");
+                    for (int i = 0; i < expectedPaths.Length; i++)
+                        Assert.That(File.ReadAllBytes(expectedPaths[i]), Is.EqualTo(expected[i]), expectedPaths[i]);
+                }
+            }
+            finally
+            {
+                for (int i = 0; i < paths.Length; i++)
+                    if (!File.Exists(paths[i]) || !File.ReadAllBytes(paths[i]).SequenceEqual(before[i]))
+                        File.WriteAllBytes(paths[i], before[i]);
+                if (!paths.Contains(templateSettings) && File.Exists(templateSettings)) File.Delete(templateSettings);
+            }
         }
+
+        private static string[] AssetAndSettingsPaths() => Directory.GetFiles("Assets", "*", SearchOption.AllDirectories)
+            .Concat(Directory.GetFiles("ProjectSettings")).Select(path => path.Replace('\\', '/'))
+            .OrderBy(path => path).ToArray();
 
         [Test]
         public void SceneHasEmptyMatchAndWholeMapInView()
