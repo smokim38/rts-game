@@ -1,6 +1,34 @@
 # Normalize line endings for text files
 * text=auto
-*.cs text diff=csharp
+*.cs text eol=lf diff=csharp
+
+# Unity writes these text formats; keep checkout and saved line endings consistent.
+# Explicit text also normalizes files previously stored with CRLF.
+*.unity              text eol=lf
+*.prefab             text eol=lf
+*.asset              text eol=lf
+*.mat                text eol=lf
+*.meta               text eol=lf
+*.anim               text eol=lf
+*.controller         text eol=lf
+*.overrideController text eol=lf
+*.mask               text eol=lf
+*.playable           text eol=lf
+*.physicMaterial     text eol=lf
+*.physicsMaterial2D  text eol=lf
+*.renderTexture      text eol=lf
+*.terrainlayer       text eol=lf
+*.spriteatlas        text eol=lf
+*.asmdef             text eol=lf
+*.asmref             text eol=lf
+*.inputactions       text eol=lf
+*.shader             text eol=lf
+*.shadergraph        text eol=lf
+*.shadersubgraph     text eol=lf
+*.shadervariants     text eol=lf
+*.hlsl               text eol=lf
+*.cginc              text eol=lf
+*.compute            text eol=lf
 
 # Large binary files are stored with Git LFS
 *.blend filter=lfs diff=lfs merge=lfs -text
