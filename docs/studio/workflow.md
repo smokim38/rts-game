@@ -85,6 +85,31 @@ with the same PR and SHA as its marker.
 3. No Unity run (builder, tests or build) happens on the ladder PC while a performance ladder runs ([ADR 0004](../adr/0004-unit-simulation-architecture.md#performance-ladder)).
 4. Assets are created and changed by builders run in batch mode, following [ADR 0006](../adr/0006-unity-editor-automation.md#rules-for-agents-working-with-unity) and [AGENTS.md §4](../../AGENTS.md#4-engineering-standards).
 
+## Worktrees
+
+The launcher creates git worktrees under `.studio/worktrees/`:
+
+- Implementation: `<issue>-<role>`, for example `88-gameplay-programmer`, on the Issue's branch.
+- QA and review: `<role>-pr<n>`, for example `qa-test-engineer-pr96` or `reviewer-pr96`, at the PR's exact head commit.
+
+Keep one implementation worktree per Issue and reuse it for fixes; two Issues never share a worktree. QA and review use their own separate checkouts.
+
+**Cleanup.** After a PR merges or closes, the Producer removes its implementation, QA and review worktrees with `git worktree remove`, then runs `git worktree prune`. From the repository root, check each worktree first; for example:
+
+```text
+git -C .studio/worktrees/88-gameplay-programmer status --short
+git worktree remove .studio/worktrees/88-gameplay-programmer
+git worktree prune
+```
+
+Remove only idle worktrees with no uncommitted changes, including untracked files; never force removal. Check existing QA and review worktrees before a launcher rerun, which recreates them. Never delete a branch you didn't create ([AGENTS.md §5](../../AGENTS.md#5-security-rules)).
+
+**Unity cache.** Each worktree has its own `Game/Library/`, which is never committed ([AGENTS.md §2](../../AGENTS.md#2-repository-map)). Plan for a slow first batch import and disk use per worktree; fresh QA checkouts pay the import cost again. #82 was blocked; its checks were re-run in [#92](https://github.com/smokim38/rts-game/issues/92): cold import from an empty `Library/` took about 68 s, warm import about 6.6 s, with peak memory about 1.35 GiB. `Library/` disk size was not measured.
+
+Do not copy or share a `Library` folder between worktrees: its cached imports can reflect different assets, packages or Editor state. Let each worktree's batch Editor create its own cache.
+
+**Editors and scenes.** Run at most one batch Editor per worktree at a time; the owner never opens a worktree's project in the Editor ([ADR 0006](../adr/0006-unity-editor-automation.md#parallel-engineers), [owner rules](../adr/0006-unity-editor-automation.md#what-the-owner-does)). Separate worktrees do not allow two agents to edit the same scene at once: follow [AGENTS.md §4](../../AGENTS.md#4-engineering-standards) and [Unity work](#unity-work) for asset ownership and ladder exclusions.
+
 ## Definition of Ready
 
 An Issue moves to **Ready** only when it has all of these:
