@@ -118,25 +118,114 @@ test('role files: the TOML subset, the fixed name and the required keys', () => 
   }
 });
 
-test('the WIP slot: one open Issue per role', () => {
+const slotDir = (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-test-'));
-  try {
-    const open = new Set([42]);
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  return dir;
+};
+
+test('WIP: two gameplay-programmer Issues claim distinct slots', (t) => {
+  const dir = slotDir(t);
+  const first = L.takeSlot(dir, 'gameplay-programmer', 42, () => true);
+  const second = L.takeSlot(dir, 'gameplay-programmer', 43, () => true);
+  assert.notStrictEqual(first, second);
+  assert.strictEqual(JSON.parse(fs.readFileSync(first, 'utf8')).issue, 42);
+  assert.strictEqual(JSON.parse(fs.readFileSync(second, 'utf8')).issue, 43);
+  L.takeSlot(dir, 'tech-artist', 44, () => true); // other roles keep independent slots
+});
+
+test('WIP: a third gameplay-programmer Issue is refused with both holders named', (t) => {
+  const dir = slotDir(t);
+  const first = L.takeSlot(dir, 'gameplay-programmer', 42, () => true);
+  const second = L.takeSlot(dir, 'gameplay-programmer', 43, () => true);
+  const before = [first, second].map((file) => fs.readFileSync(file, 'utf8'));
+  refused(() => L.takeSlot(dir, 'gameplay-programmer', 44, () => true), /slots are held by open Issues #42 and #43/);
+  assert.deepStrictEqual([first, second].map((file) => fs.readFileSync(file, 'utf8')), before);
+  assert.strictEqual(fs.existsSync(path.join(dir, 'gameplay-programmer.mutex')), false);
+});
+
+for (const closed of [42, 43]) {
+  test(`WIP: closing gameplay-programmer Issue #${closed} frees its slot`, (t) => {
+    const dir = slotDir(t);
+    const open = new Set([42, 43, 44]);
     const isOpen = (n) => open.has(n);
-    L.takeSlot(dir, 'gameplay-programmer', 42, isOpen);
-    L.takeSlot(dir, 'gameplay-programmer', 42, isOpen); // the same Issue again, e.g. review fixes
-    open.add(43);
-    refused(() => L.takeSlot(dir, 'gameplay-programmer', 43, isOpen), /held by open Issue #42/);
-    L.takeSlot(dir, 'tech-artist', 43, isOpen); // another role has its own slot
+    const slots = [42, 43].map((n) => L.takeSlot(dir, 'gameplay-programmer', n, isOpen));
+    open.delete(closed);
+    assert.strictEqual(L.takeSlot(dir, 'gameplay-programmer', 44, isOpen), slots[closed - 42]);
+    assert.deepStrictEqual(slots.map((file) => JSON.parse(fs.readFileSync(file, 'utf8')).issue), closed === 42 ? [44, 43] : [42, 44]);
+    refused(() => L.takeSlot(dir, 'gameplay-programmer', 45, isOpen), /slots are held by open Issues/);
+  });
+}
+
+test('WIP: a gameplay-programmer rerun reuses its slot even when an earlier slot frees', (t) => {
+  const dir = slotDir(t);
+  const open = new Set([42, 43, 44]);
+  const isOpen = (n) => open.has(n);
+  const first = L.takeSlot(dir, 'gameplay-programmer', 42, isOpen);
+  const second = L.takeSlot(dir, 'gameplay-programmer', 43, isOpen);
+  assert.strictEqual(L.takeSlot(dir, 'gameplay-programmer', 42, isOpen), first);
+  assert.strictEqual(L.takeSlot(dir, 'gameplay-programmer', 43, isOpen), second);
+  const before = fs.readFileSync(first, 'utf8');
+  open.delete(42);
+  assert.strictEqual(L.takeSlot(dir, 'gameplay-programmer', 43, isOpen), second);
+  assert.strictEqual(fs.readFileSync(first, 'utf8'), before);
+  assert.strictEqual(L.takeSlot(dir, 'gameplay-programmer', 44, isOpen), first);
+});
+
+test('WIP: an existing gameplay-programmer lock still occupies the first slot', (t) => {
+  const dir = slotDir(t);
+  const first = path.join(dir, 'gameplay-programmer.json');
+  const existing = JSON.stringify({ issue: 42, since: '2026-10-22T00:00:00.000Z' });
+  fs.writeFileSync(first, existing);
+  const second = L.takeSlot(dir, 'gameplay-programmer', 43, () => true);
+  assert.notStrictEqual(first, second);
+  assert.strictEqual(fs.readFileSync(first, 'utf8'), existing);
+  refused(() => L.takeSlot(dir, 'gameplay-programmer', 44, () => true), /slots are held by open Issues #42 and #43/);
+});
+
+for (const role of ['tech-artist', 'qa-test-engineer']) {
+  test(`WIP: ${role} keeps one slot`, (t) => {
+    const dir = slotDir(t);
+    const open = new Set([42, 43]);
+    const isOpen = (n) => open.has(n);
+    const slot = L.takeSlot(dir, role, 42, isOpen);
+    assert.strictEqual(L.takeSlot(dir, role, 42, isOpen), slot);
+    refused(() => L.takeSlot(dir, role, 43, isOpen), /slot is held by open Issue #42/);
     open.delete(42);
-    L.takeSlot(dir, 'gameplay-programmer', 43, isOpen); // freed once #42 closes
-    assert.strictEqual(JSON.parse(fs.readFileSync(path.join(dir, 'gameplay-programmer.json'), 'utf8')).issue, 43);
-    // Another launcher run is claiming the slot right now: its mutex is held by a live process.
-    fs.writeFileSync(path.join(dir, 'tech-artist.mutex'), `${process.pid}\n`);
-    refused(() => L.takeSlot(dir, 'tech-artist', 43, isOpen), /another launcher run holds tech-artist\.mutex/);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+    assert.strictEqual(L.takeSlot(dir, role, 43, isOpen), slot);
+    assert.strictEqual(JSON.parse(fs.readFileSync(slot, 'utf8')).issue, 43);
+    assert.strictEqual(fs.existsSync(path.join(dir, `${role}-2.json`)), false);
+  });
+}
+
+test('WIP: availability checks and claims hold the role mutex', (t) => {
+  const dir = slotDir(t);
+  const first = L.takeSlot(dir, 'gameplay-programmer', 42, () => true);
+  L.takeSlot(dir, 'gameplay-programmer', 43, () => true);
+  let checked = false;
+  const isOpen = (n) => {
+    checked = true;
+    refused(() => L.takeSlot(dir, 'gameplay-programmer', 45, () => true), /another launcher run holds gameplay-programmer\.mutex/);
+    return n !== 42;
+  };
+  assert.strictEqual(L.takeSlot(dir, 'gameplay-programmer', 44, isOpen), first);
+  assert.strictEqual(checked, true);
+});
+
+test('WIP: a live role mutex blocks claims and a crashed run mutex is recovered', (t) => {
+  const dir = slotDir(t);
+  const first = L.takeSlot(dir, 'gameplay-programmer', 42, () => true);
+  const mutex = path.join(dir, 'gameplay-programmer.mutex');
+  fs.writeFileSync(mutex, `${process.pid}\n`);
+  refused(() => L.takeSlot(dir, 'gameplay-programmer', 43, () => true), /another launcher run holds gameplay-programmer\.mutex/);
+  assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['gameplay-programmer.json', 'gameplay-programmer.mutex']);
+  fs.writeFileSync(mutex, '999999 0000000000000000\n');
+  const second = L.takeSlot(dir, 'gameplay-programmer', 43, () => true);
+  assert.notStrictEqual(first, second);
+  assert.strictEqual(JSON.parse(fs.readFileSync(first, 'utf8')).issue, 42);
+  assert.strictEqual(JSON.parse(fs.readFileSync(second, 'utf8')).issue, 43);
+  assert.strictEqual(fs.existsSync(mutex), false);
+  assert.strictEqual(fs.existsSync(`${mutex}.recover`), false);
 });
 
 test('locks: exclusive while their process lives, taken over once it has ended', () => {

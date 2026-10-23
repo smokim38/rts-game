@@ -307,16 +307,22 @@ function acquire(file, onStale = () => {}) {
   }
 }
 
-// One WIP slot per engineer (workflow.md): a lock names the Issue that holds the slot until it
-// closes. The check and the claim happen under the role's mutex, so two runs can't both claim it.
+// Two WIP slots for gameplay-programmer, one for the other engineers (workflow.md). Each lock
+// names its Issue until it closes. Checking and claiming stay under the role's mutex.
 function takeSlot(lockDir, role, issueNumber, isOpen) {
   const release = acquire(path.join(lockDir, `${role}.mutex`));
   try {
-    const lock = path.join(lockDir, `${role}.json`);
-    if (fs.existsSync(lock)) {
-      const held = JSON.parse(fs.readFileSync(lock, 'utf8'));
-      if (held.issue !== issueNumber && isOpen(held.issue)) refuse(`the ${role} slot is held by open Issue #${held.issue}`);
+    // Keep the original filename for the first slot so existing claims still count.
+    const locks = [path.join(lockDir, `${role}.json`)];
+    if (role === 'gameplay-programmer') locks.push(path.join(lockDir, `${role}-2.json`));
+    const held = locks.map((lock) => fs.existsSync(lock) ? JSON.parse(fs.readFileSync(lock, 'utf8')) : null);
+    let slot = held.findIndex((entry) => entry?.issue === issueNumber);
+    if (slot === -1) slot = held.findIndex((entry) => entry === null || !isOpen(entry.issue));
+    if (slot === -1) {
+      const holders = held.map((entry) => `#${entry.issue}`).join(' and ');
+      refuse(`the ${role} ${locks.length === 1 ? 'slot is held by open Issue' : 'slots are held by open Issues'} ${holders}`);
     }
+    const lock = locks[slot];
     fs.writeFileSync(lock, `${JSON.stringify({ issue: issueNumber, since: new Date().toISOString() })}\n`);
     return lock;
   } finally {
