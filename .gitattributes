@@ -1,5 +1,7 @@
 # Normalize line endings for text files
 * text=auto
+# Unity writes LF; retain binary detection for formats such as .asset.
+Game/** text=auto eol=lf
 *.cs text diff=csharp
 
 # Large binary files are stored with Git LFS
