@@ -26,6 +26,21 @@ namespace Northwatch.Simulation
         }
 
         public int Count { get { RequireComplete(); return State.Summary[0]; } }
+        public int RemainingCapacity { get { RequireComplete(); return Capacity - Count - queuedAdds; } }
+        public int PlacementResult { get { RequireComplete(); return State.Summary[5]; } }
+        public int PlacementVersion { get { RequireComplete(); return State.Summary[6]; } }
+
+        public bool QueueBlock(Side side, UnitSize size, Vector3 centre, int count)
+        {
+            RequireComplete();
+            if ((byte)side > 1 || (byte)size > 1 || count < 1 || count > RemainingCapacity ||
+                !math.all(math.isfinite((float3)centre)) || math.abs(centre.x) > BlockPlacement.MapHalfWidth ||
+                math.abs(centre.z) > BlockPlacement.MapHalfWidth || commandCount == commands.Length) return false;
+            commands[commandCount++] = new UnitCommand
+                { Side = side, Size = size, Position = centre, BlockCount = count };
+            queuedAdds += count;
+            return true;
+        }
 
         public bool QueueAdd(Side side, UnitSize size, Vector3 position)
             => QueueAdd(side, size, position, out _);

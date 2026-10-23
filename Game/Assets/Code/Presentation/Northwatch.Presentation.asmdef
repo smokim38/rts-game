@@ -1,7 +1,7 @@
 {
   "name": "Northwatch.Presentation",
   "rootNamespace": "Northwatch.Presentation",
-  "references": ["Northwatch.Simulation","Unity.Collections","Unity.Mathematics"],
+  "references": ["Northwatch.Simulation","Unity.Collections","Unity.Mathematics","Unity.InputSystem","Unity.ugui","Unity.RenderPipelines.Universal.Runtime"],
   "includePlatforms": [],
   "excludePlatforms": [],
   "allowUnsafeCode": false,

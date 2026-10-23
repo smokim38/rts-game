@@ -11,5 +11,6 @@ namespace Northwatch.Simulation
         internal Side Side;
         internal UnitSize Size;
         internal float3 Position;
+        internal int BlockCount;
     }
 }
