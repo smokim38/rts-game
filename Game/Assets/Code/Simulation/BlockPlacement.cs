@@ -4,7 +4,6 @@ namespace Northwatch.Simulation
 {
     internal struct BlockPlacement
     {
-        internal const float MapHalfWidth = 128f;
         private int count, columns, rows;
         private float width;
         private float2 centre;
@@ -16,7 +15,7 @@ namespace Northwatch.Simulation
             rows = (count + columns - 1) / columns;
             width = size == UnitSize.Small ? 0.5f : 1f;
             float2 halfExtent = new float2(columns, rows) * width * 0.5f;
-            centre = math.clamp(click.xz, -MapHalfWidth + halfExtent, MapHalfWidth - halfExtent);
+            centre = math.clamp(click.xz, -UnitSimulation.MapHalfWidth + halfExtent, UnitSimulation.MapHalfWidth - halfExtent);
         }
 
         internal float3 Position(int index)

@@ -9,6 +9,7 @@ namespace Northwatch.Simulation
     public sealed class UnitSimulation : IDisposable
     {
         public const int Capacity = 2000;
+        public const float MapHalfWidth = 128f;
         internal UnitState State;
         private NativeArray<UnitCommand> commands;
         private NativeArray<Matrix4x4> matrices;
@@ -34,8 +35,8 @@ namespace Northwatch.Simulation
         {
             RequireComplete();
             if ((byte)side > 1 || (byte)size > 1 || count < 1 || count > RemainingCapacity ||
-                !math.all(math.isfinite((float3)centre)) || math.abs(centre.x) > BlockPlacement.MapHalfWidth ||
-                math.abs(centre.z) > BlockPlacement.MapHalfWidth || commandCount == commands.Length) return false;
+                !math.all(math.isfinite((float3)centre)) || math.abs(centre.x) > MapHalfWidth ||
+                math.abs(centre.z) > MapHalfWidth || commandCount == commands.Length) return false;
             commands[commandCount++] = new UnitCommand
                 { Side = side, Size = size, Position = centre, BlockCount = count };
             queuedAdds += count;

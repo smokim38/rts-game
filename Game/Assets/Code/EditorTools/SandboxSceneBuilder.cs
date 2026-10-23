@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Text;
 using Northwatch.Presentation;
+using Northwatch.Simulation;
 using UnityEditor;
 using UnityEditor.Build.Reporting;
 using UnityEditor.SceneManagement;
@@ -100,7 +101,7 @@ namespace Northwatch.EditorTools
                 UnityEngine.Object.DestroyImmediate(ground.GetComponent<Collider>());
             }
             ground.transform.position = new Vector3(0f, -0.05f, 0f);
-            ground.transform.localScale = new Vector3(256f, 0.1f, 256f);
+            ground.transform.localScale = new Vector3(UnitSimulation.MapHalfWidth * 2, 0.1f, UnitSimulation.MapHalfWidth * 2);
             ground.GetComponent<MeshRenderer>().sharedMaterial = GraphicsSettings.defaultRenderPipeline.defaultMaterial;
             GameObject sun = Root(scene, "Sun") ?? new GameObject("Sun");
             Light light = ComponentOrAdd<Light>(sun);

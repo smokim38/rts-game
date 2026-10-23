@@ -91,7 +91,12 @@ namespace Northwatch.Presentation
                             if (next < 1 || next > UnitSimulation.Capacity) continue;
                             count = next; replaceCount = false;
                         }
-                    if (backspace.WasPressedThisFrame()) { count = Mathf.Max(1, count / 10); replaceCount = false; }
+                    if (backspace.WasPressedThisFrame())
+                    {
+                        int shortened = count / 10;
+                        count = Mathf.Max(1, shortened);
+                        replaceCount = shortened == 0;
+                    }
                     if (place.WasPressedThisFrame()) TryPlace(point.ReadValue<Vector2>());
                 }
                 values[0].text = integers[simulation.DrawCount(Side.First)];

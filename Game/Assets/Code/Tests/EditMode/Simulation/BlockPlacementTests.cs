@@ -1,5 +1,7 @@
 using Northwatch.Simulation;
 using NUnit.Framework;
+using Unity.Collections;
+using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
 
@@ -16,6 +18,7 @@ namespace Northwatch.Tests.EditMode.Simulation
         [TestCase(UnitSize.Small, 1, 0, 0)]
         [TestCase(UnitSize.Small, 7, 0, 0)]
         [TestCase(UnitSize.Large, 37, 127.9f, -127.9f)]
+        [TestCase(UnitSize.Large, 37, -127.9f, -127.9f)]
         [TestCase(UnitSize.Small, 2000, -128, 128)]
         [TestCase(UnitSize.Large, 2000, 128, 128)]
         public void PlacesExactCountWithoutOverlapInsideMap(UnitSize size, int count, float x, float z)
@@ -37,7 +40,31 @@ namespace Northwatch.Tests.EditMode.Simulation
                 maximum = math.max(maximum, position + half);
             }
             if (x == 0 && z == 0) Assert.That(math.length((minimum + maximum) * 0.5f), Is.LessThan(0.0001f));
-            else Assert.That(maximum.y, Is.EqualTo(z > 0 ? 128f : maximum.y));
+            else
+            {
+                Assert.That(x > 0 ? maximum.x : minimum.x, Is.EqualTo(x > 0 ? 128f : -128f));
+                Assert.That(z > 0 ? maximum.y : minimum.y, Is.EqualTo(z > 0 ? 128f : -128f));
+            }
+        }
+
+        [TestCase(0, 2001)]
+        [TestCase(1, 2000)]
+        [TestCase(2000, 1)]
+        public void CommandJobRefusesWholeBlockBeyondStateCapacity(int existingCount, int blockCount)
+        {
+            using var simulation = new UnitSimulation();
+            if (existingCount > 0)
+                Assert.That(simulation.QueueBlock(Side.First, UnitSize.Small, new Vector3(-40, 0, 0), existingCount), Is.True);
+            Tick(simulation);
+            int version = simulation.PlacementVersion;
+            using var commands = new NativeArray<UnitCommand>(new[] { new UnitCommand
+                { Side = Side.Second, Size = UnitSize.Large, Position = new float3(40, 0, 0), BlockCount = blockCount } }, Allocator.Persistent);
+            new ApplyCommandsJob { State = simulation.State, Commands = commands, CommandCount = 1 }.Schedule().Complete();
+            Assert.That(simulation.Count, Is.EqualTo(existingCount));
+            Assert.That(simulation.PlacementVersion, Is.EqualTo(version + 1));
+            Assert.That(simulation.PlacementResult, Is.EqualTo(-1));
+            Assert.That(simulation.State.Summary[1], Is.EqualTo(existingCount), "Refusal must not consume any slots.");
+            if (existingCount < UnitSimulation.Capacity) Assert.That(simulation.State.Alive[existingCount], Is.Zero);
         }
 
         [Test]

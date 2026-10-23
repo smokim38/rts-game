@@ -42,6 +42,7 @@ namespace Northwatch.Simulation
         {
             State.Summary[6]++;
             State.Summary[5] = -1;
+            if (command.BlockCount > State.Alive.Length - State.Summary[0]) return;
             var block = new BlockPlacement(command.BlockCount, command.Size, command.Position);
             // One area query per spawn order, like selection; no per-unit neighbour searches.
             for (int slot = 0; slot < State.Alive.Length; slot++)

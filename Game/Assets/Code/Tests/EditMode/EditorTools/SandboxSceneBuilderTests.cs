@@ -5,6 +5,7 @@ using System.Text;
 using Northwatch.EditorTools;
 using Northwatch.Presentation;
 using Northwatch.Presentation.Diagnostics;
+using Northwatch.Simulation;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEditor.SceneManagement;
@@ -103,6 +104,8 @@ namespace Northwatch.Tests.EditMode.EditorTools
             }
             GameObject ground = roots.Single(root => root.name == "Ground");
             Assert.That(ground.transform.localScale, Is.EqualTo(new Vector3(256f, 0.1f, 256f)));
+            Assert.That(ground.transform.localScale.x, Is.EqualTo(UnitSimulation.MapHalfWidth * 2));
+            Assert.That(ground.transform.localScale.z, Is.EqualTo(UnitSimulation.MapHalfWidth * 2));
             Assert.That(roots.SelectMany(root => root.GetComponentsInChildren<Light>()).Count(), Is.EqualTo(1));
             camera.aspect = 16f / 9f;
             foreach (float x in new[] { -128f, 128f })

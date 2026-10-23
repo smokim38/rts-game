@@ -15,7 +15,7 @@ namespace Northwatch.Tests.EditMode.Presentation
     public sealed class DebugOverlayTests : InputTestFixture
     {
         [Test]
-        public void InputControlsSpawnOnlyInModeAndCounterTracksTwoThousands()
+        public void InputControlsSpawnOnlyInModeAndCounterTracksTwoThousandUnits()
         {
             var scene = EditorSceneManager.OpenScene(SandboxSceneBuilder.ScenePath);
             GameObject[] roots = scene.GetRootGameObjects();
@@ -29,6 +29,7 @@ namespace Northwatch.Tests.EditMode.Presentation
             {
                 InputSystem.settings.updateMode = InputSettings.UpdateMode.ProcessEventsManually;
                 Call(driver, "OnEnable"); Call(overlay, "OnEnable");
+                var fields = (UnityEngine.UI.Text[])typeof(DebugOverlay).GetField("values", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(overlay);
                 var update = (Action)typeof(DebugOverlay).GetMethod("Update", BindingFlags.NonPublic | BindingFlags.Instance)
                     .CreateDelegate(typeof(Action), overlay);
                 Canvas.ForceUpdateCanvases();
@@ -39,7 +40,15 @@ namespace Northwatch.Tests.EditMode.Presentation
                 Press(keyboard, update, Key.F1);
                 Assert.That(overlay.SpawnMode, Is.True);
                 Press(keyboard, update, Key.Digit2); Press(keyboard, update, Key.Backspace);
+                Press(keyboard, update, Key.Digit5);
+                Assert.That(fields[8].text, Is.EqualTo("0005"), "A digit replaces the count after Backspace removes its last digit.");
+                Press(keyboard, update, Key.Backspace); Press(keyboard, update, Key.Backspace);
+                Assert.That(fields[8].text, Is.EqualTo("0001"), "The effective count stays valid while its input is cleared.");
+                Press(keyboard, update, Key.Digit0);
+                Assert.That(fields[8].text, Is.EqualTo("0001"), "Zero cannot become the placement count.");
+                Press(keyboard, update, Key.Digit1);
                 Press(keyboard, update, Key.Digit0); Press(keyboard, update, Key.Digit0); Press(keyboard, update, Key.Digit0);
+                Assert.That(fields[8].text, Is.EqualTo("1000"));
                 Click(mouse, update, first);
                 Assert.That(driver.Simulation.RemainingCapacity, Is.EqualTo(1000));
                 Press(keyboard, update, Key.B); Press(keyboard, update, Key.L);
@@ -51,7 +60,6 @@ namespace Northwatch.Tests.EditMode.Presentation
                 Assert.That(driver.Simulation.Count, Is.EqualTo(2000));
                 Assert.That(driver.Simulation.DrawCount(Side.First), Is.EqualTo(1000));
                 Assert.That(driver.Simulation.DrawCount(Side.Second), Is.EqualTo(1000));
-                var fields = (UnityEngine.UI.Text[])typeof(DebugOverlay).GetField("values", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(overlay);
                 Assert.That(fields[2].text, Is.EqualTo("2000"));
                 Click(mouse, update, Vector2.one * 500);
                 Assert.That(fields[9].text, Does.Contain("Capacity exceeded"));
