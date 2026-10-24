@@ -32,6 +32,9 @@ namespace Northwatch.Presentation
         public int DisplayedFramesPerSecond { get; private set; }
         public bool SpawnMode => spawnMode;
 
+        public bool ContainsScreenPoint(Vector2 position) =>
+            RectTransformUtility.RectangleContainsScreenPoint(panel, position, view);
+
         public void Configure(InputActionAsset input, Canvas surface, RectTransform background, Text[] fields)
         {
             actions = input; canvas = surface; panel = background; values = fields;

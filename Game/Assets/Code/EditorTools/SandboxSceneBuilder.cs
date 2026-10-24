@@ -27,7 +27,8 @@ namespace Northwatch.EditorTools
         public static void Build()
         {
             string[] paths = { ScenePath, DriverPath, CameraPath, "Assets/Materials/FirstSide.mat",
-                "Assets/Materials/SecondSide.mat", "ProjectSettings/EditorBuildSettings.asset", OverlayPath, InputPath };
+                "Assets/Materials/SecondSide.mat", "Assets/Materials/SelectedSide.mat",
+                "ProjectSettings/EditorBuildSettings.asset", OverlayPath, InputPath };
             var before = new byte[paths.Length][];
             for (int i = 0; i < paths.Length; i++)
                 if (File.Exists(paths[i])) before[i] = File.ReadAllBytes(paths[i]);
@@ -62,11 +63,13 @@ namespace Northwatch.EditorTools
             EnsureFolder("Materials");
             Material first = SideMaterial("FirstSide", new Color(0.1f, 0.35f, 0.95f));
             Material second = SideMaterial("SecondSide", new Color(0.95f, 0.2f, 0.1f));
+            Material selected = SideMaterial("SelectedSide", new Color(1f, 0.85f, 0.05f));
             GameObject driver = PrefabRoot(DriverPath, "MatchDriver");
             GameObject primitive = GameObject.CreatePrimitive(PrimitiveType.Cube);
             Mesh cube = primitive.GetComponent<MeshFilter>().sharedMesh;
             UnityEngine.Object.DestroyImmediate(primitive);
             ComponentOrAdd<MatchDriver>(driver).Configure(cube, first, second);
+            driver.GetComponent<MatchDriver>().ConfigureSelection(selected);
             SavePrefab(driver, DriverPath);
 
             BuildCamera();
@@ -80,6 +83,10 @@ namespace Northwatch.EditorTools
             EnsureInstance(scene, "DebugOverlay", OverlayPath);
             Root(scene, "DebugOverlay").GetComponent<DebugOverlay>().Bind(
                 Root(scene, "MatchDriver").GetComponent<MatchDriver>(), Root(scene, "CameraRig").GetComponent<Camera>());
+            Root(scene, "DebugOverlay").GetComponent<SelectionController>().Bind(
+                Root(scene, "MatchDriver").GetComponent<MatchDriver>(), Root(scene, "CameraRig").GetComponent<Camera>(),
+                Root(scene, "CameraRig").GetComponent<CameraController>());
+            PrefabUtility.RecordPrefabInstancePropertyModifications(Root(scene, "DebugOverlay").GetComponent<SelectionController>());
             Canvas overlayCanvas = Root(scene, "DebugOverlay").GetComponent<Canvas>();
             overlayCanvas.worldCamera = Root(scene, "CameraRig").GetComponent<Camera>();
             PrefabUtility.RecordPrefabInstancePropertyModifications(overlayCanvas);
@@ -118,6 +125,7 @@ namespace Northwatch.EditorTools
                 throw new InvalidOperationException("SampleScene could not be removed.");
             AssetDatabase.SaveAssetIfDirty(first);
             AssetDatabase.SaveAssetIfDirty(second);
+            AssetDatabase.SaveAssetIfDirty(selected);
         }
 
         public static void BuildCamera()
@@ -174,6 +182,18 @@ namespace Northwatch.EditorTools
                 SpawnAction(map, "Digit" + i, "<Keyboard>/" + i);
                 SpawnAction(map, "Digit" + i, "<Keyboard>/numpad" + i);
             }
+            InputActionMap selection = asset.FindActionMap("Selection") ?? asset.AddActionMap("Selection");
+            SpawnAction(selection, "Point", "<Mouse>/position", InputActionType.Value);
+            SpawnAction(selection, "Select", "<Mouse>/leftButton");
+            SpawnAction(selection, "Shift", "<Keyboard>/leftShift");
+            SpawnAction(selection, "Shift", "<Keyboard>/rightShift");
+            SpawnAction(selection, "Control", "<Keyboard>/leftCtrl");
+            SpawnAction(selection, "Control", "<Keyboard>/rightCtrl");
+            for (int i = 1; i <= 9; i++)
+            {
+                SpawnAction(selection, "Group" + i, "<Keyboard>/" + i);
+                SpawnAction(selection, "Group" + i, "<Keyboard>/numpad" + i);
+            }
             File.WriteAllText(InputPath, asset.ToJson());
             AssetDatabase.ImportAsset(InputPath);
             return AssetDatabase.LoadAssetAtPath<InputActionAsset>(InputPath);
@@ -212,8 +232,34 @@ namespace Northwatch.EditorTools
                 fields[i] = Label(panel, "Value" + i, i == 9 ? "" : "0000", x[i], y[i], i == 9 ? 676 : 150);
             }
             Label(panel, "Help", "A/B side  |  S/L size  |  Type count 1-2000, Backspace\nClick clear ground to place; typing replaces the last count.", 12, 128, 676, 56);
-            ComponentOrAdd<DebugOverlay>(root).Configure(actions, canvas, rect, fields);
+            DebugOverlay debugOverlay = ComponentOrAdd<DebugOverlay>(root);
+            debugOverlay.Configure(actions, canvas, rect, fields);
+            GameObject selectionBox = Child(root, "SelectionBox");
+            RectTransform selectionRect = (RectTransform)selectionBox.transform;
+            selectionRect.anchorMin = selectionRect.anchorMax = selectionRect.pivot = Vector2.zero;
+            ComponentOrAdd<Image>(selectionBox).color = new Color(1f, 0.85f, 0.05f, 0.18f);
+            if (selectionBox.TryGetComponent(out Outline outline)) UnityEngine.Object.DestroyImmediate(outline);
+            BoxEdge(selectionBox, "Left", new Vector2(0, 0), new Vector2(0, 1), new Vector2(0, 0.5f), new Vector2(1, 0));
+            BoxEdge(selectionBox, "Right", new Vector2(1, 0), new Vector2(1, 1), new Vector2(1, 0.5f), new Vector2(1, 0));
+            BoxEdge(selectionBox, "Bottom", new Vector2(0, 0), new Vector2(1, 0), new Vector2(0.5f, 0), new Vector2(0, 1));
+            BoxEdge(selectionBox, "Top", new Vector2(0, 1), new Vector2(1, 1), new Vector2(0.5f, 1), new Vector2(0, 1));
+            selectionBox.GetComponent<Image>().raycastTarget = false;
+            ComponentOrAdd<SelectionController>(root).Configure(actions, debugOverlay, selectionRect, 0.3f, 5f);
+            selectionBox.SetActive(false);
+            Label(panel, "SelectionHelp", "F1 off: click / drag own A units; Shift adds (click toggles).\nCtrl+1-9 saves; 1-9 recalls; double tap centres camera.", 12, 250, 676, 56);
+            rect.sizeDelta = new Vector2(700, 310);
             SavePrefab(root, OverlayPath);
+        }
+
+        private static void BoxEdge(GameObject box, string name, Vector2 minimum, Vector2 maximum, Vector2 pivot, Vector2 size)
+        {
+            GameObject edge = Child(box, name);
+            var rect = (RectTransform)edge.transform;
+            rect.anchorMin = minimum; rect.anchorMax = maximum; rect.pivot = pivot;
+            rect.anchoredPosition = Vector2.zero; rect.sizeDelta = size;
+            Image image = ComponentOrAdd<Image>(edge);
+            image.color = new Color(1f, 0.85f, 0.05f, 1f);
+            image.raycastTarget = false;
         }
 
         private static GameObject Child(GameObject parent, string name)
@@ -252,6 +298,12 @@ namespace Northwatch.EditorTools
         public static void BuildWindowsDevelopment()
         {
             BuildPlayer("SandboxDevelopment", BuildOptions.Development);
+        }
+
+        public static void BuildSelectionPlayers()
+        {
+            BuildWindowsDevelopment();
+            BuildWindows();
         }
 
         private static void BuildPlayer(string folder, BuildOptions options)

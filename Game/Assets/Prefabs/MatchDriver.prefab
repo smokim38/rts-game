@@ -47,3 +47,4 @@ MonoBehaviour:
   cube: {fileID: 10202, guid: 0000000000000000e000000000000000, type: 0}
   firstSide: {fileID: 2100000, guid: b97c536fc80f8d54ca4205ac42fdb2be, type: 2}
   secondSide: {fileID: 2100000, guid: 7a92111a4b9cde84e88bc9d37b6894a0, type: 2}
+  selectedSide: {fileID: 2100000, guid: 15d9a58732f22ea4990540cef2b70a6b, type: 2}
