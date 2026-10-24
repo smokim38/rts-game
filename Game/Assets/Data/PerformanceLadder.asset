@@ -1,0 +1,32 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: fcca4d7ee1d1e1a45a5460633e7cdfd0, type: 3}
+  m_Name: PerformanceLadder
+  m_EditorClassIdentifier: Northwatch.Presentation::Northwatch.Presentation.Diagnostics.LadderScenario
+  Version: 1
+  Seed: 103
+  PlaneSize: 256
+  FirstSpawn: {x: -80, y: 0, z: 0}
+  SecondSpawn: {x: 80, y: 0, z: 0}
+  FirstSize: 0
+  SecondSize: 1
+  OrderCycleSeconds: 20
+  CameraAngles: {x: 35.26439, y: 45, z: 0}
+  CameraDistance: 400
+  CameraSize: 200
+  LightAngles: {x: 50, y: -30, z: 0}
+  Ambient: {r: 0.5, g: 0.5, b: 0.5, a: 1}
+  LightIntensity: 1
+  WarmupSeconds: 10
+  WindowSeconds: 60
+  FrameCapacity: 1000000
+  DrainSeconds: 2
