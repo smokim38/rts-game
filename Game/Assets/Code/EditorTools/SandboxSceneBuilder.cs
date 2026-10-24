@@ -2,12 +2,15 @@ using System;
 using System.IO;
 using System.Text;
 using Northwatch.Presentation;
+using Northwatch.Simulation;
 using UnityEditor;
 using UnityEditor.Build.Reporting;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.InputSystem;
 using UnityEngine.Rendering;
 using UnityEngine.SceneManagement;
+using UnityEngine.UI;
 
 namespace Northwatch.EditorTools
 {
@@ -16,12 +19,14 @@ namespace Northwatch.EditorTools
         public const string ScenePath = "Assets/Scenes/Sandbox.unity";
         private const string DriverPath = "Assets/Prefabs/MatchDriver.prefab";
         private const string CameraPath = "Assets/Prefabs/CameraRig.prefab";
+        private const string OverlayPath = "Assets/Prefabs/DebugOverlay.prefab";
+        private const string InputPath = "Assets/Settings/InputSystem_Actions.inputactions";
 
         [MenuItem("Northwatch/Build sandbox assets")]
         public static void Build()
         {
             string[] paths = { ScenePath, DriverPath, CameraPath, "Assets/Materials/FirstSide.mat",
-                "Assets/Materials/SecondSide.mat", "ProjectSettings/EditorBuildSettings.asset" };
+                "Assets/Materials/SecondSide.mat", "ProjectSettings/EditorBuildSettings.asset", OverlayPath, InputPath };
             var before = new byte[paths.Length][];
             for (int i = 0; i < paths.Length; i++)
                 if (File.Exists(paths[i])) before[i] = File.ReadAllBytes(paths[i]);
@@ -76,10 +81,18 @@ namespace Northwatch.EditorTools
             camera.backgroundColor = new Color(0.12f, 0.14f, 0.18f);
             SavePrefab(rig, CameraPath);
 
+            BuildOverlay(BuildSpawnActions());
+
             Scene scene = File.Exists(ScenePath) ? EditorSceneManager.OpenScene(ScenePath) :
                 EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
             EnsureInstance(scene, "MatchDriver", DriverPath);
             EnsureInstance(scene, "CameraRig", CameraPath);
+            EnsureInstance(scene, "DebugOverlay", OverlayPath);
+            Root(scene, "DebugOverlay").GetComponent<DebugOverlay>().Bind(
+                Root(scene, "MatchDriver").GetComponent<MatchDriver>(), Root(scene, "CameraRig").GetComponent<Camera>());
+            Canvas overlayCanvas = Root(scene, "DebugOverlay").GetComponent<Canvas>();
+            overlayCanvas.worldCamera = Root(scene, "CameraRig").GetComponent<Camera>();
+            PrefabUtility.RecordPrefabInstancePropertyModifications(overlayCanvas);
             GameObject ground = Root(scene, "Ground");
             if (ground == null)
             {
@@ -88,7 +101,7 @@ namespace Northwatch.EditorTools
                 UnityEngine.Object.DestroyImmediate(ground.GetComponent<Collider>());
             }
             ground.transform.position = new Vector3(0f, -0.05f, 0f);
-            ground.transform.localScale = new Vector3(256f, 0.1f, 256f);
+            ground.transform.localScale = new Vector3(UnitSimulation.MapHalfWidth * 2, 0.1f, UnitSimulation.MapHalfWidth * 2);
             ground.GetComponent<MeshRenderer>().sharedMaterial = GraphicsSettings.defaultRenderPipeline.defaultMaterial;
             GameObject sun = Root(scene, "Sun") ?? new GameObject("Sun");
             Light light = ComponentOrAdd<Light>(sun);
@@ -117,6 +130,85 @@ namespace Northwatch.EditorTools
             AssetDatabase.SaveAssetIfDirty(second);
         }
 
+        private static InputActionAsset BuildSpawnActions()
+        {
+            InputActionAsset asset = AssetDatabase.LoadAssetAtPath<InputActionAsset>(InputPath);
+            InputActionMap map = asset.FindActionMap("Sandbox") ?? asset.AddActionMap("Sandbox");
+            SpawnAction(map, "ToggleSpawn", "<Keyboard>/f1");
+            SpawnAction(map, "SideA", "<Keyboard>/a");
+            SpawnAction(map, "SideB", "<Keyboard>/b");
+            SpawnAction(map, "Small", "<Keyboard>/s");
+            SpawnAction(map, "Large", "<Keyboard>/l");
+            SpawnAction(map, "Place", "<Mouse>/leftButton");
+            SpawnAction(map, "Point", "<Mouse>/position", InputActionType.Value);
+            SpawnAction(map, "Backspace", "<Keyboard>/backspace");
+            for (int i = 0; i < 10; i++)
+            {
+                SpawnAction(map, "Digit" + i, "<Keyboard>/" + i);
+                SpawnAction(map, "Digit" + i, "<Keyboard>/numpad" + i);
+            }
+            File.WriteAllText(InputPath, asset.ToJson());
+            AssetDatabase.ImportAsset(InputPath);
+            return AssetDatabase.LoadAssetAtPath<InputActionAsset>(InputPath);
+        }
+
+        private static void SpawnAction(InputActionMap map, string name, string binding, InputActionType type = InputActionType.Button)
+        {
+            InputAction action = map.FindAction(name) ?? map.AddAction(name, type, expectedControlLayout: type == InputActionType.Value ? "Vector2" : "Button");
+            foreach (InputBinding existing in action.bindings) if (existing.path == binding) return;
+            action.AddBinding(binding, groups: "Keyboard&Mouse");
+        }
+
+        private static void BuildOverlay(InputActionAsset actions)
+        {
+            GameObject root = File.Exists(OverlayPath) ? PrefabUtility.LoadPrefabContents(OverlayPath) :
+                new GameObject("DebugOverlay", typeof(RectTransform));
+            Canvas canvas = ComponentOrAdd<Canvas>(root);
+            canvas.renderMode = RenderMode.ScreenSpaceCamera;
+            canvas.planeDistance = 1f;
+            CanvasScaler scaler = ComponentOrAdd<CanvasScaler>(root);
+            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            scaler.referenceResolution = new Vector2(1920, 1080);
+            GameObject panel = Child(root, "Panel");
+            RectTransform rect = (RectTransform)panel.transform;
+            rect.anchorMin = rect.anchorMax = rect.pivot = new Vector2(0, 1);
+            rect.anchoredPosition = new Vector2(12, -12);
+            rect.sizeDelta = new Vector2(700, 250);
+            ComponentOrAdd<Image>(panel).color = new Color(0.02f, 0.03f, 0.04f, 0.94f);
+            var fields = new Text[11];
+            string[] labels = { "Units A:", "B:", "Total:", "Average fps:", "Frame ms:", "F1 spawn:", "Side:", "Size:", "Count:", "", "Still fit:" };
+            int[] x = { 100, 290, 520, 160, 520, 160, 100, 290, 520, 12, 520 };
+            int[] y = { 8, 8, 8, 38, 38, 68, 98, 98, 98, 218, 188 };
+            for (int i = 0; i < fields.Length; i++)
+            {
+                Label(panel, "Label" + i, labels[i], x[i] - (i == 3 || i == 5 ? 148 : 88), y[i], 148);
+                fields[i] = Label(panel, "Value" + i, i == 9 ? "" : "0000", x[i], y[i], i == 9 ? 676 : 150);
+            }
+            Label(panel, "Help", "A/B side  |  S/L size  |  Type count 1-2000, Backspace\nClick clear ground to place; typing replaces the last count.", 12, 128, 676, 56);
+            ComponentOrAdd<DebugOverlay>(root).Configure(actions, canvas, rect, fields);
+            SavePrefab(root, OverlayPath);
+        }
+
+        private static GameObject Child(GameObject parent, string name)
+        {
+            Transform existing = parent.transform.Find(name);
+            if (existing != null) return existing.gameObject;
+            var child = new GameObject(name, typeof(RectTransform));
+            child.transform.SetParent(parent.transform, false);
+            return child;
+        }
+
+        private static Text Label(GameObject parent, string name, string content, int x, int y, int width, int height = 28)
+        {
+            Text text = ComponentOrAdd<Text>(Child(parent, name));
+            text.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            text.fontSize = 18; text.color = Color.white; text.supportRichText = false;
+            text.raycastTarget = false; text.text = content;
+            RectTransform rect = text.rectTransform;
+            rect.anchorMin = rect.anchorMax = rect.pivot = new Vector2(0, 1);
+            rect.anchoredPosition = new Vector2(x, -y); rect.sizeDelta = new Vector2(width, height);
+            return text;
+        }
         private sealed class SceneSaveFilter : AssetModificationProcessor
         {
             internal static bool Active;

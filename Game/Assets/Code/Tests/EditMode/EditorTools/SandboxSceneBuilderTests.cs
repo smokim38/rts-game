@@ -5,10 +5,13 @@ using System.Text;
 using Northwatch.EditorTools;
 using Northwatch.Presentation;
 using Northwatch.Presentation.Diagnostics;
+using Northwatch.Simulation;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.InputSystem;
+using UnityEngine.UI;
 
 namespace Northwatch.Tests.EditMode.EditorTools
 {
@@ -168,12 +171,22 @@ namespace Northwatch.Tests.EditMode.EditorTools
         {
             var scene = EditorSceneManager.OpenScene(SandboxSceneBuilder.ScenePath);
             GameObject[] roots = scene.GetRootGameObjects();
-            Assert.That(roots.Length, Is.EqualTo(4));
+            Assert.That(roots.Length, Is.EqualTo(5));
             Camera camera = roots.Select(root => root.GetComponent<Camera>()).Single(value => value != null);
             MatchDriver driver = roots.Select(root => root.GetComponent<MatchDriver>()).Single(value => value != null);
             Assert.That(driver.Simulation, Is.Null);
             Assert.That(PrefabUtility.IsPartOfPrefabInstance(driver), Is.True);
             Assert.That(PrefabUtility.IsPartOfPrefabInstance(camera), Is.True);
+            DebugOverlay overlay = roots.Select(root => root.GetComponent<DebugOverlay>()).Single(value => value != null);
+            Assert.That(PrefabUtility.IsPartOfPrefabInstance(overlay), Is.True);
+            var overlayData = new SerializedObject(overlay);
+            Assert.That(overlayData.FindProperty("driver").objectReferenceValue, Is.EqualTo(driver));
+            Assert.That(overlayData.FindProperty("view").objectReferenceValue, Is.EqualTo(camera));
+            Assert.That(overlay.GetComponent<Canvas>().renderMode, Is.EqualTo(RenderMode.ScreenSpaceCamera));
+            Assert.That(overlay.GetComponentsInChildren<Text>().Length, Is.GreaterThan(11));
+            var input = (InputActionAsset)overlayData.FindProperty("actions").objectReferenceValue;
+            Assert.That(input.FindAction("Sandbox/ToggleSpawn", true).bindings[0].path, Is.EqualTo("<Keyboard>/f1"));
+            Assert.That(input.FindAction("Sandbox/Place", true).bindings[0].path, Is.EqualTo("<Mouse>/leftButton"));
             var serialized = new SerializedObject(driver);
             Assert.That(serialized.FindProperty("cube").objectReferenceValue, Is.Not.Null);
             foreach (string property in new[] { "firstSide", "secondSide" })
@@ -184,6 +197,8 @@ namespace Northwatch.Tests.EditMode.EditorTools
             }
             GameObject ground = roots.Single(root => root.name == "Ground");
             Assert.That(ground.transform.localScale, Is.EqualTo(new Vector3(256f, 0.1f, 256f)));
+            Assert.That(ground.transform.localScale.x, Is.EqualTo(UnitSimulation.MapHalfWidth * 2));
+            Assert.That(ground.transform.localScale.z, Is.EqualTo(UnitSimulation.MapHalfWidth * 2));
             Assert.That(roots.SelectMany(root => root.GetComponentsInChildren<Light>()).Count(), Is.EqualTo(1));
             camera.aspect = 16f / 9f;
             foreach (float x in new[] { -128f, 128f })

@@ -1,7 +1,7 @@
 {
   "name": "Northwatch.EditorTools",
   "rootNamespace": "Northwatch.EditorTools",
-  "references": ["Northwatch.Simulation","Northwatch.Presentation"],
+  "references": ["Northwatch.Simulation","Northwatch.Presentation","Unity.InputSystem","Unity.ugui"],
   "includePlatforms": ["Editor"],
   "excludePlatforms": [],
   "allowUnsafeCode": false,

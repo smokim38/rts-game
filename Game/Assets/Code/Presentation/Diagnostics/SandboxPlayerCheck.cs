@@ -9,7 +9,10 @@ namespace Northwatch.Presentation.Diagnostics
         private string output;
         private Camera captureCamera;
         private RenderTexture captureTarget;
-        private UnityEngine.Rendering.RenderPipeline.StandardRequest renderRequest;
+        private UnityEngine.Rendering.Universal.UniversalRenderPipeline.SingleCameraRequest renderRequest;
+        private DebugOverlay overlay;
+        private double measuredSeconds;
+        private int measuredFrames;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void StartCheck()
@@ -26,18 +29,24 @@ namespace Northwatch.Presentation.Diagnostics
             if (check.driver == null || check.driver.Simulation.Count != 0)
                 throw new System.InvalidOperationException("Sandbox must start with an empty match.");
             check.output = output;
+            check.overlay = FindFirstObjectByType<DebugOverlay>();
+            if (System.Array.IndexOf(arguments, "-sandbox-no-overlay") >= 0)
+            {
+                check.overlay.gameObject.SetActive(false);
+                check.output += "-baseline";
+            }
+            QualitySettings.vSyncCount = 0;
+            Application.targetFrameRate = -1;
             check.captureCamera = Camera.main;
             check.captureTarget = new RenderTexture(1920, 1080, 24);
             if (!check.captureTarget.Create()) throw new System.InvalidOperationException("Could not create validation render target.");
             check.captureCamera.aspect = 16f / 9f;
-            check.renderRequest = new UnityEngine.Rendering.RenderPipeline.StandardRequest { destination = check.captureTarget };
-            for (int i = 0; i < count; i++)
-            {
-                var side = i < count / 2 ? Simulation.Side.First : Simulation.Side.Second;
-                var size = i % 2 == 0 ? Simulation.UnitSize.Small : Simulation.UnitSize.Large;
-                if (!check.driver.Simulation.QueueAdd(side, size, new Vector3((i % 50 - 25) * 2, 0, (i / 50 - 20) * 2)))
-                    throw new System.InvalidOperationException("Sandbox check could not queue all units.");
-            }
+            check.renderRequest = new UnityEngine.Rendering.Universal.UniversalRenderPipeline.SingleCameraRequest
+                { destination = check.captureTarget };
+            if (count == 2000 && (!check.driver.Simulation.QueueBlock(Simulation.Side.First, Simulation.UnitSize.Small,
+                    new Vector3(-40, 0, 0), 1000) || !check.driver.Simulation.QueueBlock(Simulation.Side.Second,
+                    Simulation.UnitSize.Large, new Vector3(40, 0, 0), 1000)))
+                throw new System.InvalidOperationException("Sandbox check could not queue two blocks of 1000.");
         }
 
         private static string OutputPrefix(string dataPath, int count)
@@ -50,9 +59,11 @@ namespace Northwatch.Presentation.Diagnostics
 
         private void LateUpdate()
         {
-            // The unattended desktop can have no window back buffer. Render through Unity's SRP request API.
-            if (!UnityEngine.Rendering.SplashScreen.isFinished || Time.realtimeSinceStartupAsDouble < 10.0) return;
+            // The unattended desktop has no back buffer. The single-camera request reuses URP's camera list.
+            if ((!Application.isBatchMode && !UnityEngine.Rendering.SplashScreen.isFinished) ||
+                Time.realtimeSinceStartupAsDouble < 10.0) return;
             frames++;
+            if (frames > 120) { measuredFrames++; measuredSeconds += Time.unscaledDeltaTime; }
             UnityEngine.Rendering.RenderPipeline.SubmitRenderRequest(captureCamera, renderRequest);
             if (frames == 60)
             {
@@ -61,6 +72,8 @@ namespace Northwatch.Presentation.Diagnostics
                 var image = new Texture2D(1920, 1080, TextureFormat.RGB24, false);
                 image.ReadPixels(new Rect(0, 0, 1920, 1080), 0, 0);
                 image.Apply();
+                if (image.GetPixel(960, 540).grayscale < 0.2f)
+                    throw new System.InvalidOperationException("Sandbox validation target was not rendered.");
                 System.IO.File.WriteAllBytes(output + ".png", image.EncodeToPNG());
                 RenderTexture.active = previous;
                 Destroy(image);
@@ -73,7 +86,7 @@ namespace Northwatch.Presentation.Diagnostics
                 UnityEngine.Profiling.Profiler.enabled = true;
 #endif
             }
-            if (frames != 420) return;
+            if (frames < 420 || measuredSeconds < 3.0) return;
 #if DEVELOPMENT_BUILD
             UnityEngine.Profiling.Profiler.enabled = false;
             UnityEngine.Profiling.Profiler.enableBinaryLog = false;
@@ -81,6 +94,13 @@ namespace Northwatch.Presentation.Diagnostics
             int count = driver.Simulation.Count;
             Debug.Log("Sandbox check: scene=" + UnityEngine.SceneManagement.SceneManager.GetActiveScene().name +
                 "; units=" + count + "; ticks=" + driver.Simulation.TickCount + "; rendered frames=" + frames);
+            Debug.Log("Sandbox counter: A=" + driver.Simulation.DrawCount(Simulation.Side.First) +
+                "; B=" + driver.Simulation.DrawCount(Simulation.Side.Second) + "; total=" + count +
+                "; counter_fps=" + overlay.DisplayedFramesPerSecond +
+                "; fps=" + overlay.FramesPerSecond.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) +
+                "; frame_ms=" + overlay.FrameMilliseconds.ToString("F3", System.Globalization.CultureInfo.InvariantCulture) +
+                "; measured_fps=" + (measuredFrames / measuredSeconds).ToString("F2", System.Globalization.CultureInfo.InvariantCulture) +
+                "; gpu=" + SystemInfo.graphicsDeviceName + "; cpu=" + SystemInfo.processorType);
             Application.Quit(count == unitCount ? 0 : 1);
         }
 
