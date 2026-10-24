@@ -40,6 +40,13 @@ namespace Northwatch.Tests.EditMode.EditorTools
             AssertPreservesAssetBytesOnRepeatRun(lineEnding, existingSettings, SandboxSceneBuilder.Build);
         }
 
+        [TestCase("\n")]
+        [TestCase("\r\n")]
+        public void CameraBuilderPreservesAssetBytesOnRepeatRun(string lineEnding)
+        {
+            AssertPreservesAssetBytesOnRepeatRun(lineEnding, false, SandboxSceneBuilder.BuildCamera);
+        }
+
         [Test]
         public void BuilderDoesNotSavePendingChangesToUnrelatedAsset()
         {
