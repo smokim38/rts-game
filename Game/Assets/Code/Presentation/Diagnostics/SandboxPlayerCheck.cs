@@ -60,7 +60,8 @@ namespace Northwatch.Presentation.Diagnostics
         private void LateUpdate()
         {
             // The unattended desktop has no back buffer. The single-camera request reuses URP's camera list.
-            if (!UnityEngine.Rendering.SplashScreen.isFinished || Time.realtimeSinceStartupAsDouble < 10.0) return;
+            if ((!Application.isBatchMode && !UnityEngine.Rendering.SplashScreen.isFinished) ||
+                Time.realtimeSinceStartupAsDouble < 10.0) return;
             frames++;
             if (frames > 120) { measuredFrames++; measuredSeconds += Time.unscaledDeltaTime; }
             UnityEngine.Rendering.RenderPipeline.SubmitRenderRequest(captureCamera, renderRequest);
