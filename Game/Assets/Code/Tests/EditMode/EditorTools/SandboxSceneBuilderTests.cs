@@ -34,6 +34,81 @@ namespace Northwatch.Tests.EditMode.EditorTools
         [TestCase("\n", true, TestName = "BuilderPreservesExistingSceneTemplateSettings")]
         public void BuilderPreservesAssetBytesOnRepeatRun(string lineEnding, bool existingSettings)
         {
+            AssertPreservesAssetBytesOnRepeatRun(lineEnding, existingSettings, SandboxSceneBuilder.Build);
+        }
+
+        [Test]
+        public void BuilderDoesNotSavePendingChangesToUnrelatedAsset()
+        {
+            WithUnrelatedMaterial((material, path) =>
+            {
+                byte[] before = File.ReadAllBytes(path);
+                material.name = "PendingImportChange";
+                EditorUtility.SetDirty(material);
+                SandboxSceneBuilder.Build();
+                Assert.That(File.ReadAllBytes(path), Is.EqualTo(before), path);
+                Assert.That(EditorUtility.IsDirty(material), Is.True, "The pending change must remain unsaved.");
+                AssetDatabase.SaveAssets();
+                Assert.That(Encoding.UTF8.GetString(File.ReadAllBytes(path)), Does.Contain("m_Name: PendingImportChange"),
+                    "Normal saves must resume after the builder finishes.");
+            });
+        }
+
+        [Test]
+        public void RepeatRunBaselineIncludesPendingImportChanges()
+        {
+            WithUnrelatedMaterial((material, path) =>
+            {
+                // Model an importer that dirties an asset before its deferred save reaches disk.
+                material.name = "PendingImportChange";
+                EditorUtility.SetDirty(material);
+                AssertPreservesAssetBytesOnRepeatRun("\n", false, () =>
+                {
+                    Assert.That(Encoding.UTF8.GetString(File.ReadAllBytes(path)), Does.Contain("m_Name: PendingImportChange"),
+                        "Import changes must be saved before the builder and its byte snapshot.");
+                    SandboxSceneBuilder.Build();
+                });
+            });
+        }
+
+        [Test]
+        public void RepeatRunCheckRejectsUnsavedBuilderChangesToUnrelatedAsset()
+        {
+            WithUnrelatedMaterial((material, path) =>
+            {
+                var error = Assert.Throws<AssertionException>(() =>
+                    AssertPreservesAssetBytesOnRepeatRun("\n", false, () =>
+                    {
+                        SandboxSceneBuilder.Build();
+                        material.name = "PendingBuilderChange";
+                        EditorUtility.SetDirty(material);
+                    }));
+                Assert.That(error.Message, Does.Contain(path));
+            });
+        }
+
+        [TestCase("Assets")]
+        [TestCase("ProjectSettings/SceneTemplateSettings.json")]
+        public void RepeatRunCheckRejectsBuilderWritesToUnrelatedFiles(string path)
+        {
+            WithUnrelatedMaterial((material, assetPath) =>
+            {
+                string changedPath = path == "Assets" ? assetPath : path;
+                var error = Assert.Throws<AssertionException>(() =>
+                    AssertPreservesAssetBytesOnRepeatRun("\n", true, () =>
+                    {
+                        SandboxSceneBuilder.Build();
+                        File.AppendAllText(changedPath, "\n");
+                    }));
+                Assert.That(error.Message, Does.Contain(changedPath));
+            });
+        }
+
+        private static void AssertPreservesAssetBytesOnRepeatRun(string lineEnding, bool existingSettings, TestDelegate build)
+        {
+            // First-import upgrades can leave unrelated assets dirty. Flush Unity's work before
+            // taking either snapshot so every subsequent change is still attributed to the builder.
+            AssetDatabase.SaveAssets();
             string[] paths = AssetAndSettingsPaths();
             byte[][] before = paths.Select(File.ReadAllBytes).ToArray();
             const string templateSettings = "ProjectSettings/SceneTemplateSettings.json";
@@ -51,7 +126,9 @@ namespace Northwatch.Tests.EditMode.EditorTools
                 byte[][] expected = expectedPaths.Select(File.ReadAllBytes).ToArray();
                 for (int run = 0; run < 2; run++)
                 {
-                    SandboxSceneBuilder.Build();
+                    build();
+                    // Include changes left dirty by this build before another baseline can absorb them.
+                    AssetDatabase.SaveAssets();
                     Assert.That(AssetAndSettingsPaths(), Is.EqualTo(expectedPaths), "The builder must not add assets or settings.");
                     for (int i = 0; i < expectedPaths.Length; i++)
                         Assert.That(File.ReadAllBytes(expectedPaths[i]), Is.EqualTo(expected[i]), expectedPaths[i]);
@@ -66,8 +143,24 @@ namespace Northwatch.Tests.EditMode.EditorTools
             }
         }
 
+        private static void WithUnrelatedMaterial(System.Action<Material, string> check)
+        {
+            string path = AssetDatabase.GenerateUniqueAssetPath("Assets/Code/Tests/EditMode/EditorTools/UnrelatedBuilderTest.mat");
+            var material = new Material(Shader.Find("Unlit/Color"));
+            try
+            {
+                AssetDatabase.CreateAsset(material, path);
+                AssetDatabase.SaveAssetIfDirty(material);
+                check(material, path);
+            }
+            finally
+            {
+                AssetDatabase.DeleteAsset(path);
+            }
+        }
+
         private static string[] AssetAndSettingsPaths() => Directory.GetFiles("Assets", "*", SearchOption.AllDirectories)
-            .Concat(Directory.GetFiles("ProjectSettings")).Select(path => path.Replace('\\', '/'))
+            .Concat(Directory.GetFiles("ProjectSettings", "*", SearchOption.AllDirectories)).Select(path => path.Replace('\\', '/'))
             .OrderBy(path => path).ToArray();
 
         [Test]

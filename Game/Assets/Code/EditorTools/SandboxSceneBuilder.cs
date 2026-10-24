@@ -99,12 +99,30 @@ namespace Northwatch.EditorTools
             RenderSettings.sun = light;
             RenderSettings.ambientMode = AmbientMode.Flat;
             RenderSettings.ambientLight = new Color(0.5f, 0.5f, 0.5f);
-            if (!EditorSceneManager.SaveScene(scene, ScenePath)) throw new InvalidOperationException("Sandbox scene could not be saved.");
+            // Saving a scene also flushes unrelated dirty assets, including pending import upgrades.
+            // Limit that implicit save; the two owned materials are saved explicitly below.
+            SceneSaveFilter.Active = true;
+            try
+            {
+                if (!EditorSceneManager.SaveScene(scene, ScenePath)) throw new InvalidOperationException("Sandbox scene could not be saved.");
+            }
+            finally
+            {
+                SceneSaveFilter.Active = false;
+            }
             EditorBuildSettings.scenes = new[] { new EditorBuildSettingsScene(ScenePath, true) };
             if (File.Exists("Assets/Scenes/SampleScene.unity") && !AssetDatabase.DeleteAsset("Assets/Scenes/SampleScene.unity"))
                 throw new InvalidOperationException("SampleScene could not be removed.");
             AssetDatabase.SaveAssetIfDirty(first);
             AssetDatabase.SaveAssetIfDirty(second);
+        }
+
+        private sealed class SceneSaveFilter : AssetModificationProcessor
+        {
+            internal static bool Active;
+
+            private static string[] OnWillSaveAssets(string[] paths) =>
+                Active ? Array.FindAll(paths, path => path == ScenePath) : paths;
         }
 
         public static void BuildWindows()
