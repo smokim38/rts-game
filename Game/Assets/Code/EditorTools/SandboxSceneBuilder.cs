@@ -150,7 +150,8 @@ namespace Northwatch.EditorTools
             camera.farClipPlane = 1000f;
             camera.clearFlags = CameraClearFlags.SolidColor;
             camera.backgroundColor = new Color(0.12f, 0.14f, 0.18f);
-            ComponentOrAdd<CameraController>(rig).Configure(camera, actions, 0.5f, 16f, 20f, 200f, 0.0015f);
+            // Input System normalizes scroll to one unit per wheel notch.
+            ComponentOrAdd<CameraController>(rig).Configure(camera, actions, 0.5f, 16f, 20f, 200f, 0.18f);
             SavePrefab(rig, CameraPath);
             if (before != null && Encoding.UTF8.GetString(before).Replace("\r\n", "\n") ==
                 File.ReadAllText(CameraPath).Replace("\r\n", "\n")) File.WriteAllBytes(CameraPath, before);

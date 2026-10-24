@@ -35,12 +35,20 @@ namespace Northwatch.Tests.EditMode.Presentation.Cameras
         [Test]
         public void ZoomClampsBothLimitsAndReversesWithoutSticking()
         {
-            Assert.That(CameraMotion.Zoom(100, 10000, 0.0015f, 20, 200), Is.EqualTo(20));
-            Assert.That(CameraMotion.Zoom(100, -10000, 0.0015f, 20, 200), Is.EqualTo(200));
-            Assert.That(CameraMotion.Zoom(20, -120, 0.0015f, 20, 200), Is.GreaterThan(20));
-            Assert.That(CameraMotion.Zoom(200, 120, 0.0015f, 20, 200), Is.LessThan(200));
-            float split = CameraMotion.Zoom(CameraMotion.Zoom(100, 60, 0.0015f, 20, 200), 60, 0.0015f, 20, 200);
-            Assert.That(split, Is.EqualTo(CameraMotion.Zoom(100, 120, 0.0015f, 20, 200)).Within(0.00001f));
+            const float sensitivity = 0.18f;
+            float zoom = 200f;
+            for (int notch = 0; notch < 13; notch++)
+                zoom = CameraMotion.Zoom(zoom, 1f, sensitivity, 20, 200);
+            Assert.That(zoom, Is.EqualTo(20));
+            Assert.That(CameraMotion.Zoom(zoom, 1f, sensitivity, 20, 200), Is.EqualTo(20));
+            Assert.That(CameraMotion.Zoom(zoom, -1f, sensitivity, 20, 200), Is.InRange(23f, 25f));
+            for (int notch = 0; notch < 13; notch++)
+                zoom = CameraMotion.Zoom(zoom, -1f, sensitivity, 20, 200);
+            Assert.That(zoom, Is.EqualTo(200));
+            Assert.That(CameraMotion.Zoom(zoom, -1f, sensitivity, 20, 200), Is.EqualTo(200));
+            Assert.That(CameraMotion.Zoom(zoom, 1f, sensitivity, 20, 200), Is.InRange(165f, 170f));
+            float split = CameraMotion.Zoom(CameraMotion.Zoom(100, 0.5f, sensitivity, 20, 200), 0.5f, sensitivity, 20, 200);
+            Assert.That(split, Is.EqualTo(CameraMotion.Zoom(100, 1f, sensitivity, 20, 200)).Within(0.00001f));
         }
 
         [TestCase(-500, 0, -128, 0)]

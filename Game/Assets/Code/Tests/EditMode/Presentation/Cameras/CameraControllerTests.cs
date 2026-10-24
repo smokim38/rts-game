@@ -23,6 +23,7 @@ namespace Northwatch.Tests.EditMode.Presentation.Cameras
             try
             {
                 Assert.That(controller, Is.Not.Null);
+                // EditMode does not run the MonoBehaviour lifecycle, so pair these callbacks explicitly.
                 typeof(CameraController).GetMethod("OnEnable", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(controller, null);
                 Quaternion rotation = rig.transform.rotation;
                 Rect viewport = view.pixelRect;
@@ -61,30 +62,42 @@ namespace Northwatch.Tests.EditMode.Presentation.Cameras
                 Assert.That(originDelta.x, Is.LessThan(0f));
                 Assert.That(originDelta.y, Is.LessThan(0f));
                 InputSystem.QueueStateEvent(keyboard, new KeyboardState(Key.RightArrow));
-                InputSystem.QueueStateEvent(mouse, new MouseState { position = edges[0], scroll = new Vector2(0, 10000) });
+                InputSystem.QueueStateEvent(mouse, new MouseState { position = edges[0], scroll = new Vector2(0, 1) });
                 InputSystem.Update();
                 Vector3 unfocused = rig.transform.position;
                 controller.Advance(1f, false);
                 Assert.That(rig.transform.position, Is.EqualTo(unfocused));
                 Assert.That(view.orthographicSize, Is.EqualTo(200f));
                 controller.Advance(1f, true);
+                Assert.That(view.orthographicSize, Is.InRange(165f, 170f), "One normalized notch must visibly zoom in.");
+                for (int notch = 1; notch < 13; notch++) Scroll(controller, mouse, middle, 1f);
                 Assert.That(view.orthographicSize, Is.EqualTo(20f));
-                InputSystem.QueueStateEvent(mouse, new MouseState { position = middle, scroll = new Vector2(0, -10000) });
-                InputSystem.Update();
-                controller.Advance(100f, true);
+                Scroll(controller, mouse, middle, 1f);
+                Assert.That(view.orthographicSize, Is.EqualTo(20f));
+                Scroll(controller, mouse, middle, -1f);
+                Assert.That(view.orthographicSize, Is.InRange(23f, 25f), "Reversing one notch must leave the nearest limit.");
+                for (int notch = 1; notch < 13; notch++) Scroll(controller, mouse, middle, -1f);
+                Assert.That(view.orthographicSize, Is.EqualTo(200f));
+                Scroll(controller, mouse, middle, -1f);
                 Assert.That(view.orthographicSize, Is.EqualTo(200f));
                 Vector2[] corners = { new Vector2(128, -128), new Vector2(-128, 128), new Vector2(128, 128), new Vector2(-128, -128) };
-                foreach (float scroll in new[] { 10000f, -10000f })
+                foreach (float scroll in new[] { 1f, -1f })
+                {
+                    for (int notch = 0; notch < 13; notch++) Scroll(controller, mouse, middle, scroll);
+                    float limit = scroll > 0 ? 20f : 200f;
+                    Assert.That(view.orthographicSize, Is.EqualTo(limit));
                     for (int i = 0; i < keys.Length; i++)
                     {
                         InputSystem.QueueStateEvent(keyboard, new KeyboardState(keys[i]));
-                        InputSystem.QueueStateEvent(mouse, new MouseState { position = middle, scroll = new Vector2(0, scroll) });
+                        InputSystem.QueueStateEvent(mouse, new MouseState { position = middle });
                         InputSystem.Update();
                         controller.Advance(100f, true);
+                        Assert.That(view.orthographicSize, Is.EqualTo(limit));
                         Vector3 centre = GroundCentre(view);
                         Assert.That(centre.x, Is.EqualTo(corners[i].x).Within(0.001f));
                         Assert.That(centre.z, Is.EqualTo(corners[i].y).Within(0.001f));
                     }
+                }
                 InputSystem.QueueStateEvent(keyboard, new KeyboardState(Key.UpArrow));
                 InputSystem.QueueStateEvent(mouse, new MouseState { position = middle });
                 InputSystem.Update();
@@ -102,6 +115,13 @@ namespace Northwatch.Tests.EditMode.Presentation.Cameras
                     typeof(CameraController).GetMethod("OnDisable", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(controller, null);
                 Object.DestroyImmediate(rig);
             }
+        }
+
+        private static void Scroll(CameraController controller, Mouse mouse, Vector2 position, float notches)
+        {
+            InputSystem.QueueStateEvent(mouse, new MouseState { position = position, scroll = new Vector2(0, notches) });
+            InputSystem.Update();
+            controller.Advance(0f, true);
         }
 
         private static Vector3 GroundCentre(Camera view)

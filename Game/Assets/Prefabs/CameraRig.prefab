@@ -102,4 +102,4 @@ MonoBehaviour:
   edgeDistance: 16
   nearestZoom: 20
   farthestZoom: 200
-  zoomSensitivity: 0.0015
+  zoomSensitivity: 0.18
