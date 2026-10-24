@@ -10,6 +10,7 @@ GameObject:
   m_Component:
   - component: {fileID: 9152369682114951114}
   - component: {fileID: 1207813505223292409}
+  - component: {fileID: 459218700502912894}
   m_Layer: 0
   m_Name: CameraRig
   m_TagString: MainCamera
@@ -83,3 +84,22 @@ Camera:
   m_OcclusionCulling: 1
   m_StereoConvergence: 10
   m_StereoSeparation: 0.022
+--- !u!114 &459218700502912894
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 3608835930302411304}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a653f1645b3d7414a886365831dd4f8f, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Northwatch.Presentation::Northwatch.Presentation.Cameras.CameraController
+  view: {fileID: 1207813505223292409}
+  actions: {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}
+  panSpeed: 0.5
+  edgeDistance: 16
+  nearestZoom: 20
+  farthestZoom: 200
+  zoomSensitivity: 0.18

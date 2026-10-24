@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Text;
 using Northwatch.Presentation;
+using Northwatch.Presentation.Cameras;
 using Northwatch.Simulation;
 using UnityEditor;
 using UnityEditor.Build.Reporting;
@@ -68,18 +69,7 @@ namespace Northwatch.EditorTools
             ComponentOrAdd<MatchDriver>(driver).Configure(cube, first, second);
             SavePrefab(driver, DriverPath);
 
-            GameObject rig = PrefabRoot(CameraPath, "CameraRig");
-            Camera camera = ComponentOrAdd<Camera>(rig);
-            rig.tag = "MainCamera";
-            rig.transform.rotation = Quaternion.Euler(35.26439f, 45f, 0f);
-            rig.transform.position = -rig.transform.forward * 400f;
-            camera.orthographic = true;
-            camera.orthographicSize = 200f;
-            camera.nearClipPlane = 0.3f;
-            camera.farClipPlane = 1000f;
-            camera.clearFlags = CameraClearFlags.SolidColor;
-            camera.backgroundColor = new Color(0.12f, 0.14f, 0.18f);
-            SavePrefab(rig, CameraPath);
+            BuildCamera();
 
             BuildOverlay(BuildSpawnActions());
 
@@ -128,6 +118,43 @@ namespace Northwatch.EditorTools
                 throw new InvalidOperationException("SampleScene could not be removed.");
             AssetDatabase.SaveAssetIfDirty(first);
             AssetDatabase.SaveAssetIfDirty(second);
+        }
+
+        public static void BuildCamera()
+        {
+            byte[] before = File.Exists(CameraPath) ? File.ReadAllBytes(CameraPath) : null;
+            InputActionAsset actions = AssetDatabase.LoadAssetAtPath<InputActionAsset>(InputPath);
+            InputActionMap map = actions.FindActionMap("GameplayCamera") ?? actions.AddActionMap("GameplayCamera");
+            if (map.FindAction("Pan") == null)
+                map.AddAction("Pan", InputActionType.Value, expectedControlLayout: "Vector2")
+                    .AddCompositeBinding("2DVector")
+                    .With("Up", "<Keyboard>/upArrow", "Keyboard&Mouse").With("Down", "<Keyboard>/downArrow", "Keyboard&Mouse")
+                    .With("Left", "<Keyboard>/leftArrow", "Keyboard&Mouse").With("Right", "<Keyboard>/rightArrow", "Keyboard&Mouse");
+            SpawnAction(map, "Point", "<Mouse>/position", InputActionType.Value);
+            InputAction zoom = map.FindAction("Zoom") ?? map.AddAction("Zoom", InputActionType.Value, expectedControlLayout: "Axis");
+            bool hasScroll = false;
+            foreach (InputBinding binding in zoom.bindings) hasScroll |= binding.path == "<Mouse>/scroll/y";
+            if (!hasScroll) zoom.AddBinding("<Mouse>/scroll/y", groups: "Keyboard&Mouse");
+            File.WriteAllText(InputPath, actions.ToJson());
+            AssetDatabase.ImportAsset(InputPath);
+            actions = AssetDatabase.LoadAssetAtPath<InputActionAsset>(InputPath);
+
+            GameObject rig = PrefabRoot(CameraPath, "CameraRig");
+            Camera camera = ComponentOrAdd<Camera>(rig);
+            rig.tag = "MainCamera";
+            rig.transform.rotation = Quaternion.Euler(35.26439f, 45f, 0f);
+            rig.transform.position = -rig.transform.forward * 400f;
+            camera.orthographic = true;
+            camera.orthographicSize = 200f;
+            camera.nearClipPlane = 0.3f;
+            camera.farClipPlane = 1000f;
+            camera.clearFlags = CameraClearFlags.SolidColor;
+            camera.backgroundColor = new Color(0.12f, 0.14f, 0.18f);
+            // Input System normalizes scroll to one unit per wheel notch.
+            ComponentOrAdd<CameraController>(rig).Configure(camera, actions, 0.5f, 16f, 20f, 200f, 0.18f);
+            SavePrefab(rig, CameraPath);
+            if (before != null && Encoding.UTF8.GetString(before).Replace("\r\n", "\n") ==
+                File.ReadAllText(CameraPath).Replace("\r\n", "\n")) File.WriteAllBytes(CameraPath, before);
         }
 
         private static InputActionAsset BuildSpawnActions()
