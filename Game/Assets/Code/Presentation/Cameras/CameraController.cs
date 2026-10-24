@@ -48,6 +48,12 @@ namespace Northwatch.Presentation.Cameras
 
         private void Update() => Advance(Time.unscaledDeltaTime, Application.isFocused);
 
+        public void CentreOn(Vector3 position)
+        {
+            centre = CameraMotion.ClampCentre(position, UnitSimulation.MapHalfWidth);
+            rig.position = centre + offset;
+        }
+
         public void Advance(float seconds, bool focused)
         {
             using (Marker.Auto())

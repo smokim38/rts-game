@@ -13,25 +13,27 @@ namespace Northwatch.Simulation
         [ReadOnly] internal NativeArray<Side> Sides;
         [ReadOnly] internal NativeArray<UnitSize> Sizes;
         [ReadOnly] internal NativeArray<byte> Alive;
+        [ReadOnly] internal NativeArray<uint> Selected;
         internal NativeArray<int> Summary;
         [WriteOnly] internal NativeArray<Matrix4x4> Matrices;
 
         public void Execute()
         {
-            int first = 0, second = 0;
+            int first = 0, second = 0, selected = 0;
             for (int slot = 0; slot < Alive.Length; slot++)
             {
                 if (Alive[slot] == 0) continue;
                 float width = Sizes[slot] == UnitSize.Small ? 0.5f : 1f;
                 float3 position = Positions[slot];
-                int index = Sides[slot] == Side.First ? first++ : Alive.Length + second++;
+                int index = Selected[slot] != 0 ? Alive.Length * 2 + selected++ :
+                    Sides[slot] == Side.First ? first++ : Alive.Length + second++;
                 Matrices[index] = new Matrix4x4
                 {
                     m00 = width, m11 = width, m22 = width, m33 = 1f,
                     m03 = position.x, m13 = position.y + width * 0.5f, m23 = position.z
                 };
             }
-            Summary[3] = first;
+            Summary[3] = first + selected;
             Summary[4] = second;
         }
     }
