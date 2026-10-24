@@ -21,6 +21,9 @@ function summarizeRun(meta, rows, units) {
   if (meta.focusLost) reasons.push('focus lost');
   if (meta.paused) reasons.push('paused');
   if (meta.bufferInvalid) reasons.push('invalid or overflowing frame buffer');
+  if (meta.unmatchedSamples !== 0) reasons.push('unmatched frame timing samples');
+  if (meta.matchedSamples !== rows.reduce((count, row) => count + row.samples, 0))
+    reasons.push('frame timing sample count mismatch');
   if (!meta.activeUnitsValid) reasons.push('active faction unit counts changed');
   if (meta.development) reasons.push('development Player');
   if (meta.width !== 1920 || meta.height !== 1080 || !meta.borderless || meta.vsync !== 0 || meta.targetFrameRate !== -1)
@@ -93,6 +96,9 @@ function parseCsv(text) {
     const [callback, timestamp, samples, frameMs, mainMs, gpuMs] = line.split(',');
     return { callback, timestamp, samples: Number(samples), frameMs: Number(frameMs), mainMs: Number(mainMs), gpuMs: Number(gpuMs) };
   });
+}
+function hasPlayerLogFailure(log) {
+  return /\b\w*Exception\b|\b(?:error CS\d+|warning CS\d+)\b/.test(log);
 }
 function git(root, ...args) { return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim(); }
 function newestBaseline(entries, hardware, version) {
@@ -190,7 +196,7 @@ async function main(args) {
     if (firstMeta.fingerprint !== fingerprint) return { valid: false, reasons: ['hardware, build or scenario changed'] };
     const result = summarizeRun(meta, parseCsv(fs.readFileSync(output + '.csv', 'utf8')), units);
     const log = fs.readFileSync(output + '.log', 'utf8');
-    if (/\b(?:Exception|error CS\d+|warning CS\d+)\b/.test(log)) return { valid: false, reasons: ['Player logged an error or project warning'] };
+    if (hasPlayerLogFailure(log)) return { valid: false, reasons: ['Player logged an error or project warning'] };
     return result;
   };
   for (const units of STEPS) {
@@ -216,5 +222,5 @@ async function main(args) {
   if (steps.some(step => step.result === 'invalid' || step.regressed || step.previouslyPassing)) process.exitCode = 1;
 }
 
-module.exports = { STEPS, median, nearestRank, summarizeRun, summarizeStep, collectStep, regressed, ladderHeight, newestBaseline, parseCsv, renderEntry, safeText };
+module.exports = { STEPS, median, nearestRank, summarizeRun, summarizeStep, collectStep, regressed, ladderHeight, newestBaseline, parseCsv, renderEntry, safeText, hasPlayerLogFailure };
 if (require.main === module) main(process.argv.slice(2)).catch(error => { process.stderr.write(error.message + '\n'); process.exitCode = 1; });

@@ -10,8 +10,10 @@ namespace Northwatch.Presentation.Diagnostics
         private readonly FrameTiming[] samples;
         private readonly byte[] counts;
         private long previous;
+        private bool ended;
         public int Count { get; private set; }
         public bool Invalid { get; private set; }
+        public int Matched { get; private set; }
         public int Unmatched { get; private set; }
 
         public LadderFrameBuffer(int capacity, long previousCallback)
@@ -24,6 +26,8 @@ namespace Northwatch.Presentation.Diagnostics
 
         public void Begin(long previousCallback) => previous = previousCallback;
 
+        public void End() => ended = true;
+
         public void Rendered(long callback)
         {
             if (Count == ends.Length || callback <= (Count == 0 ? previous : ends[Count - 1]))
@@ -35,7 +39,13 @@ namespace Northwatch.Presentation.Diagnostics
         {
             ulong timestamp = sample.frameStartTimestamp;
             if (Count == 0 || timestamp <= (ulong)previous) return;
-            if (timestamp > (ulong)ends[Count - 1]) { Unmatched++; return; }
+            // After the window closes, polling also delivers newer frames that are
+            // outside the measurement. Only delayed samples inside the window count.
+            if (timestamp > (ulong)ends[Count - 1])
+            {
+                if (!ended) Unmatched++;
+                return;
+            }
             int low = 0, high = Count - 1;
             while (low < high)
             {
@@ -44,6 +54,7 @@ namespace Northwatch.Presentation.Diagnostics
                 else high = middle;
             }
             if (counts[low] < byte.MaxValue) counts[low]++;
+            Matched++;
             samples[low] = sample;
             if (counts[low] != 1 || !(sample.cpuFrameTime > 0) || double.IsInfinity(sample.cpuFrameTime)) Invalid = true;
         }

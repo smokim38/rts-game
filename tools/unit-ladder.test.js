@@ -5,7 +5,7 @@ const L = require('./unit-ladder.js');
 
 const meta = { featureEnabled: true, focusLost: false, paused: false, bufferInvalid: false, development: false, activeUnitsValid: true,
   width: 1920, height: 1080, borderless: true, vsync: 0, targetFrameRate: -1, units: 10,
-  warmupSeconds: 10, seconds: 60, renderedFrames: 3, recordedFrames: 3 };
+  warmupSeconds: 10, seconds: 60, renderedFrames: 3, recordedFrames: 3, matchedSamples: 3, unmatchedSamples: 0 };
 const rows = [1, 2, 3].map((frameMs, i) => ({ callback: String(200 + i * 100), timestamp: String(150 + i * 100), samples: 1, frameMs, mainMs: 0.5, gpuMs: 0.7 }));
 const run = (frameMs = 10, lowMs = 12) => ({ valid: true, frameMs, lowMs, maxMs: 15, mainMs: 5, gpuMs: 3, fps: 1000 / frameMs });
 
@@ -51,6 +51,29 @@ test('pass rule uses both medians and includes exactly 16.67 ms', () => {
   assert.equal(L.summarizeStep(10, [run(16.671), run(16.671), run()]).result, 'fail');
   assert.equal(L.summarizeStep(10, [run(1, 16.671), run(1, 16.671), run()]).result, 'fail');
   assert.equal(L.summarizeStep(10, [run(), run()]).result, 'invalid');
+});
+test('unmatched native samples invalidate an otherwise complete run and are replaced', async () => {
+  const invalid = L.summarizeRun({ ...meta, unmatchedSamples: 1 }, rows, 10);
+  assert.equal(invalid.valid, false);
+  assert.deepEqual(invalid.reasons, ['unmatched frame timing samples']);
+  for (const change of [{ matchedSamples: 2 }, { matchedSamples: undefined }, { unmatchedSamples: undefined }])
+    assert.equal(L.summarizeRun({ ...meta, ...change }, rows, 10).valid, false);
+  const shifted = L.summarizeRun({ ...meta, matchedSamples: 0, unmatchedSamples: 3 },
+    rows.map(row => ({ ...row, timestamp: '0', samples: 0, frameMs: 0 })), 10);
+  assert.equal(shifted.valid, false);
+  assert.ok(shifted.reasons.includes('unmatched frame timing samples'));
+  const result = await L.collectStep(10, async (_, attempt) => attempt === 1 ? invalid : L.summarizeRun(meta, rows, 10));
+  assert.equal(result.attempts.length, 4);
+  assert.equal(result.result, 'pass');
+});
+test('Player log detection catches named Unity exceptions and project compiler diagnostics', () => {
+  for (const log of ['NullReferenceException: Object reference not set to an instance of an object',
+    'ArgumentException: Invalid argument', 'System.InvalidOperationException: Invalid setup',
+    'Exception: failed', 'Assets/Code/Test.cs(1,1): error CS1002: ; expected',
+    'Assets/Code/Test.cs(1,1): warning CS0168: Unused variable'])
+    assert.equal(L.hasPlayerLogFailure(log), true, log);
+  for (const log of ['Initialize engine version: 6000.3.23f1', '', 'Exceptionally fast frame'])
+    assert.equal(L.hasPlayerLogFailure(log), false, log);
 });
 test('regression needs strictly more than both 10% and 0.5 ms', () => {
   assert.equal(L.regressed(11, 10), false);

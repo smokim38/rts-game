@@ -1,7 +1,7 @@
 using System;
-using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using Northwatch.Simulation;
 using UnityEngine;
 using Debug = UnityEngine.Debug;
@@ -23,9 +23,31 @@ namespace Northwatch.Presentation.Diagnostics
         private bool measuring, draining, finished, focusLost, paused, featureEnabled, profile;
         private bool activeUnitsValid = true;
 
+        [DllImport("kernel32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool QueryPerformanceCounter(out long timestamp);
+
+        [DllImport("kernel32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool QueryPerformanceFrequency(out long frequency);
+
         public void Configure(LadderScenario settings, MatchDriver match) { scenario = settings; driver = match; }
 
         private void Start()
+        {
+            try { Initialize(); }
+            catch (Exception error) { Fail(error.Message); }
+        }
+
+        private void Fail(string reason)
+        {
+            finished = true;
+            enabled = false;
+            Debug.LogError("Performance ladder failed: " + reason);
+            Application.Quit(1);
+        }
+
+        private void Initialize()
         {
             string[] arguments = Environment.GetCommandLineArgs();
             int countIndex = Array.IndexOf(arguments, "-ladder-units");
@@ -47,21 +69,28 @@ namespace Northwatch.Presentation.Diagnostics
             Application.targetFrameRate = -1;
             Application.runInBackground = true;
             Screen.SetResolution(1920, 1080, FullScreenMode.FullScreenWindow);
+            // Unity's native frame timestamps use QPC. Mono's Stopwatch can have a
+            // different origin even when its frequency is the same.
+            if (!QueryPerformanceFrequency(out long frequency) || !QueryPerformanceCounter(out previousCallback))
+                throw new InvalidOperationException("Windows performance counter is unavailable.");
             featureEnabled = FrameTimingManager.IsFeatureEnabled() &&
-                FrameTimingManager.GetCpuTimerFrequency() == (ulong)Stopwatch.Frequency;
+                FrameTimingManager.GetCpuTimerFrequency() == (ulong)frequency;
             buffer = new LadderFrameBuffer(scenario.FrameCapacity, 0);
             if (!driver.Simulation.QueueBlock(Side.First, scenario.FirstSize, scenario.FirstSpawn, unitCount / 2) ||
                 !driver.Simulation.QueueBlock(Side.Second, scenario.SecondSize, scenario.SecondSpawn, unitCount / 2))
                 throw new InvalidOperationException("Ladder blocks could not be queued.");
             started = Time.realtimeSinceStartupAsDouble;
-            previousCallback = Stopwatch.GetTimestamp();
         }
 
         private void LateUpdate()
         {
             if (finished) return;
             double now = Time.realtimeSinceStartupAsDouble;
-            long callback = Stopwatch.GetTimestamp();
+            if (!QueryPerformanceCounter(out long callback))
+            {
+                Fail("Windows performance counter is unavailable.");
+                return;
+            }
             if (!measuring && !draining && now - started >= scenario.WarmupSeconds)
             {
                 measuring = true; windowStart = now;
@@ -82,6 +111,7 @@ namespace Northwatch.Presentation.Diagnostics
                 {
                     measuring = false; draining = true; windowEnd = now;
                     renderedEnd = Time.renderedFrameCount;
+                    buffer.End();
                 }
                 else
                 {
@@ -139,6 +169,7 @@ namespace Northwatch.Presentation.Diagnostics
                 units = unitCount, scenarioVersion = scenario.Version, seed = scenario.Seed,
                 featureEnabled = featureEnabled, focusLost = focusLost, paused = paused, activeUnitsValid = activeUnitsValid,
                 bufferInvalid = buffer.Invalid, renderedFrames = renderedEnd - renderedStart,
+                matchedSamples = buffer.Matched, unmatchedSamples = buffer.Unmatched,
                 recordedFrames = buffer.Count, seconds = windowEnd - windowStart,
                 warmupSeconds = windowStart - started, width = Screen.width, height = Screen.height,
                 borderless = Screen.fullScreenMode == FullScreenMode.FullScreenWindow,
@@ -155,7 +186,7 @@ namespace Northwatch.Presentation.Diagnostics
         [Serializable]
         private sealed class RunMetadata
         {
-            public int units, scenarioVersion, seed, renderedFrames, recordedFrames, width, height, threads, vramMb, ramMb, vsync, targetFrameRate;
+            public int units, scenarioVersion, seed, renderedFrames, recordedFrames, matchedSamples, unmatchedSamples, width, height, threads, vramMb, ramMb, vsync, targetFrameRate;
             public bool featureEnabled, focusLost, paused, bufferInvalid, borderless, development, activeUnitsValid;
             public double seconds, warmupSeconds;
             public string unity, api, quality, cpu, gpu, graphicsVersion;
