@@ -34,6 +34,58 @@ namespace Northwatch.Tests.EditMode.EditorTools
         [TestCase("\n", true, TestName = "BuilderPreservesExistingSceneTemplateSettings")]
         public void BuilderPreservesAssetBytesOnRepeatRun(string lineEnding, bool existingSettings)
         {
+            AssertPreservesAssetBytesOnRepeatRun(lineEnding, existingSettings, SandboxSceneBuilder.Build);
+        }
+
+        [Test]
+        public void RepeatRunBaselineIncludesPendingImportChanges()
+        {
+            const string path = "Assets/Materials/FirstSide.mat";
+            byte[] before = File.ReadAllBytes(path);
+            Material material = AssetDatabase.LoadAssetAtPath<Material>(path);
+            float originalCutoff = material.GetFloat("_Cutoff");
+            float importedCutoff = originalCutoff == 0.25f ? 0.75f : 0.25f;
+            try
+            {
+                // Model an importer that dirties an asset before its deferred save reaches disk.
+                material.SetFloat("_Cutoff", importedCutoff);
+                EditorUtility.SetDirty(material);
+                AssertPreservesAssetBytesOnRepeatRun("\n", false, () =>
+                {
+                    string importedProperty = "_Cutoff: " + importedCutoff.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    Assert.That(Encoding.UTF8.GetString(File.ReadAllBytes(path)), Does.Contain(importedProperty),
+                        "Import changes must be saved before the builder and its byte snapshot.");
+                    SandboxSceneBuilder.Build();
+                });
+            }
+            finally
+            {
+                material.SetFloat("_Cutoff", originalCutoff);
+                EditorUtility.SetDirty(material);
+                AssetDatabase.SaveAssetIfDirty(material);
+                File.WriteAllBytes(path, before);
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+            }
+        }
+
+        [TestCase("Assets/Code/Tests/EditMode/EditorTools/SandboxSceneBuilderTests.cs")]
+        [TestCase("ProjectSettings/SceneTemplateSettings.json")]
+        public void RepeatRunCheckRejectsBuilderWritesToUnrelatedFiles(string path)
+        {
+            var error = Assert.Throws<AssertionException>(() =>
+                AssertPreservesAssetBytesOnRepeatRun("\n", true, () =>
+                {
+                    SandboxSceneBuilder.Build();
+                    File.AppendAllText(path, "\n");
+                }));
+            Assert.That(error.Message, Does.Contain(path));
+        }
+
+        private static void AssertPreservesAssetBytesOnRepeatRun(string lineEnding, bool existingSettings, TestDelegate build)
+        {
+            // First-import upgrades can leave unrelated assets dirty. Flush Unity's work before
+            // taking either snapshot so every subsequent change is still attributed to the builder.
+            AssetDatabase.SaveAssets();
             string[] paths = AssetAndSettingsPaths();
             byte[][] before = paths.Select(File.ReadAllBytes).ToArray();
             const string templateSettings = "ProjectSettings/SceneTemplateSettings.json";
@@ -51,7 +103,7 @@ namespace Northwatch.Tests.EditMode.EditorTools
                 byte[][] expected = expectedPaths.Select(File.ReadAllBytes).ToArray();
                 for (int run = 0; run < 2; run++)
                 {
-                    SandboxSceneBuilder.Build();
+                    build();
                     Assert.That(AssetAndSettingsPaths(), Is.EqualTo(expectedPaths), "The builder must not add assets or settings.");
                     for (int i = 0; i < expectedPaths.Length; i++)
                         Assert.That(File.ReadAllBytes(expectedPaths[i]), Is.EqualTo(expected[i]), expectedPaths[i]);
@@ -67,7 +119,7 @@ namespace Northwatch.Tests.EditMode.EditorTools
         }
 
         private static string[] AssetAndSettingsPaths() => Directory.GetFiles("Assets", "*", SearchOption.AllDirectories)
-            .Concat(Directory.GetFiles("ProjectSettings")).Select(path => path.Replace('\\', '/'))
+            .Concat(Directory.GetFiles("ProjectSettings", "*", SearchOption.AllDirectories)).Select(path => path.Replace('\\', '/'))
             .OrderBy(path => path).ToArray();
 
         [Test]
