@@ -31,6 +31,39 @@ namespace Northwatch.Presentation.Diagnostics
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool QueryPerformanceFrequency(out long frequency);
 
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetLogicalProcessorInformationEx(int relationship, IntPtr buffer, ref int length);
+
+        private static int ReadPhysicalCoreCount()
+        {
+            const int processorCore = 0, insufficientBuffer = 122;
+            int length = 0;
+            if (GetLogicalProcessorInformationEx(processorCore, IntPtr.Zero, ref length) ||
+                Marshal.GetLastWin32Error() != insufficientBuffer || length <= 0)
+                throw new InvalidOperationException("Windows CPU topology is unavailable.");
+            IntPtr buffer = Marshal.AllocHGlobal(length);
+            try
+            {
+                if (!GetLogicalProcessorInformationEx(processorCore, buffer, ref length))
+                    throw new InvalidOperationException("Windows CPU topology could not be read.");
+                int cores = 0, offset = 0;
+                while (offset < length)
+                {
+                    if (length - offset < 8 || Marshal.ReadInt32(buffer, offset) != processorCore)
+                        throw new InvalidOperationException("Invalid Windows CPU topology record.");
+                    int size = Marshal.ReadInt32(buffer, offset + 4);
+                    if (size < 8 || size > length - offset)
+                        throw new InvalidOperationException("Invalid Windows CPU topology size.");
+                    cores++;
+                    offset += size;
+                }
+                if (cores == 0) throw new InvalidOperationException("Windows reported no CPU cores.");
+                return cores;
+            }
+            finally { Marshal.FreeHGlobal(buffer); }
+        }
+
         public void Configure(LadderScenario settings, MatchDriver match) { scenario = settings; driver = match; }
 
         private void Start()
@@ -175,7 +208,7 @@ namespace Northwatch.Presentation.Diagnostics
                 borderless = Screen.fullScreenMode == FullScreenMode.FullScreenWindow,
                 development = Debug.isDebugBuild, unity = Application.unityVersion,
                 api = SystemInfo.graphicsDeviceType.ToString(), quality = QualitySettings.names[QualitySettings.GetQualityLevel()],
-                cpu = SystemInfo.processorType, threads = SystemInfo.processorCount,
+                cpu = SystemInfo.processorType, cores = ReadPhysicalCoreCount(), threads = SystemInfo.processorCount,
                 gpu = SystemInfo.graphicsDeviceName, vramMb = SystemInfo.graphicsMemorySize,
                 ramMb = SystemInfo.systemMemorySize, graphicsVersion = SystemInfo.graphicsDeviceVersion,
                 vsync = QualitySettings.vSyncCount, targetFrameRate = Application.targetFrameRate
@@ -186,7 +219,7 @@ namespace Northwatch.Presentation.Diagnostics
         [Serializable]
         private sealed class RunMetadata
         {
-            public int units, scenarioVersion, seed, renderedFrames, recordedFrames, matchedSamples, unmatchedSamples, width, height, threads, vramMb, ramMb, vsync, targetFrameRate;
+            public int units, scenarioVersion, seed, renderedFrames, recordedFrames, matchedSamples, unmatchedSamples, width, height, cores, threads, vramMb, ramMb, vsync, targetFrameRate;
             public bool featureEnabled, focusLost, paused, bufferInvalid, borderless, development, activeUnitsValid;
             public double seconds, warmupSeconds;
             public string unity, api, quality, cpu, gpu, graphicsVersion;

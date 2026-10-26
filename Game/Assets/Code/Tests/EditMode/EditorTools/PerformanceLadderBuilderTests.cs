@@ -13,6 +13,15 @@ namespace Northwatch.Tests.EditMode.EditorTools
     public sealed class PerformanceLadderBuilderTests
     {
         [Test]
+        public void NativeCpuTopologyReportsPhysicalCoresWithoutCim()
+        {
+            var read = typeof(PerformanceLadder).GetMethod("ReadPhysicalCoreCount",
+                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+            Assert.That(read, Is.Not.Null);
+            Assert.That((int)read.Invoke(null, null), Is.InRange(1, SystemInfo.processorCount));
+        }
+
+        [Test]
         public void SceneUsesSandboxUnitsAndFramesWholePlaneWithoutUi()
         {
             var scene = EditorSceneManager.OpenScene(PerformanceLadderBuilder.ScenePath);

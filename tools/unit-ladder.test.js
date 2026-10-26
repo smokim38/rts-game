@@ -122,3 +122,33 @@ test('CSV preserves 64-bit timestamps and unsafe public fields are rejected', ()
   assert.equal(L.parseCsv('callback,timestamp,samples,frameMs,mainMs,gpuMs\n9007199254741001,9007199254741000,1,1,2,3\n')[0].timestamp, '9007199254741000');
   for (const value of ['C:\\folder\\private', 'host\nname', '10.0.0.1']) assert.throws(() => L.safeText(value));
 });
+
+const hardwareMeta = { cpu: 'Example six-core CPU', cores: 6, threads: 12, gpu: 'Example GPU' };
+const registry = {
+  gpu: [{ DriverDesc: 'Other GPU', DriverVersion: '31.0.101.2111' },
+    { DriverDesc: 'EXAMPLE GPU', DriverVersion: '32.0.16.1742' }],
+  windows: { ProductName: 'Windows 10 Pro', CurrentMajorVersionNumber: 10,
+    CurrentMinorVersionNumber: 0, CurrentBuildNumber: '26200', UBR: 8875 }
+};
+test('sandbox hardware summary combines native topology, rendered GPU driver and selected Windows values', () => {
+  const result = L.hardwareInfo(hardwareMeta, registry);
+  assert.deepEqual(result, {
+    cpu: [{ model: 'Example six-core CPU', cores: 6, threads: 12 }],
+    gpu: [{ model: 'Example GPU', driver: '32.0.16.1742' }],
+    windows: { name: 'Windows 11 Pro', version: '10.0.26200.8875', build: '26200' }
+  });
+  assert.equal(L.hardwareInfo(hardwareMeta, { ...registry,
+    windows: { ...registry.windows, CurrentBuildNumber: '19045' } }).windows.name, 'Windows 10 Pro');
+  assert.equal(L.hardwareInfo(hardwareMeta, { ...registry,
+    gpu: [registry.gpu[1], registry.gpu[1]] }).gpu.length, 1);
+});
+test('hardware summary fails closed on missing topology, ambiguous drivers, OS versions and unsafe fields', () => {
+  for (const change of [{ cores: undefined }, { cores: 0 }, { cores: 1.5 }, { threads: 5 }, { threads: NaN }, { cpu: 'C:\\private' }])
+    assert.throws(() => L.hardwareInfo({ ...hardwareMeta, ...change }, registry));
+  for (const gpu of [[], [registry.gpu[0]], [{ ...registry.gpu[1], DriverVersion: undefined }],
+    [registry.gpu[1], { ...registry.gpu[1], DriverVersion: '31.0.101.2111' }]])
+    assert.throws(() => L.hardwareInfo(hardwareMeta, { ...registry, gpu }));
+  for (const change of [{ ProductName: '' }, { CurrentMajorVersionNumber: undefined },
+    { CurrentMinorVersionNumber: -1 }, { CurrentBuildNumber: 'unknown' }, { UBR: undefined }])
+    assert.throws(() => L.hardwareInfo(hardwareMeta, { ...registry, windows: { ...registry.windows, ...change } }));
+});

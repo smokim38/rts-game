@@ -119,17 +119,35 @@ function safeText(value) {
   if (typeof value !== 'string' || !value || /[\\/\r\n<>|`]|\b(?:\d{1,3}\.){3}\d{1,3}\b/.test(value)) throw Error('Unsafe entry field.');
   return value;
 }
-function hardwareInfo(root) {
-  // Query only model, core/thread counts, driver and OS versions; never identifiers.
-  const command = "$c=Get-CimInstance Win32_Processor | Select-Object Name,NumberOfCores,NumberOfLogicalProcessors; " +
-    "$g=Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion; " +
-    "$w=Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber; " +
-    "@{cpu=@($c);gpu=@($g);windows=$w}|ConvertTo-Json -Depth 4 -Compress";
-  const data = JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command],
+function windowsHardware(root) {
+  // Fixed, value-only reads work in the sandbox; enumerating this registry class
+  // or querying CIM does not. Never request adapter IDs or other machine identity.
+  const command = "$ErrorActionPreference='Stop'; $g=@(0..31 | ForEach-Object { " +
+    "$p='HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\\'+('{0:D4}' -f $_); " +
+    "Get-ItemProperty -LiteralPath $p -Name DriverDesc,DriverVersion -ErrorAction SilentlyContinue | Select-Object DriverDesc,DriverVersion }); " +
+    "$w=Get-ItemProperty -LiteralPath 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion' " +
+    "-Name ProductName,CurrentMajorVersionNumber,CurrentMinorVersionNumber,CurrentBuildNumber,UBR | " +
+    "Select-Object ProductName,CurrentMajorVersionNumber,CurrentMinorVersionNumber,CurrentBuildNumber,UBR; " +
+    "@{gpu=$g;windows=$w}|ConvertTo-Json -Depth 4 -Compress";
+  return JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command],
     { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
-  return { cpu: data.cpu.map(cpu => ({ model: safeText(cpu.Name), cores: cpu.NumberOfCores, threads: cpu.NumberOfLogicalProcessors })),
-    gpu: data.gpu.map(gpu => ({ model: safeText(gpu.Name), driver: safeText(gpu.DriverVersion) })),
-    windows: { name: safeText(data.windows.Caption), version: safeText(data.windows.Version), build: safeText(data.windows.BuildNumber) } };
+}
+function hardwareInfo(meta, data) {
+  if (!Number.isInteger(meta.cores) || !Number.isInteger(meta.threads) || meta.cores <= 0 || meta.threads < meta.cores)
+    throw Error('Missing or invalid native CPU core/thread counts; rebuild Players.');
+  const gpu = data.gpu.filter(item => typeof item.DriverDesc === 'string' &&
+    item.DriverDesc.toLowerCase() === safeText(meta.gpu).toLowerCase());
+  if (!gpu.length || gpu.some(item => item.DriverVersion !== gpu[0].DriverVersion))
+    throw Error('No unambiguous driver version for the rendered GPU.');
+  const w = data.windows;
+  for (const value of [w.CurrentMajorVersionNumber, w.CurrentMinorVersionNumber, w.UBR])
+    if (!Number.isInteger(value) || value < 0) throw Error('Missing Windows version information.');
+  if (!/^\d+$/.test(w.CurrentBuildNumber)) throw Error('Missing Windows build information.');
+  // Windows 11 retains the Windows 10 ProductName on some installations.
+  const name = Number(w.CurrentBuildNumber) >= 22000 ? safeText(w.ProductName).replace(/^Windows 10\b/, 'Windows 11') : safeText(w.ProductName);
+  return { cpu: [{ model: safeText(meta.cpu), cores: meta.cores, threads: meta.threads }],
+    gpu: [{ model: safeText(meta.gpu), driver: safeText(gpu[0].DriverVersion) }],
+    windows: { name, version: `${w.CurrentMajorVersionNumber}.${w.CurrentMinorVersionNumber}.${w.CurrentBuildNumber}.${w.UBR}`, build: w.CurrentBuildNumber } };
 }
 function launch(player, args, root) {
   return new Promise(resolve => {
@@ -173,7 +191,7 @@ async function main(args) {
   if (fs.readFileSync(path.join(root, 'Game/Builds/PerformanceLadder/commit.txt'), 'utf8').trim() !== commit)
     throw Error('Rebuild both Players for HEAD.');
   verifyBuildSources(root);
-  const hardware = hardwareInfo(root);
+  const hardware = windowsHardware(root);
   const logs = path.join(root, 'Game/Logs/unit-ladder', new Date().toISOString().replace(/[:.]/g, '-'));
   fs.mkdirSync(logs, { recursive: true });
   const steps = [];
@@ -187,10 +205,11 @@ async function main(args) {
     if (error) return { valid: false, reasons: [error] };
     if (!fs.existsSync(output + '.json') || !fs.existsSync(output + '.csv')) return { valid: false, reasons: ['missing Player output'] };
     const meta = JSON.parse(fs.readFileSync(output + '.json', 'utf8'));
-    const fingerprint = JSON.stringify([meta.scenarioVersion, meta.seed, meta.cpu, meta.gpu, meta.vramMb, meta.ramMb, meta.graphicsVersion, meta.unity, meta.api, meta.quality]);
+    const currentHardware = hardwareInfo(meta, windowsHardware(root));
+    const fingerprint = JSON.stringify([meta.scenarioVersion, meta.seed, currentHardware, meta.vramMb, meta.ramMb, meta.graphicsVersion, meta.unity, meta.api, meta.quality]);
     if (!firstMeta) {
       firstMeta = { fingerprint, meta };
-      summaryHardware = { ...hardware, renderedGpu: safeText(meta.gpu), vramMb: meta.vramMb, ramMb: meta.ramMb };
+      summaryHardware = { ...currentHardware, renderedGpu: safeText(meta.gpu), vramMb: meta.vramMb, ramMb: meta.ramMb };
       comparison = mainBaseline(root, summaryHardware, meta.scenarioVersion);
     }
     if (firstMeta.fingerprint !== fingerprint) return { valid: false, reasons: ['hardware, build or scenario changed'] };
@@ -206,7 +225,7 @@ async function main(args) {
   }
   if (!firstMeta) throw Error('No Player metadata; raw failure logs remain in Game/Logs.');
   if (git(root, 'rev-parse', 'HEAD') !== commit || git(root, 'status', '--porcelain')) throw Error('Sources changed during the ladder; no entry written.');
-  if (JSON.stringify(hardwareInfo(root)) !== JSON.stringify(hardware)) throw Error('Hardware, driver or Windows changed during ladder; no entry written.');
+  if (JSON.stringify(windowsHardware(root)) !== JSON.stringify(hardware)) throw Error('Hardware, driver or Windows changed during ladder; no entry written.');
   const data = { date: new Date().toISOString().slice(0, 10), context, commit, scenarioVersion: firstMeta.meta.scenarioVersion,
     seed: firstMeta.meta.seed, tickHz: 30, referenceClass: args[1], hardware: summaryHardware,
     build: { unity: safeText(firstMeta.meta.unity), backend: 'Mono', api: safeText(firstMeta.meta.api),
@@ -222,5 +241,5 @@ async function main(args) {
   if (steps.some(step => step.result === 'invalid' || step.regressed || step.previouslyPassing)) process.exitCode = 1;
 }
 
-module.exports = { STEPS, median, nearestRank, summarizeRun, summarizeStep, collectStep, regressed, ladderHeight, newestBaseline, parseCsv, renderEntry, safeText, hasPlayerLogFailure };
+module.exports = { STEPS, median, nearestRank, summarizeRun, summarizeStep, collectStep, regressed, ladderHeight, newestBaseline, parseCsv, renderEntry, safeText, hasPlayerLogFailure, windowsHardware, hardwareInfo };
 if (require.main === module) main(process.argv.slice(2)).catch(error => { process.stderr.write(error.message + '\n'); process.exitCode = 1; });
