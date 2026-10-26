@@ -89,6 +89,38 @@ test('regression needs strictly more than both 10% and 0.5 ms', () => {
   assert.equal(spread.spreadMs, 0.6000000000000001);
   assert.equal(spread.spreadExceedsTolerance, true);
 });
+test('1% low regressions below 3.0 ms are ignored, including ADR 0009 timing noise', () => {
+  for (const [beforeLow, lowMs] of [[1.453, 2.000], [1.444, 2.041], [1.785, 2.460], [1, 2.9999]]) {
+    const step = L.summarizeStep(10, [run(0.75, lowMs + 0.1), run(0.75, lowMs - 0.1), run(0.75, lowMs)],
+      { result: 'pass', frameMs: 0.75, lowMs: beforeLow });
+    assert.equal(step.lowMs, lowMs);
+    assert.equal(step.regressed, false, `${beforeLow} to ${lowMs} ms`);
+  }
+});
+test('1% low regressions above the cut-off require strictly more than both thresholds', () => {
+  for (const [beforeLow, lowMs, expected] of [[1.5, 3.7, true], [4, 4.6, true], [10, 11.2, true],
+    [4, 4.5, false], [4, 4.5001, true], [10, 11, false], [10, 10.6, false]]) {
+    const step = L.summarizeStep(10, [run(0.75, lowMs), run(0.75, lowMs), run(0.75, lowMs)],
+      { result: 'pass', frameMs: 0.75, lowMs: beforeLow });
+    assert.equal(step.regressed, expected, `${beforeLow} to ${lowMs} ms`);
+  }
+});
+test('1% low of exactly 3.0 ms is checked against both regression thresholds', () => {
+  for (const [beforeLow, expected] of [[1.5, true], [2.5, false], [2.8, false]]) {
+    const step = L.summarizeStep(10, [run(0.75, 3.1), run(0.75, 2.9), run(0.75, 3.0)],
+      { result: 'pass', frameMs: 0.75, lowMs: beforeLow });
+    assert.equal(step.lowMs, 3.0);
+    assert.equal(step.regressed, expected, `${beforeLow} to 3.0 ms`);
+  }
+});
+test('average frame regressions keep both thresholds regardless of the 1% low cut-off', () => {
+  for (const [beforeFrame, frameMs, lowMs, expected] of [[1, 1.6, 2.9, true], [2, 2.5, 2.9, false],
+    [2, 2.501, 2.9, true], [10, 11, 12, false], [10, 11.001, 12, true], [20, 20.6, 30, false]]) {
+    const step = L.summarizeStep(10, [run(frameMs, lowMs), run(frameMs, lowMs), run(frameMs, lowMs)],
+      { result: 'pass', frameMs: beforeFrame, lowMs });
+    assert.equal(step.regressed, expected, `${beforeFrame} to ${frameMs} ms average`);
+  }
+});
 test('invalid runs are replaced, stop after three valid runs, cap attempts at six', async () => {
   let calls = 0;
   const result = await L.collectStep(10, async () => ++calls % 2 ? { valid: false, reasons: ['focus lost'] } : run());
