@@ -89,7 +89,7 @@ This ADR flags none of these ladders.
 
 ### What this ADR supersedes
 
-Only the 1% low part of ADR 0004's "Regression check". ADR 0004 stays Accepted for everything else. ADR 0008 doesn't restate that part: it cites ADR 0004's pass rule and its fix-or-explain rule, neither of which changes.
+Only the 1% low part of ADR 0004's "Regression check". ADR 0004 stays Accepted for everything else. ADR 0004 itself is not edited (AGENTS.md §9), so this section is the record of the partial supersession. ADR 0008 doesn't restate that part: it cites ADR 0004's pass rule and its fix-or-explain rule, neither of which changes.
 
 ## Alternatives considered
 
@@ -112,13 +112,13 @@ None of these options changes the game, so none costs anything at thousands of u
 ## Consequences
 
 - **Benefits.** At today's speeds, ladders no longer fail at random on the 1% low, so QA results on unchanged code stop flipping. The check switches itself on as the game gets heavier, with no further ADR. The rule adds one comparison.
-- **Tradeoffs.** A slow-frame rise that stays under 3.0 ms isn't flagged, for example from 1.0 to 2.9 ms. Rises of that size are within the noise we measured, and the average check and the pass rule still apply.
+- **Tradeoffs.** A slow-frame rise that stays under 3.0 ms isn't flagged, even when it is bigger than the noise we measured. For example, a rise from 1.0 to 2.9 ms is 1.9 ms, more than the 1.45 ms the same code ranged over (1.008 to 2.460 ms), and it isn't flagged. This is a blind spot of the rule. The average check and the pass rule still apply.
 - **Risks.**
   - The noise was measured on one machine, which isn't reference-class, with scenario version 1 and frames of about 0.7 ms. Another machine may be noisier.
   - Noise above 3.0 ms is unmeasured (see the several-millisecond range above).
 - **Reversibility.** Easy: one constant and one condition in `regressed()`. Entries record medians as well as flags, so any later rule can be checked against old entries. Changing the cut-off needs a superseding ADR.
 - **Trigger for a superseding ADR.** Two ladders of the same game code on the same machine disagree on whether a step's 1% low regressed, at a 1% low of 3.0 ms or more. Alternatives 3 and 4 are then revisited for that range.
-- **Dependencies and owner decisions.** This ADR adds no package and changes neither Unity nor the handbook. The owner gave no cut-off, so the owner should confirm 3.0 ms on the 1% low, rather than 2 ms or a 500 fps average. *Recommended:* 3.0 ms, for the reasons above.
+- **Dependencies and owner decisions.** This ADR adds no package and changes neither Unity nor the handbook. The owner's instruction named no cut-off. The owner then confirmed the 3.0 ms cut-off on the 1% low in the Producer session on 2026-10-26.
 - **Follow-up Issue:**
   1. **#117** (gameplay-programmer): apply the rule in `regressed` in `tools/unit-ladder.js`, with tests in `tools/unit-ladder.test.js`.
      - The cut-off is one named constant.
