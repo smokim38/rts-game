@@ -2,6 +2,8 @@
 
 The protocol and pass rules are in [ADR 0004](../../adr/0004-unit-simulation-architecture.md#performance-ladder). Scenario version 1 uses the sandbox's native-array simulation and instanced cubes. Units hold position: the build currently applies spawn commands at 30 Hz and fills draw matrices and draws every frame. Movement, targeting, combat and commander AI are not implemented. The seed is stored but no random work occurs. Layout uses the sandbox's compact block placement, small cubes for the first faction and large cubes for the second.
 
+Under [ADR 0009](../../adr/0009-slow-frame-regression-cutoff.md), a step is `regressed` when its average frame time median is worse than the comparison by more than both 10% and 0.5 ms, or its current 1% low median is at least 3.0 ms (including exactly 3.0 ms) and exceeds both of those thresholds. The average check is unchanged; the 1% low is still recorded below the cut-off.
+
 Before measuring, read Issue #97's speed-test finding, commit the measured sources, close the Editor, set Windows power mode to best performance and leave this PC idle. The Producer reserves the PC: no other Unity run may overlap a ladder. The Player requires a real 1920×1080 borderless desktop with focus. A sandbox without these cannot produce valid measurements; an offscreen render request is not a substitute.
 
 From the repository root, use these two PowerShell commands. The direct Unity command is the only escalated command. The pipe waits for the GUI executable to finish. It generates the scene/scenario and builds both release and development Windows x64 Mono Players without changing Editor Build Settings.
