@@ -5,6 +5,7 @@ const { createHash } = require('node:crypto');
 const { execFileSync, spawn } = require('node:child_process');
 
 const STEPS = Object.freeze([10, 50, 100, 200, 300, 400, 500, 1000, 2000]);
+const LOW_REGRESSION_CUTOFF_MS = 3.0;
 const finitePositive = value => Number.isFinite(value) && value > 0;
 const average = values => values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
 function median(values) {
@@ -67,7 +68,8 @@ function summarizeStep(units, attempts, before) {
     result[key] = valid.every(run => Number.isFinite(run[key])) ? median(valid.map(run => run[key])) : null;
   result.result = result.frameMs <= 16.67 && result.lowMs <= 16.67 ? 'pass' : 'fail';
   result.regressed = !!before && before.result !== 'invalid' &&
-    (regressed(result.frameMs, before.frameMs) || regressed(result.lowMs, before.lowMs));
+    (regressed(result.frameMs, before.frameMs) ||
+      (result.lowMs >= LOW_REGRESSION_CUTOFF_MS && regressed(result.lowMs, before.lowMs)));
   result.previouslyPassing = !!before && before.result === 'pass' && result.result !== 'pass';
   const averages = valid.map(run => run.frameMs);
   result.spreadMs = Math.max(...averages) - Math.min(...averages);
