@@ -10,6 +10,45 @@ namespace Northwatch.EditorTools
 {
     public static class SandboxProfileAnalysis
     {
+        public static void AnalyzeSelection()
+        {
+            var output = new StringBuilder();
+            bool allocated = false;
+            foreach (string path in new[] { "Logs/selection-before.raw", "Logs/sandbox-2000.raw", "Logs/sandbox-2000-selection.raw" })
+            {
+                if (!ProfilerDriver.LoadProfile(path, false)) throw new InvalidOperationException("Could not load " + path);
+                foreach (string scope in new[] { "Northwatch.Simulation", "Northwatch.Drawing", "Northwatch.SelectionInput", "Northwatch.SandboxOverlay", "PlayerLoop" })
+                {
+                    if (path.Contains("before") && scope == "Northwatch.SelectionInput") continue;
+                    int samples = 0;
+                    long bytes = 0;
+                    double total = 0, maximum = 0;
+                    for (int frame = ProfilerDriver.firstFrameIndex + 1; frame < ProfilerDriver.lastFrameIndex; frame++)
+                    {
+                        using RawFrameDataView data = ProfilerDriver.GetRawFrameDataView(frame, 0);
+                        if (!data.valid) continue;
+                        int marker = data.GetMarkerId(scope), gc = data.GetMarkerId("GC.Alloc");
+                        for (int sample = 0; sample < data.sampleCount; sample++)
+                        {
+                            if (data.GetSampleMarkerId(sample) != marker) continue;
+                            samples++;
+                            double ms = data.GetSampleTimeMs(sample);
+                            total += ms; maximum = Math.Max(maximum, ms);
+                            int end = sample + data.GetSampleChildrenCountRecursive(sample) + 1;
+                            for (int child = sample + 1; child < end; child++)
+                                if (data.GetSampleMarkerId(child) == gc) bytes += data.GetSampleMetadataAsLong(child, 0);
+                        }
+                    }
+                    if (samples < 200) throw new InvalidOperationException("Not enough samples for " + scope);
+                    output.AppendLine($"capture={path}; scope={scope}; samples={samples}; average_ms={total / samples:F6}; max_ms={maximum:F6}; GC_alloc_bytes={bytes}");
+                    allocated |= bytes != 0;
+                }
+            }
+            File.WriteAllText("Logs/102-profile-summary.txt", output.ToString());
+            Debug.Log(output.ToString());
+            if (allocated) throw new InvalidOperationException("Selection capture contains managed allocation.");
+        }
+
         public static void Analyze()
         {
             var output = new StringBuilder();

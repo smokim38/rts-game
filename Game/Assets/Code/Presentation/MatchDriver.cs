@@ -11,9 +11,10 @@ namespace Northwatch.Presentation
         [SerializeField] private Mesh cube;
         [SerializeField] private Material firstSide;
         [SerializeField] private Material secondSide;
+        [SerializeField] private Material selectedSide;
         private UnitSimulation simulation;
         private TickClock clock;
-        private RenderParams firstParameters, secondParameters;
+        private RenderParams firstParameters, secondParameters, selectedParameters;
         private static readonly ProfilerMarker SimulationMarker = new ProfilerMarker("Northwatch.Simulation");
         private static readonly ProfilerMarker DrawingMarker = new ProfilerMarker("Northwatch.Drawing");
         public UnitSimulation Simulation => simulation;
@@ -25,15 +26,18 @@ namespace Northwatch.Presentation
             secondSide = second;
         }
 
+        public void ConfigureSelection(Material selected) => selectedSide = selected;
+
         private void OnEnable()
         {
             simulation = new UnitSimulation();
             clock = new TickClock();
             firstParameters = new RenderParams(firstSide);
             secondParameters = new RenderParams(secondSide);
+            selectedParameters = new RenderParams(selectedSide);
         }
 
-        private void Update()
+        private void LateUpdate()
         {
             using (SimulationMarker.Auto())
             {
@@ -43,18 +47,18 @@ namespace Northwatch.Presentation
             }
             using (DrawingMarker.Auto())
             {
-                Draw(Side.First, ref firstParameters);
-                Draw(Side.Second, ref secondParameters);
+                Draw(simulation.DrawCount(Side.First) - simulation.SelectedCount, 0, ref firstParameters);
+                Draw(simulation.DrawCount(Side.Second), UnitSimulation.Capacity, ref secondParameters);
+                Draw(simulation.SelectedCount, UnitSimulation.Capacity * 2, ref selectedParameters);
             }
         }
 
-        private void Draw(Side side, ref RenderParams parameters)
+        private void Draw(int count, int offset, ref RenderParams parameters)
         {
-            int count = simulation.DrawCount(side);
             var matrices = simulation.DrawMatrices;
             for (int start = 0; start < count; start += InstancesPerDraw)
                 Graphics.RenderMeshInstanced(parameters, cube, 0, matrices,
-                    Mathf.Min(InstancesPerDraw, count - start), (int)side * UnitSimulation.Capacity + start);
+                    Mathf.Min(InstancesPerDraw, count - start), offset + start);
         }
 
         private void OnDisable()

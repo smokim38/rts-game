@@ -1,7 +1,10 @@
 using UnityEngine;
+using UnityEngine.InputSystem;
+using UnityEngine.InputSystem.LowLevel;
 
 namespace Northwatch.Presentation.Diagnostics
 {
+    [DefaultExecutionOrder(300)]
     public sealed class SandboxPlayerCheck : MonoBehaviour
     {
         private MatchDriver driver;
@@ -13,6 +16,10 @@ namespace Northwatch.Presentation.Diagnostics
         private DebugOverlay overlay;
         private double measuredSeconds;
         private int measuredFrames;
+        private bool selectionCheck;
+        private int selectionSamples, selectionResponseFrame;
+        private double selectionTotalMs, selectionMaxMs;
+        private Mouse selectionMouse;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void StartCheck()
@@ -29,6 +36,17 @@ namespace Northwatch.Presentation.Diagnostics
             if (check.driver == null || check.driver.Simulation.Count != 0)
                 throw new System.InvalidOperationException("Sandbox must start with an empty match.");
             check.output = output;
+            check.selectionCheck = System.Array.IndexOf(arguments, "-sandbox-selection") >= 0;
+            if (check.selectionCheck)
+            {
+                check.output += "-selection";
+                // A batch Player has no native pointer. The virtual device feeds the same action bindings.
+                check.selectionMouse = Mouse.current ?? InputSystem.AddDevice<Mouse>();
+                check.gameObject.AddComponent<SelectionInputPump>();
+                // Keep edge panning idle throughout warm-up, before the first diagnostic drag.
+                InputSystem.QueueStateEvent(check.selectionMouse, new MouseState
+                    { position = new Vector2(Screen.width * 0.5f, Screen.height * 0.5f) });
+            }
             check.overlay = FindFirstObjectByType<DebugOverlay>();
             if (System.Array.IndexOf(arguments, "-sandbox-no-overlay") >= 0)
             {
@@ -43,7 +61,12 @@ namespace Northwatch.Presentation.Diagnostics
             check.captureCamera.aspect = 16f / 9f;
             check.renderRequest = new UnityEngine.Rendering.Universal.UniversalRenderPipeline.SingleCameraRequest
                 { destination = check.captureTarget };
-            if (count == 2000 && (!check.driver.Simulation.QueueBlock(Simulation.Side.First, Simulation.UnitSize.Small,
+            if (count == 2000 && check.selectionCheck)
+            {
+                if (!check.driver.Simulation.QueueBlock(Simulation.Side.First, Simulation.UnitSize.Small, Vector3.zero, count))
+                    throw new System.InvalidOperationException("Selection check could not queue 2000 own units.");
+            }
+            else if (count == 2000 && (!check.driver.Simulation.QueueBlock(Simulation.Side.First, Simulation.UnitSize.Small,
                     new Vector3(-40, 0, 0), 1000) || !check.driver.Simulation.QueueBlock(Simulation.Side.Second,
                     Simulation.UnitSize.Large, new Vector3(40, 0, 0), 1000)))
                 throw new System.InvalidOperationException("Sandbox check could not queue two blocks of 1000.");
@@ -63,9 +86,11 @@ namespace Northwatch.Presentation.Diagnostics
             if ((!Application.isBatchMode && !UnityEngine.Rendering.SplashScreen.isFinished) ||
                 Time.realtimeSinceStartupAsDouble < 10.0) return;
             frames++;
+            if (selectionCheck) CheckSelectionFrame();
+            if (!enabled) return;
             if (frames > 120) { measuredFrames++; measuredSeconds += Time.unscaledDeltaTime; }
             UnityEngine.Rendering.RenderPipeline.SubmitRenderRequest(captureCamera, renderRequest);
-            if (frames == 60)
+            if (frames == (selectionCheck ? 63 : 60) || (selectionCheck && frames == 62))
             {
                 RenderTexture previous = RenderTexture.active;
                 RenderTexture.active = captureTarget;
@@ -74,7 +99,7 @@ namespace Northwatch.Presentation.Diagnostics
                 image.Apply();
                 if (image.GetPixel(960, 540).grayscale < 0.2f)
                     throw new System.InvalidOperationException("Sandbox validation target was not rendered.");
-                System.IO.File.WriteAllBytes(output + ".png", image.EncodeToPNG());
+                System.IO.File.WriteAllBytes(output + (selectionCheck && frames == 62 ? "-drag.png" : ".png"), image.EncodeToPNG());
                 RenderTexture.active = previous;
                 Destroy(image);
             }
@@ -101,7 +126,52 @@ namespace Northwatch.Presentation.Diagnostics
                 "; frame_ms=" + overlay.FrameMilliseconds.ToString("F3", System.Globalization.CultureInfo.InvariantCulture) +
                 "; measured_fps=" + (measuredFrames / measuredSeconds).ToString("F2", System.Globalization.CultureInfo.InvariantCulture) +
                 "; gpu=" + SystemInfo.graphicsDeviceName + "; cpu=" + SystemInfo.processorType);
+            if (selectionCheck)
+                Debug.Log("Selection check: own_units=2000; samples=" + selectionSamples +
+                    "; response_frames=1; selected_frame_average_ms=" + (selectionTotalMs / selectionSamples).ToString("F6", System.Globalization.CultureInfo.InvariantCulture) +
+                    "; selected_frame_max_ms=" + selectionMaxMs.ToString("F6", System.Globalization.CultureInfo.InvariantCulture) +
+                    "; resolution=" + Screen.width + "x" + Screen.height + "; focused=" + Application.isFocused);
             Application.Quit(count == unitCount ? 0 : 1);
+        }
+
+        private void CheckSelectionFrame()
+        {
+            if (frames < 50) return;
+            if (Time.frameCount == selectionResponseFrame)
+            {
+                if (driver.Simulation.SelectedCount != 2000 ||
+                    driver.Simulation.DrawMatrices[Simulation.UnitSimulation.Capacity * 3 - 1].m33 != 1f)
+                {
+                    FailSelection("2000 selected units must have draw data on the next frame; selected=" +
+                        driver.Simulation.SelectedCount + "; focused=" + Application.isFocused);
+                    return;
+                }
+            }
+            if (Time.frameCount == selectionResponseFrame + 1 && frames > 120)
+            {
+                // Delta at the next frame's start measures the completed selection frame, including waits.
+                double milliseconds = Time.unscaledDeltaTime * 1000.0;
+                selectionSamples++; selectionTotalMs += milliseconds;
+                selectionMaxMs = System.Math.Max(selectionMaxMs, milliseconds);
+                if (milliseconds > 33.0) { FailSelection("Selection frame exceeded 33 ms."); return; }
+            }
+            int phase = frames % 10;
+            if (phase == 3 || phase == 4 || phase == 8 || phase == 9) return;
+            Vector2 viewport = phase == 0 ? new Vector2(0.4f, 0.4f) : phase <= 2 ? new Vector2(0.6f, 0.6f) :
+                phase == 5 ? new Vector2(0.9f, 0.1f) : new Vector2(0.92f, 0.12f);
+            InputSystem.QueueStateEvent(selectionMouse, new MouseState
+            {
+                position = captureCamera.ViewportToScreenPoint(viewport),
+                buttons = phase == 2 || phase == 7 ? (ushort)0 : (ushort)1
+            });
+            if (phase == 2) selectionResponseFrame = Time.frameCount + 1;
+        }
+
+        private void FailSelection(string message)
+        {
+            enabled = false;
+            Debug.LogError(message);
+            Application.Quit(1);
         }
 
         private void OnDestroy()
