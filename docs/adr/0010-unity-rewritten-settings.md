@@ -53,7 +53,7 @@ In #25 the first five changes were discarded with the owner's OK. On PR #114, QA
 2. Nobody has checked that Unity writes the same bytes again on a second build. The source suggests it does. Every prefiltering input is a setting. The one input that differs between development and release builds is debug display stripping, and it doesn't differ here: `s_StripDebugDisplayShaders = !isDevelopmentBuild || shaderStrippingSettings.stripRuntimeDebugShaders` ([source][urp-preprocessor]), and `m_StripRuntimeDebugShaders` is 1 in the global settings.
 3. Nobody knows what turns on `m_Enabled`, or whether a Player built while it is on behaves any differently.
 
-The follow-ups measure all three as part of their work, and each has a fallback if the answer is bad. A separate spike would repeat the same Unity runs, so none is proposed.
+The follow-ups measure the first two, and what turns on `m_Enabled`, as part of their work, and each has a fallback if the answer is bad. A separate spike would repeat the same Unity runs, so none is proposed. Whether a Player built with the flag on behaves differently stays unmeasured. Finding out needs a build with `m_Enabled` at 1, which needs a separate owner decision (follow-up 1).
 
 ## Decision
 
@@ -94,11 +94,18 @@ The Producer may raise the tier.
 
 The rule is the same for everyone. **A change to one of the six files that your Issue doesn't list is never committed. Restore the file to its committed version.** An Issue that does list one of them makes the change through a builder (`Settle()` for the parts Unity writes), and its PR calls the change out.
 
+**How to restore.** For each such file:
+1. Run `git status --short -- <path>`. If the file is staged (a letter in the first column) and you didn't stage it, stop and report it. Don't restore or commit it.
+2. Run `git restore --source=HEAD --staged --worktree -- <path>`. This puts the committed version back in both the index and the working tree. Plain `git restore -- <path>` isn't enough: with neither option "the working tree is restored", from the index, so a staged rewrite stays staged and could be committed ([git restore][git-restore]).
+3. Check that `git status --short -- <path>` now prints nothing.
+
+If `git restore` doesn't work in the Codex sandbox, list the paths in your report instead, and the Producer restores them (Risks).
+
 | Who | What to do |
 |---|---|
-| gameplay-programmer, tech-artist | After your last Unity run, check `git status`. Restore each of the six files your Issue doesn't list. Use the check tool once it exists (follow-up 3), and `git restore -- <path>` until then. List what you restored in your report, citing "ADR 0010". If any other file changed that you didn't mean to change, stop and report it (ADR 0006). |
+| gameplay-programmer, tech-artist | After your last Unity run, check `git status --short`. Restore each of the six files your Issue doesn't list, as above. Use the check tool once it exists (follow-up 3), and the steps above until then. List what you restored in your report, citing "ADR 0010". If any other file changed that you didn't mean to change, stop and report it (ADR 0006). |
 | qa-test-engineer | Do the same before posting the QA record, and list what you restored in the record. A restored file isn't a QA failure. Once follow-up 2 has merged, report any restored file that follow-up 2 committed as a bug outside the Issue (`docs/studio/workflow.md`, QA step 3). That excludes `UnityConnectSettings.asset` and any file follow-up 2 left out because it didn't settle. |
-| Producer | Before committing, in a launcher worktree or the main checkout, run `git status --short`. Restore each of the six files the Issue doesn't list with `git restore -- <path>`, and never stage them. Name the restored files in the session report, and once follow-up 2 has merged, flag any that follow-up 2 committed. If anything else changed unexpectedly, stop and ask the owner. |
+| Producer | Before committing, in a launcher worktree or the main checkout, run `git status --short`. Restore each of the six files the Issue doesn't list with the steps above, and never stage them. Name the restored files in the session report, and once follow-up 2 has merged, flag any that follow-up 2 committed. If one of them is staged and you didn't stage it, or anything else changed unexpectedly, stop and ask the owner. |
 | code-reviewer, Codex reviewer | Request changes when a PR changes one of the six files and its Issue doesn't list that file, or when the change doesn't come from a builder. |
 | Owner | Nothing. If you open the main checkout in the Editor, Unity may rewrite these files. Close the Editor before the Producer's sitting ([ADR 0006][adr6-owner]), and the Producer restores them. To change one of these settings on purpose, ask the Producer for an Issue. |
 
@@ -172,7 +179,7 @@ None of these options changes which code or shaders run. So none of them costs a
 - **Risks.**
   - A file may not settle. The fallback is above.
   - URP finishes its asset upgrade in a delayed call. So re-serializing straight after loading could write a half-upgraded file, with `k_AssetVersion: 13` and `k_AssetPreviousVersion: 12`, which then changes again the next time ([URP asset source][urp-asset-src]). Follow-up 2's second-run check catches this.
-  - Nobody has checked whether `git restore` works inside the Codex sandbox. If it doesn't, agents report the paths and the Producer restores them, until follow-up 3's tool, which writes the files itself.
+  - Nobody has checked whether `git restore` works inside the Codex sandbox, by hand or through the check tool (follow-up 3). With `--staged` it also writes the git index. If it doesn't work, agents report the paths and the Producer restores them.
   - The owner's Editor may write something new. The Producer restores it and reports it.
 - **Reversibility.** Easy. The settled files are ordinary commits, and the helper and the tool are small. A superseding ADR can move any file to another row.
 - **Other ADRs.** This ADR adds to ADR 0006: `Settle()` is a builder under its rules 3 to 5. It supersedes nothing. ADR 0004's ladder rules and ADR 0005's decision to keep the Mobile assets still stand.
@@ -187,9 +194,8 @@ None of these options changes which code or shaders run. So none of them costs a
      - An EditMode test that every `m_Enabled` in `ProjectSettings/UnityConnectSettings.asset` is 0.
      - Asset list: `SandboxSceneBuilder.cs`, `PerformanceLadderBuilder.cs`, the new helper and test, and their `.meta` files.
      - Acceptance: starting from an empty `Library/`, running `BuildSelectionPlayers` and then the ladder build leaves `git status` clean. The one allowed exception is `Mobile_RPAsset.asset`, if the first import wrote it before a build; follow-up 2 fixes that.
-     - The PR also records two measurements. Neither is a pass or fail condition.
-       - The first step at which `m_Enabled` turns on in a fresh worktree: first import, EditMode tests, sandbox builds or ladder builds.
-       - Whether the flag reaches the Player. Compare the `globalgamemanagers` file from a build made with `m_Enabled` at 1 against one made with it at 0, using a second build at 0 as the control. If the flag does reach the Player, the PR also runs the ladder, because the Player changed.
+     - The PR also records, as a measurement and not a pass or fail condition, the first step at which `m_Enabled` turns on in a fresh worktree: first import, EditMode tests, sandbox builds or ladder builds.
+     - It makes no build with `m_Enabled` at 1, so it doesn't measure whether the flag reaches the Player. The `UnityConnectSettings.asset` row and Editor rule 3 keep the flag at 0. That question can be studied only after a separate owner decision authorises such a build, through a superseding ADR. If that study finds the flag does reach the Player, its Issue also runs the ladder, because the helper's builds would then differ from earlier ones.
   2. **Settle** (gameplay-programmer, Standard, QA and ladder), after follow-up 1.
      - A builder, `Settle()`, in `Code/EditorTools/` that makes Unity write the five files and nothing else. For example, it could:
        - re-serialize the three Unity reformats with `ForceReserializeAssets`, for the assets only, so the `.meta` files are left alone
@@ -203,9 +209,10 @@ None of these options changes which code or shaders run. So none of them costs a
   3. **The check tool,** `tools/unity-tree-check.js`, with `node --test` tests (gameplay-programmer, Standard, Node built-ins only), after follow-up 2.
      - It lists changed and untracked files under `Game/Assets/`, `Game/Packages/` and `Game/ProjectSettings/`, using `git status --porcelain`.
      - It takes the Issue's asset list as `--allow <path>` arguments.
-     - It restores each of the six files that isn't allowed, byte for byte from `HEAD`. It prints what it restored and marks settled files as unexpected.
+     - It restores each of the six files that isn't allowed in both the index and the working tree, with `git restore --source=HEAD --staged --worktree -- <path>`. Then it checks that `git status --porcelain -- <path>` prints nothing, and exits with 1 if it doesn't. It prints what it restored and marks settled files as unexpected.
+     - It never restores one of these files that is already staged, because it can't tell who staged it. It names the file and exits with 1, and the agent follows the [restore steps](#when-a-rewrite-shows-up-in-a-working-tree).
      - It exits with 1 if any other file changed that isn't allowed. It never restores anything under `Game/Packages/`, because `manifest.json` and `packages-lock.json` are in the security perimeter. A change there stops the run.
-     - Agents and QA run it after their last Unity run. The Producer can't run scripts (`docs/studio/claude-staff.md`), so it keeps using `git restore`.
+     - Agents and QA run it after their last Unity run. The Producer can't run scripts (`docs/studio/claude-staff.md`), so it keeps following the [restore steps](#when-a-rewrite-shows-up-in-a-working-tree) by hand.
   4. **`docs/studio/workflow.md`** (Producer): add a line to "Unity work" that points to this ADR's rule for rewrites.
   5. **Suggested:** add the restore rule and the Editor-code rules to these role files:
      - `.codex/agents/gameplay-programmer.toml`
@@ -236,3 +243,4 @@ None of these options changes which code or shaders run. So none of them costs a
 [urp-prefilter-src]: https://github.com/Unity-Technologies/Graphics/blob/6000.3/staging/Packages/com.unity.render-pipelines.universal/Runtime/Data/UniversalRenderPipelineAssetPrefiltering.cs
 [gitignore]: https://git-scm.com/docs/gitignore
 [gitfaq]: https://git-scm.com/docs/gitfaq
+[git-restore]: https://git-scm.com/docs/git-restore
