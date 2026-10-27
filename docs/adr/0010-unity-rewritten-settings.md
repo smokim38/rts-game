@@ -85,7 +85,7 @@ The Producer may raise the tier.
 
 ### How `UnityConnectSettings.asset` stays off
 
-- **Builds.** The build helper sets `m_Enabled` back to 0 in memory before every Player build. It also checks that the file is unchanged after Unity quits, because Unity can save settings at shutdown. `Settle()` does the same.
+- **Builds.** The build helper sets `m_Enabled` back to 0 in memory before every Player build. `Settle()` does the same. Unity can still save settings at shutdown, and code running inside Unity can't check the file after that. So once Unity has exited, the agent or tool that started the batch run checks the file with `git status` or the check tool (follow-up 3), and restores it if it changed. This applies to `Settle()` runs too.
 - **Commits.** An EditMode test fails unless every `m_Enabled` in the file is 0, as committed today. A PR that changes `Game/` can't merge without a `QA: pass` (AGENTS.md §6), so a committed flip can't merge.
 - **Review.** Reviewers request changes on any PR that changes the file, unless an accepted ADR records the owner's decision to turn services on.
 - **Working trees.** Everyone restores it whenever they see it changed (below).
@@ -97,8 +97,8 @@ The rule is the same for everyone. **A change to one of the six files that your 
 | Who | What to do |
 |---|---|
 | gameplay-programmer, tech-artist | After your last Unity run, check `git status`. Restore each of the six files your Issue doesn't list. Use the check tool once it exists (follow-up 3), and `git restore -- <path>` until then. List what you restored in your report, citing "ADR 0010". If any other file changed that you didn't mean to change, stop and report it (ADR 0006). |
-| qa-test-engineer | Do the same before posting the QA record, and list what you restored in the record. A restored file isn't a QA failure. Once follow-up 2 has merged, report any settled file you had to restore (anything except `UnityConnectSettings.asset`) as a bug outside the Issue (`docs/studio/workflow.md`, QA step 3). |
-| Producer | Before committing, in a launcher worktree or the main checkout, run `git status --short`. Restore each of the six files the Issue doesn't list with `git restore -- <path>`, and never stage them. Name the restored files in the session report, and once follow-up 2 has merged, flag any settled ones. If anything else changed unexpectedly, stop and ask the owner. |
+| qa-test-engineer | Do the same before posting the QA record, and list what you restored in the record. A restored file isn't a QA failure. Once follow-up 2 has merged, report any restored file that follow-up 2 committed as a bug outside the Issue (`docs/studio/workflow.md`, QA step 3). That excludes `UnityConnectSettings.asset` and any file follow-up 2 left out because it didn't settle. |
+| Producer | Before committing, in a launcher worktree or the main checkout, run `git status --short`. Restore each of the six files the Issue doesn't list with `git restore -- <path>`, and never stage them. Name the restored files in the session report, and once follow-up 2 has merged, flag any that follow-up 2 committed. If anything else changed unexpectedly, stop and ask the owner. |
 | code-reviewer, Codex reviewer | Request changes when a PR changes one of the six files and its Issue doesn't list that file, or when the change doesn't come from a builder. |
 | Owner | Nothing. If you open the main checkout in the Editor, Unity may rewrite these files. Close the Editor before the Producer's sitting ([ADR 0006][adr6-owner]), and the Producer restores them. To change one of these settings on purpose, ask the Producer for an Issue. |
 
