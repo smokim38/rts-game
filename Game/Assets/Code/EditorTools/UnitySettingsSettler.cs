@@ -5,7 +5,6 @@ using System.Linq;
 using System.Security.Cryptography;
 using UnityEditor;
 using UnityEditor.Build.Reporting;
-using UnityEngine;
 
 namespace Northwatch.EditorTools
 {
@@ -20,29 +19,54 @@ namespace Northwatch.EditorTools
             "Game/ProjectSettings/ProjectSettings.asset"
         };
 
+        private static readonly string[] AssetsToReserialize =
+        {
+            "Assets/Settings/Mobile_RPAsset.asset",
+            "Assets/Settings/UniversalRenderPipelineGlobalSettings.asset",
+            "Assets/Settings/DefaultVolumeProfile.asset"
+        };
+
         public static void Settle()
         {
             WithOnlySettingsChanged(Path.GetFullPath(".."), () =>
             {
-                AssetDatabase.ForceReserializeAssets(SettingsPaths.Take(3).Select(path => path.Substring(5)),
-                    ForceReserializeAssetsOptions.ReserializeAssets);
+                ReserializeSettingsAssets();
                 Directory.CreateDirectory("Builds/UnitySettingsSettler");
                 BuildReport report = PlayerBuildHelper.BuildPlayer(new BuildPlayerOptions
                 {
                     scenes = new[] { SandboxSceneBuilder.ScenePath },
                     locationPathName = "Builds/UnitySettingsSettler/Sandbox.exe",
-                    target = BuildTarget.StandaloneWindows64, options = BuildOptions.None
+                    target = BuildTarget.StandaloneWindows64,
+                    options = BuildOptions.None
                 }, keepBuildChanges: true);
-                if (report.summary.result != BuildResult.Succeeded || report.summary.totalErrors != 0 || report.summary.totalWarnings != 0)
+                if (report.summary.result != BuildResult.Succeeded ||
+                    report.summary.totalErrors != 0 || report.summary.totalWarnings != 0)
                     throw new InvalidOperationException("Settings settling build failed or produced warnings.");
                 AssetDatabase.SaveAssets();
             });
         }
 
+        private static void ReserializeSettingsAssets()
+        {
+            AssetDatabase.ForceReserializeAssets(AssetsToReserialize, ForceReserializeAssetsOptions.ReserializeAssets);
+            // URP finishes deserialization upgrades in delayCall. A synchronous -executeMethod/-quit
+            // run must drain that pending work before saving, or it writes an unfinished upgrade.
+            EditorApplication.CallbackFunction pendingUpgrades = EditorApplication.delayCall;
+            EditorApplication.delayCall = null;
+            pendingUpgrades?.Invoke();
+            AssetDatabase.SaveAssets();
+        }
+
         private static void WithOnlySettingsChanged(string root, Action settle)
         {
             Dictionary<string, byte[]> before = SnapshotFiles(root);
+            Exception failure = null;
             try { settle(); }
+            catch (Exception error)
+            {
+                failure = error;
+                throw;
+            }
             finally
             {
                 Dictionary<string, byte[]> after = SnapshotFiles(root);
@@ -50,7 +74,8 @@ namespace Northwatch.EditorTools
                     (!before.TryGetValue(path, out byte[] oldHash) || !after.TryGetValue(path, out byte[] newHash) ||
                      !oldHash.SequenceEqual(newHash))).OrderBy(path => path, StringComparer.Ordinal).ToArray();
                 if (changed.Length != 0)
-                    throw new InvalidOperationException("Settle changed files outside its five settings paths: " + string.Join(", ", changed));
+                    throw new InvalidOperationException("Settle changed files outside its five settings paths: " +
+                        string.Join(", ", changed), failure);
             }
         }
 
