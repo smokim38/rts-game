@@ -309,7 +309,7 @@ namespace Northwatch.EditorTools
         private static void BuildPlayer(string folder, BuildOptions options)
         {
             Directory.CreateDirectory("Builds/" + folder);
-            BuildReport report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
+            BuildReport report = PlayerBuildHelper.BuildPlayer(new BuildPlayerOptions
             {
                 scenes = new[] { ScenePath }, locationPathName = "Builds/" + folder + "/Sandbox.exe",
                 target = BuildTarget.StandaloneWindows64, options = options

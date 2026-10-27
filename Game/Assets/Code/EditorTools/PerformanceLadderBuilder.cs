@@ -1,7 +1,5 @@
 using System;
-using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Security.Cryptography;
 using Northwatch.Presentation;
 using Northwatch.Presentation.Diagnostics;
@@ -94,29 +92,14 @@ namespace Northwatch.EditorTools
                 !System.Text.RegularExpressions.Regex.IsMatch(arguments[index + 1], "^[0-9a-f]{40}$"))
                 throw new ArgumentException("Pass -ladder-commit with the full measured commit SHA.");
             Build();
-            Dictionary<string, byte[]> sources = WriteSourceHashes();
-            PlayerSettings settings = Resources.FindObjectsOfTypeAll<PlayerSettings>().Single();
-            string settingsBefore = EditorJsonUtility.ToJson(settings);
-            try
-            {
-                BuildPlayer("PerformanceLadder", BuildOptions.None);
-                BuildPlayer("PerformanceLadderDevelopment", BuildOptions.Development);
-            }
-            finally
-            {
-                // PlayerSettings also saves its in-memory batching changes on shutdown.
-                EditorJsonUtility.FromJsonOverwrite(settingsBefore, settings);
-                // BuildPipeline flushes unrelated import upgrades (#55). Restore the exact
-                // pre-build bytes, including Player settings, rather than committing them.
-                foreach (var source in sources)
-                    if (!File.ReadAllBytes(source.Key).SequenceEqual(source.Value)) File.WriteAllBytes(source.Key, source.Value);
-            }
+            WriteSourceHashes();
+            BuildPlayer("PerformanceLadder", BuildOptions.None);
+            BuildPlayer("PerformanceLadderDevelopment", BuildOptions.Development);
             File.WriteAllText("Builds/PerformanceLadder/commit.txt", arguments[index + 1]);
         }
 
-        private static Dictionary<string, byte[]> WriteSourceHashes()
+        private static void WriteSourceHashes()
         {
-            var sources = new Dictionary<string, byte[]>();
             Directory.CreateDirectory("Builds/PerformanceLadder");
             using var writer = new StreamWriter("Builds/PerformanceLadder/sources.txt");
             using SHA256 hash = SHA256.Create();
@@ -127,12 +110,10 @@ namespace Northwatch.EditorTools
                 foreach (string path in paths)
                 {
                     byte[] bytes = File.ReadAllBytes(path);
-                    sources.Add(path, bytes);
                     writer.WriteLine(BitConverter.ToString(hash.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant() +
                         " " + path.Replace('\\', '/'));
                 }
             }
-            return sources;
         }
 
         private static void BuildPlayer(string folder, BuildOptions options)
@@ -140,7 +121,7 @@ namespace Northwatch.EditorTools
             if (PlayerSettings.GetScriptingBackend(UnityEditor.Build.NamedBuildTarget.Standalone) != ScriptingImplementation.Mono2x)
                 throw new InvalidOperationException("The ladder requires Mono.");
             Directory.CreateDirectory("Builds/" + folder);
-            BuildReport report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
+            BuildReport report = PlayerBuildHelper.BuildPlayer(new BuildPlayerOptions
             {
                 scenes = new[] { ScenePath }, locationPathName = "Builds/" + folder + "/PerformanceLadder.exe",
                 target = BuildTarget.StandaloneWindows64, options = options
