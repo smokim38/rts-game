@@ -86,6 +86,7 @@ with the same PR and SHA as its marker.
 2. The Producer doesn't start an Issue whose asset list overlaps that of another open, started Issue.
 3. No Unity run (builder, tests or build) happens on the ladder PC while a performance ladder runs ([ADR 0004](../adr/0004-unit-simulation-architecture.md#performance-ladder)).
 4. Assets are created and changed by builders run in batch mode, following [ADR 0006](../adr/0006-unity-editor-automation.md#rules-for-agents-working-with-unity) and [AGENTS.md §4](../../AGENTS.md#4-engineering-standards).
+5. A change to a settings file listed in [ADR 0010](../adr/0010-unity-rewritten-settings.md#when-a-rewrite-shows-up-in-a-working-tree) is never committed if the Issue doesn't list that file; restore it as the ADR says.
 
 ## Worktrees
 
