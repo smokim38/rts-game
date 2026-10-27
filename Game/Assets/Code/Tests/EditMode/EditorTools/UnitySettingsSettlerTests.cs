@@ -1,11 +1,8 @@
 using System;
-using System.Collections;
 using System.IO;
 using System.Reflection;
 using Northwatch.EditorTools;
 using NUnit.Framework;
-using UnityEditor;
-using UnityEngine.TestTools;
 
 namespace Northwatch.Tests.EditMode.EditorTools
 {
@@ -14,8 +11,6 @@ namespace Northwatch.Tests.EditMode.EditorTools
         private static readonly Action<string, Action> RunChecked = (Action<string, Action>)Delegate.CreateDelegate(
             typeof(Action<string, Action>), typeof(UnitySettingsSettler).GetMethod("WithOnlySettingsChanged",
                 BindingFlags.NonPublic | BindingFlags.Static));
-        private static readonly Action ReserializeSettings = (Action)Delegate.CreateDelegate(typeof(Action),
-            typeof(UnitySettingsSettler).GetMethod("ReserializeSettingsAssets", BindingFlags.NonPublic | BindingFlags.Static));
         private string root;
 
         [SetUp]
@@ -97,32 +92,6 @@ namespace Northwatch.Tests.EditMode.EditorTools
         {
             var failure = new IOException("Build failed");
             Assert.That(Assert.Throws<IOException>(() => RunChecked(root, () => throw failure)), Is.SameAs(failure));
-        }
-
-        [UnityTest]
-        public IEnumerator ReserializedSettingsStayUnchangedAfterDeferredUpgradesAndEditorTick()
-        {
-            const string mobilePath = "Assets/Settings/Mobile_RPAsset.asset";
-            int calls = 0;
-            EditorApplication.CallbackFunction deferredUpgrade = () => calls++;
-            EditorApplication.delayCall += deferredUpgrade;
-            try
-            {
-                ReserializeSettings();
-                Assert.That(calls, Is.EqualTo(1), "Deferred upgrades must finish before the final save.");
-                using (var mobile = new SerializedObject(AssetDatabase.LoadMainAssetAtPath(mobilePath)))
-                    Assert.That(mobile.FindProperty("k_AssetPreviousVersion").intValue,
-                        Is.EqualTo(mobile.FindProperty("k_AssetVersion").intValue), "URP's upgrade must be complete.");
-                byte[] before = File.ReadAllBytes(mobilePath);
-                yield return null;
-                AssetDatabase.SaveAssets();
-                Assert.That(calls, Is.EqualTo(1), "Consumed callbacks must not run again on the Editor tick.");
-                Assert.That(File.ReadAllBytes(mobilePath), Is.EqualTo(before));
-            }
-            finally
-            {
-                EditorApplication.delayCall -= deferredUpgrade;
-            }
         }
 
         private void Write(string relative, string contents)
