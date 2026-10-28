@@ -88,8 +88,8 @@ You handle the branch, the commit and the PR. Use `git -C <path>` for a launcher
 ADR 0010: [Each file](../../docs/adr/0010-unity-rewritten-settings.md#each-file), [When a rewrite shows up in a working tree](../../docs/adr/0010-unity-rewritten-settings.md#when-a-rewrite-shows-up-in-a-working-tree), [Rules for Editor code](../../docs/adr/0010-unity-rewritten-settings.md#rules-for-editor-code).
 
 - Before staging in a launcher worktree or the main checkout, run `git status --short`.
-- Restore each of the six files the Issue does not list, including any an agent or QA names, with these steps by hand; you cannot run the check script. Never stage these files.
-  1. Run `git status --short -- <path>`; if staged and you did not stage it, stop and ask the owner.
+- Restore each of the six files the Issue does not list, including any an agent or QA names, with these steps by hand; you cannot run the check script. Never stage these files. In a launcher worktree, use `git -C <worktree>` for each command.
+  1. Run `git status --short -- <path>`; if staged and you did not stage it, stop and ask the owner. Do not restore or commit it.
   2. Run `git restore --source=HEAD --staged --worktree -- <path>`.
   3. Check that `git status --short -- <path>` prints nothing.
 - Name restored files in the session report; flag any of the five settled files (all except `UnityConnectSettings.asset`).
@@ -98,7 +98,7 @@ ADR 0010: [Each file](../../docs/adr/0010-unity-rewritten-settings.md#each-file)
 1. **Claude subagent work:** before delegating, update `main` (`git switch main`, then `git pull` as a call of its own). Then create `<type>/<n>-<short-name>` with `git switch -c`, so the subagent's files land on the branch.
 2. **Codex work:** the launcher creates the branch and worktree. After the run, check `git -C <worktree> status` and `git -C <worktree> diff`.
 3. Every change must be in the Issue's scope.
-4. Stage the files with `git add <paths>`. Then commit as a call of its own, with a Conventional Commit that ends in `(#<n>)`. Commits of launcher output end with the run id from the summary, so the merge gate knows Codex wrote them:
+4. After the ADR 0010 check above, stage the files with `git add <paths>`. Then commit as a call of its own, with a Conventional Commit that ends in `(#<n>)`. Commits of launcher output end with the run id from the summary, so the merge gate knows Codex wrote them:
    ```bash
    git -C <worktree> commit -F - <<'EOF'
    <type>(<scope>): <summary> (#<n>)

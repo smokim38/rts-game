@@ -16,7 +16,7 @@ ADR 0010: [Each file](../../docs/adr/0010-unity-rewritten-settings.md#each-file)
 
 - After the last Unity run, before returning the QA result for the launcher to post, run `node tools/unity-tree-check.js` with one `--allow <repo-relative path>` per file in the Issue asset list.
 - List every path it names with its line prefix in the QA record, citing ADR 0010. A named or restored file among the six is not a QA failure.
-- `git restore` fails in the Codex sandbox (PR #129): report any rewrite the tool could not restore for the Producer to restore; never work around it. Any other unexpected change: stop and report (ADR 0006).
+- `git restore` fails in the Codex sandbox (PR #129): report any rewrite the tool could not restore for the Producer to restore; never work around it. If any other file changed that you did not mean to change, stop and report it (ADR 0006).
 - List a rewrite of any of the five settled files (all except `UnityConnectSettings.asset`) as a bug outside the Issue ([workflow.md, QA step 3](../../docs/studio/workflow.md#qa-step-6)).
 
 1. Save only owned assets with `AssetDatabase.SaveAssetIfDirty` and owned scenes; no `AssetDatabase.SaveAssets()` except in `Settle()` or tests flushing Unity state.
