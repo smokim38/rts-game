@@ -48,7 +48,12 @@ namespace Northwatch.Tests.EditMode.EditorTools
             // A non-package fixture checks the Packages root without changing approved dependencies.
             const string packageFixture = "Packages/PlayerBuildHelperTests.snapshot";
             Assert.That(File.Exists(packageFixture), Is.False);
-            string[] paths = { "Assets/Settings/PC_RPAsset.asset", packageFixture,
+            // Keep simulated rewrites away from live assets and their queued imports.
+            string assetFixture = AssetDatabase.GenerateUniqueAssetPath(
+                "Assets/Code/Tests/EditMode/EditorTools/PlayerBuildHelperTests.txt");
+            File.WriteAllText(assetFixture, "Build source\r\n");
+            AssetDatabase.ImportAsset(assetFixture, ImportAssetOptions.ForceSynchronousImport);
+            string[] paths = { assetFixture, packageFixture,
                 "ProjectSettings/ProjectSettings.asset", ConnectPath };
             byte[] fixtureBytes = { 0, 255, 13, 10 };
             File.WriteAllBytes(packageFixture, fixtureBytes);
@@ -98,7 +103,11 @@ namespace Northwatch.Tests.EditMode.EditorTools
             {
                 EditorJsonUtility.FromJsonOverwrite(playerBefore, playerSettings);
                 EditorJsonUtility.FromJsonOverwrite(connectBefore, connectSettings);
-                for (int i = 0; i < paths.Length; i++) File.WriteAllBytes(paths[i], before[i]);
+                for (int i = 0; i < paths.Length; i++)
+                    if (paths[i] != assetFixture && paths[i] != packageFixture &&
+                        !File.ReadAllBytes(paths[i]).SequenceEqual(before[i]))
+                        File.WriteAllBytes(paths[i], before[i]);
+                AssetDatabase.DeleteAsset(assetFixture);
                 File.Delete(packageFixture);
             }
         }
