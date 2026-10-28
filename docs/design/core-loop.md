@@ -198,14 +198,14 @@ Suggested build order. Each system is one or more later Issues.
 ### S1. Camera and selection
 
 1. The camera looks down at a fixed angle. It pans with the arrow keys and the screen edges, zooms between a set nearest and farthest distance, and can't leave the map.
-2. Left-click selects one own unit; clicking empty ground clears the selection. Dragging a box selects exactly the own units whose centre is inside the box. Enemy units are never added to a box selection.
+2. Clicking an own unit selects it, and the deselect input clears the selection; which mouse buttons these use follows the active controls option ([controls.md](controls.md)). Dragging a box selects exactly the own units whose centre is inside the box. Enemy units are never added to a box selection.
 3. Shift+click adds or removes one unit; Shift+drag adds the units in the box to the current selection.
 4. Ctrl+1 to Ctrl+9 saves the selection as a group; pressing the number selects it again, and pressing it twice quickly centres the camera on it. Destroyed units leave every group.
 5. Box-selecting 2,000 units shows the selection on the next frame, and that frame takes no longer than 33 ms.
 
 ### S2. Moving a group
 
-1. Right-clicking ground with units selected shows a marker there, and every selected unit starts moving within 0.1 s.
+1. A move order on ground with units selected (the move click of the active controls option, see [controls.md](controls.md)) shows a marker there, and every selected unit starts moving within 0.1 s.
 2. 100 small cubes sent to an open point stop with no two overlapping, packed into an area no larger than twice their combined footprint.
 3. A mixed group (50 small, 10 large cubes) sent 50 cells keeps together: the first and last units arrive within 3 s of each other.
 4. Two seconds after arriving, no unit is still moving (no jitter or sliding).
@@ -223,7 +223,7 @@ Suggested build order. Each system is one or more later Issues.
 
 1. Stop: units halt within 0.5 s and drop their current order.
 2. Hold position: units don't move for any reason, including being attacked, until given a new order. Once S5 exists, they still fire at enemies in range.
-3. Shift+right-click queues up to 16 waypoints. Units visit them in order, and the queued route is shown while they are selected.
+3. Shift with the move click of the active controls option ([controls.md](controls.md)) queues up to 16 waypoints. Units visit them in order, and the queued route is shown while they are selected.
 4. A new order without Shift replaces the whole queue at once.
 
 ### S5. Combat basics
