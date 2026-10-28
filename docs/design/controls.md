@@ -58,7 +58,7 @@ A click with a modifier held (Shift, Ctrl, Alt) triggers only actions bound with
 | Add the units in a box | Shift+left-drag | Shift+left-drag | Now |
 | Add all of that type on screen | Shift+double-left-click a unit | Shift+double-left-click a unit | Now |
 | Move | Left-click ground | Right-click ground | Now |
-| Deselect all | Right-click (anywhere) | Left-click empty ground, or Esc | Now |
+| Deselect all | Right-click (anywhere), or Esc | Left-click empty ground, or Esc | Now |
 | Drag pan | Hold right button and drag | Hold middle button and drag | Now |
 | Key pan | Arrow keys | Arrow keys | Now |
 | Edge pan | Pointer at a screen edge | Pointer at a screen edge | Now |
@@ -81,7 +81,7 @@ Notes on the bindings:
 - **Classic right button:** a click (6 pixels or less) clears the selection and leaves the camera still. A drag pans and leaves the selection unchanged.
 - **Modern right button:** a right-drag gives no order and does nothing.
 - **Stop and Hold position** act on the selection. With nothing selected, they do nothing.
-- **Esc** has no default binding in Classic.
+- **Esc** deselects all in both Classic and Modern (owner decision, Issue #132).
 - **F10** opens the game menu and pauses the match until the menu closes. It can't be rebound, and no other action can use it.
 
 ### Control groups
@@ -183,7 +183,7 @@ Each check uses the grey-box sandbox (core-loop) with its spawn tool and on-scre
 ### C1. Classic and Modern (Now)
 
 1. **Classic, left button.** With 5 own small cubes selected: a left press and release on ground that moves the pointer 6 pixels gives a move order with a marker. A left press that moves 7 pixels or more draws a box, selects the own units inside it, and gives no move order. With nothing selected, a left-click on ground shows no marker and nothing moves.
-2. **Classic, right button.** With units selected: a right press and release that moves the pointer 6 pixels or less clears the selection, and the camera doesn't move. A right press that moves more than 6 pixels pans the camera, and after release the selection is unchanged.
+2. **Classic, right button and Esc.** With units selected: a right press and release that moves the pointer 6 pixels or less clears the selection, and the camera doesn't move. A right press that moves more than 6 pixels pans the camera, and after release the selection is unchanged. With units selected, Esc clears the selection, and the camera doesn't move.
 3. **Modern.** A right-click on ground moves the selected units with a marker. A left-click on empty ground clears the selection, and so does Esc. A middle-drag pans. A right-drag of more than 6 pixels gives no order.
 4. **Double-click (both options).** With 10 own small cubes and 3 own large cubes on screen, 5 own small cubes off screen and enemy small cubes on screen: a double-left-click on an own small cube selects exactly the 10 on-screen own small cubes. Two clicks 0.4 s apart act as two single clicks.
 5. **F10.** In Classic, Modern and Custom, F10 opens the menu and the match is paused: no unit moves while it is open.
@@ -221,7 +221,7 @@ Choices this page makes where the owner's instructions left the detail open. Eac
 3. **Double-click and double-tap window:** 0.35 s.
 4. **Classic, left-click on ground with nothing selected:** does nothing.
 5. **Shift+click on ground** (Classic left, Modern right): a queued move once core-loop S4.3 exists, a plain move until then. Shift+left-click on ground in Modern does nothing.
-6. **Esc in Classic:** no default binding, as the owner's list gives it only to Modern. *Recommendation:* also make Esc deselect in Classic.
+6. **Esc in Classic:** *settled by the owner (Issue #132):* Esc deselects all in Classic too, as in Modern.
 7. **Edge pan zone:** 4 pixels, and off during any drag.
 8. **Pan speed:** 100% moves one screen width per second; slider 25% to 200%.
 9. **Zoom speed:** 100% is 10% of the zoom range per wheel notch; slider 25% to 200%; zoom centres on the middle of the screen, not the pointer.
