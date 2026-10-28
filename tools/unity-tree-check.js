@@ -18,6 +18,7 @@ function runGit(args, cwd) {
   try {
     return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (error) {
+    // Git stderr can include local paths containing a user name; keep it out of reports.
     throw Error(`git ${args[0]} failed (${error.code || error.status}); no workaround attempted.`);
   }
 }
@@ -52,6 +53,7 @@ function main(argv = process.argv.slice(2), { cwd = process.cwd(), git = runGit,
     const stagedFiles = new Set(entries.filter(staged).map(entry => entry.file));
     const seen = new Set();
     let failed = false;
+    let restoreFailed = false;
     for (const { file, code } of entries) {
       if (seen.has(file)) continue;
       seen.add(file);
@@ -64,6 +66,10 @@ function main(argv = process.argv.slice(2), { cwd = process.cwd(), git = runGit,
       } else if (allowed.has(file)) {
         log(`Allowed: ${file} (${code}); left untouched.`);
       } else if (REWRITES.has(file)) {
+        if (restoreFailed) {
+          log(`Not restored: ${file}; an earlier restore failed.`);
+          continue;
+        }
         // Recheck immediately before touching the index; a newly staged file stays untouched.
         if (status(git, root, [file]).some(staged)) {
           log(`Unexpected staged change: ${file}; left untouched.`);
@@ -76,7 +82,8 @@ function main(argv = process.argv.slice(2), { cwd = process.cwd(), git = runGit,
           log(`Restored: ${file}${REWRITES.get(file) ? ' (unexpected: settled in #125)' : ''}`);
         } catch (error) {
           log(`Restore failed: ${file}: ${error.message}`);
-          return 1;
+          failed = true;
+          restoreFailed = true;
         }
       } else {
         log(`Unexpected: ${file} (${code}); left untouched.`);

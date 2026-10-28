@@ -7,6 +7,7 @@ const { execFileSync, spawnSync } = require('node:child_process');
 const { main } = require('./unity-tree-check.js');
 
 const source = path.resolve(__dirname, '..');
+const fixtureRoot = path.join(source, 'Game', '.utmp');
 const script = path.join(__dirname, 'unity-tree-check.js');
 const settings = [
   'Game/Assets/Settings/Mobile_RPAsset.asset',
@@ -23,9 +24,11 @@ const git = (cwd, args) => execFileSync('git', args, {
 
 function fixture(t) {
   // Borrow existing HEAD without creating commits or running a checkout of unrelated files.
-  const dir = fs.mkdtempSync(path.join(source, '.unity-tree-check-'));
+  // AGENTS.md section 5 keeps writes in this worktree; Game/.utmp/ is already git-ignored.
+  fs.mkdirSync(fixtureRoot, { recursive: true });
+  const dir = fs.mkdtempSync(path.join(fixtureRoot, '.unity-tree-check-'));
   t.after(() => {
-    assert.equal(path.dirname(path.resolve(dir)), source);
+    assert.equal(path.dirname(path.resolve(dir)), fixtureRoot);
     assert.ok(path.basename(dir).startsWith('.unity-tree-check-'));
     fs.rmSync(dir, { recursive: true, force: true });
   });
@@ -206,18 +209,31 @@ test('a file staged after the initial scan is never restored', t => {
   assert.ok(f.status().startsWith('M '));
 });
 
-test('restore command failure is named and stops further restores', t => {
+test('restore command failure stops further restores but names every remaining change', t => {
   const f = fixture(t);
   for (const file of settings) f.write(file);
+  const packageFile = 'Game/Packages/manifest.json';
+  const untracked = 'Game/ProjectSettings/new file.asset';
+  f.write(packageFile);
+  f.write(other);
+  f.write(untracked);
   const before = f.status();
   const lines = [];
-  let restores = 0;
+  const restores = [];
   assert.equal(main([], { cwd: f.dir, log: line => lines.push(line), git: (args, cwd) => {
-    if (args[0] === 'restore') { restores++; throw Error('test restore failure'); }
+    if (args[0] === 'restore') { restores.push(args.at(-1)); throw Error('test restore failure'); }
     return git(cwd, args);
   } }), 1);
-  assert.equal(restores, 1);
-  assert.ok(lines.some(line => line.startsWith('Restore failed: Game/')));
+  assert.equal(restores.length, 1);
+  assert.ok(lines.some(line => line.startsWith(`Restore failed: ${restores[0]}:`)));
+  for (const file of settings.filter(file => file !== restores[0])) {
+    assert.ok(lines.includes(`Not restored: ${file}; an earlier restore failed.`), file);
+  }
+  assert.ok(lines.some(line => line.startsWith(`Unexpected package change: ${packageFile}`)));
+  for (const file of [other, untracked]) {
+    assert.ok(lines.some(line => line.startsWith(`Unexpected: ${file}`)), file);
+  }
+  assert.ok(!lines.includes('No unexpected changes remain.'));
   assert.equal(f.status(), before);
 });
 
