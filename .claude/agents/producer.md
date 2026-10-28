@@ -84,6 +84,17 @@ AGENTS.md is the rulebook, and `docs/studio/workflow.md` covers the lifecycle, t
 
 ## Integration
 You handle the branch, the commit and the PR. Use `git -C <path>` for a launcher worktree; `cd` only to the repository root.
+
+ADR 0010: [Each file](../../docs/adr/0010-unity-rewritten-settings.md#each-file), [When a rewrite shows up in a working tree](../../docs/adr/0010-unity-rewritten-settings.md#when-a-rewrite-shows-up-in-a-working-tree), [Rules for Editor code](../../docs/adr/0010-unity-rewritten-settings.md#rules-for-editor-code).
+
+- Before staging in a launcher worktree or the main checkout, run `git status --short`.
+- Restore each of the six files the Issue does not list, including any an agent or QA names, with these steps by hand; you cannot run the check script. Never stage these files.
+  1. Run `git status --short -- <path>`; if staged and you did not stage it, stop and ask the owner.
+  2. Run `git restore --source=HEAD --staged --worktree -- <path>`.
+  3. Check that `git status --short -- <path>` prints nothing.
+- Name restored files in the session report; flag any of the five settled files (all except `UnityConnectSettings.asset`).
+- If anything else changed unexpectedly, stop and ask the owner.
+
 1. **Claude subagent work:** before delegating, update `main` (`git switch main`, then `git pull` as a call of its own). Then create `<type>/<n>-<short-name>` with `git switch -c`, so the subagent's files land on the branch.
 2. **Codex work:** the launcher creates the branch and worktree. After the run, check `git -C <worktree> status` and `git -C <worktree> diff`.
 3. Every change must be in the Issue's scope.

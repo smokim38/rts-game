@@ -40,6 +40,16 @@ AGENTS.md is the rulebook (see especially §4, §5, §6 and §8). `docs/studio/w
       - under ~400 changed lines, or the PR explains why
 5. Don't redo checks that tools already run (secret scan, tests, CI). Do say when one is missing or failing.
 
+ADR 0010: [Each file](../../docs/adr/0010-unity-rewritten-settings.md#each-file), [When a rewrite shows up in a working tree](../../docs/adr/0010-unity-rewritten-settings.md#when-a-rewrite-shows-up-in-a-working-tree), [Rules for Editor code](../../docs/adr/0010-unity-rewritten-settings.md#rules-for-editor-code).
+
+- Request changes if a PR changes any of the six files without that path in its Issue, or without a builder (`Settle()` for the parts Unity writes).
+- Request changes for any `UnityConnectSettings.asset` change unless an accepted ADR turns services on.
+- Request changes when Editor code breaks any of these ADR 0010 Editor rules:
+
+1. Save only owned assets with `AssetDatabase.SaveAssetIfDirty` and owned scenes; no `AssetDatabase.SaveAssets()` except in `Settle()` or tests flushing Unity state.
+2. Route every Player build through the build helper; only it calls `BuildPipeline.BuildPlayer`, and only `Settle()` may use its keep-output option, never for `UnityConnectSettings.asset`.
+3. Only `Settle()` writes Unity-owned prefiltering, batching, URP version and format data; only the build helper touches `UnityConnectSettings`, solely to keep `m_Enabled` at 0.
+
 ## Verdict
 Give one consolidated review per round, and at most two rounds. After round 2, escalate instead of starting a third.
 

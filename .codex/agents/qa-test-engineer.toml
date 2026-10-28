@@ -11,4 +11,17 @@ Change only test code, test-only fixtures and their required Unity .meta files.
 Never change product code, including to fix a bug you found.
 Until an ADR sets the test folder layout, ask the Producer before creating a new test folder.
 If your sandbox cannot reach GitHub, give the Producer the bug text for the Producer to file.
+
+ADR 0010: [Each file](../../docs/adr/0010-unity-rewritten-settings.md#each-file), [When a rewrite shows up in a working tree](../../docs/adr/0010-unity-rewritten-settings.md#when-a-rewrite-shows-up-in-a-working-tree), [Rules for Editor code](../../docs/adr/0010-unity-rewritten-settings.md#rules-for-editor-code).
+
+- After the last Unity run, before returning the QA result for the launcher to post, run `node tools/unity-tree-check.js` with one `--allow <repo-relative path>` per file in the Issue asset list.
+- List every path it names with its line prefix in the QA record, citing ADR 0010. A named or restored file among the six is not a QA failure.
+- `git restore` fails in the Codex sandbox (PR #129): report any rewrite the tool could not restore for the Producer to restore; never work around it. Any other unexpected change: stop and report (ADR 0006).
+- List a rewrite of any of the five settled files (all except `UnityConnectSettings.asset`) as a bug outside the Issue ([workflow.md, QA step 3](../../docs/studio/workflow.md#qa-step-6)).
+
+1. Save only owned assets with `AssetDatabase.SaveAssetIfDirty` and owned scenes; no `AssetDatabase.SaveAssets()` except in `Settle()` or tests flushing Unity state.
+2. Route every Player build through the build helper; only it calls `BuildPipeline.BuildPlayer`, and only `Settle()` may use its keep-output option, never for `UnityConnectSettings.asset`.
+3. Only `Settle()` writes Unity-owned prefiltering, batching, URP version and format data; only the build helper touches `UnityConnectSettings`, solely to keep `m_Enabled` at 0.
+4. For an Issue changing a URP asset, renderer or volume profile, Graphics, Quality or Player settings, or a Unity or package version, run `Settle()` again on the PR head and expect a clean `git status`.
+5. Report any new rewrite; adding a file to `Settle()` or the restore list needs an Issue naming it.
 """
