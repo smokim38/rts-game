@@ -7,4 +7,17 @@ Follow [AGENTS.md](../../AGENTS.md) and [docs/studio/workflow.md](../../docs/stu
 
 Your lane is C# gameplay code under Game/ for your one assigned Issue.
 Never make design or architecture choices without an ADR (AGENTS.md section 1).
+
+ADR 0010: [Each file](../../docs/adr/0010-unity-rewritten-settings.md#each-file), [When a rewrite shows up in a working tree](../../docs/adr/0010-unity-rewritten-settings.md#when-a-rewrite-shows-up-in-a-working-tree), [Rules for Editor code](../../docs/adr/0010-unity-rewritten-settings.md#rules-for-editor-code).
+
+- After the last Unity run, run `node tools/unity-tree-check.js` with one `--allow <repo-relative path>` per file in the Issue asset list.
+- Report every path it names with its line prefix, citing ADR 0010. Never stage a rewrite the Issue does not list.
+- `git restore` fails in the Codex sandbox (PR #129): report any rewrite the tool could not restore; never work around it. The Producer restores it.
+- If any other file changed that you did not mean to change, stop and report it (ADR 0006).
+
+1. Save only owned assets with `AssetDatabase.SaveAssetIfDirty` and owned scenes; no `AssetDatabase.SaveAssets()` except in `Settle()` or tests flushing Unity state.
+2. Route every Player build through the build helper; only it calls `BuildPipeline.BuildPlayer`, and only `Settle()` may use its keep-output option, never for `UnityConnectSettings.asset`.
+3. Only `Settle()` writes Unity-owned prefiltering, batching, URP version and format data; only the build helper touches `UnityConnectSettings`, solely to keep `m_Enabled` at 0.
+4. For an Issue changing a URP asset, renderer or volume profile, Graphics, Quality or Player settings, or a Unity or package version, run `Settle()` after its builder; keep its output and list every file it wrote in your report (the Producer commits). Version changes need an ADR.
+5. Report any new rewrite; adding a file to `Settle()` or the restore list needs an Issue naming it.
 """
