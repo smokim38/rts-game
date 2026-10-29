@@ -48,6 +48,29 @@ namespace Northwatch.Tests.EditMode.EditorTools
         }
 
         [Test]
+        public void MovementBuilderPreservesSavedTuning()
+        {
+            var settings = AssetDatabase.LoadAssetAtPath<MovementSettings>(SandboxSceneBuilder.MovementSettingsPath);
+            int previous = settings.Snapshot().MaxSerialFallbacks;
+            using var serialized = new SerializedObject(settings);
+            try
+            {
+                serialized.FindProperty("maxSerialFallbacks").intValue = 7;
+                serialized.ApplyModifiedPropertiesWithoutUndo();
+                AssetDatabase.SaveAssetIfDirty(settings);
+                SandboxSceneBuilder.BuildMovement();
+                Assert.That(settings.Snapshot().MaxSerialFallbacks, Is.EqualTo(7));
+            }
+            finally
+            {
+                serialized.Update();
+                serialized.FindProperty("maxSerialFallbacks").intValue = previous;
+                serialized.ApplyModifiedPropertiesWithoutUndo();
+                AssetDatabase.SaveAssetIfDirty(settings);
+            }
+        }
+
+        [Test]
         public void BuilderDoesNotSavePendingChangesToUnrelatedAsset()
         {
             WithUnrelatedMaterial((material, path) =>

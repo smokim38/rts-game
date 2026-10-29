@@ -3,6 +3,7 @@ using Unity.Collections;
 using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
+using Northwatch.Simulation.Movement;
 
 namespace Northwatch.Simulation
 {
@@ -10,6 +11,8 @@ namespace Northwatch.Simulation
     internal struct FillDrawDataJob : IJob
     {
         [ReadOnly] internal NativeArray<float3> Positions;
+        [ReadOnly] internal NativeArray<MovementUnit> Movement;
+        internal float Interpolation;
         [ReadOnly] internal NativeArray<Side> Sides;
         [ReadOnly] internal NativeArray<UnitSize> Sizes;
         [ReadOnly] internal NativeArray<byte> Alive;
@@ -24,12 +27,16 @@ namespace Northwatch.Simulation
             {
                 if (Alive[slot] == 0) continue;
                 float width = Sizes[slot] == UnitSize.Small ? 0.5f : 1f;
-                float3 position = Positions[slot];
+                MovementUnit unit = Movement[slot];
+                float3 position = math.lerp(unit.Previous.Position, Positions[slot], Interpolation);
+                float angle = unit.Previous.Heading + math.atan2(math.sin(unit.Heading - unit.Previous.Heading),
+                    math.cos(unit.Heading - unit.Previous.Heading)) * Interpolation;
+                float cosine = math.cos(angle) * width, sine = math.sin(angle) * width;
                 int index = Selected[slot] != 0 ? Alive.Length * 2 + selected++ :
                     Sides[slot] == Side.First ? first++ : Alive.Length + second++;
                 Matrices[index] = new Matrix4x4
                 {
-                    m00 = width, m11 = width, m22 = width, m33 = 1f,
+                    m00 = cosine, m02 = -sine, m20 = sine, m11 = width, m22 = cosine, m33 = 1f,
                     m03 = position.x, m13 = position.y + width * 0.5f, m23 = position.z
                 };
             }

@@ -134,6 +134,26 @@ namespace Northwatch.Tests.EditMode.Simulation
         }
 
         [Test]
+        public void PendingFrameWritesTheOtherDrawBufferAndPublishesItAtCompletion()
+        {
+            using var simulation = new UnitSimulation();
+            simulation.QueueAdd(Side.First, UnitSize.Small, Vector3.zero);
+            Tick(simulation);
+            var previousDraw = simulation.DrawMatrices;
+            Matrix4x4 previous = previousDraw[0];
+            simulation.State.Positions[0] = new Unity.Mathematics.float3(9, 0, 0);
+            var unit = simulation.State.Movement[0];
+            unit.Previous.Position = simulation.State.Positions[0];
+            simulation.State.Movement[0] = unit;
+            simulation.ScheduleFrame(0);
+            Assert.That(previousDraw[0], Is.EqualTo(previous));
+            simulation.CompleteFrame();
+            Assert.That(simulation.DrawMatrices.Equals(previousDraw), Is.False);
+            Assert.That(simulation.DrawMatrices[0].m03, Is.EqualTo(9));
+            Assert.That(previousDraw[0], Is.EqualTo(previous));
+        }
+
+        [Test]
         public void TwoThousandUnitTicksAllocateNoManagedBytesAfterWarmup()
         {
             using var simulation = new UnitSimulation();

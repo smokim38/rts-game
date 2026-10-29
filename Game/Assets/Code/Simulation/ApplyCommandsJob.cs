@@ -1,6 +1,7 @@
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
+using Northwatch.Simulation.Movement;
 
 namespace Northwatch.Simulation
 {
@@ -60,6 +61,10 @@ namespace Northwatch.Simulation
             int slot = State.Summary[2] > 0 ? State.FreeSlots[--State.Summary[2]] : State.Summary[1]++;
             if (State.Generations[slot] == 0) State.Generations[slot] = 1;
             State.Positions[slot] = command.Position;
+            State.Movement[slot] = new MovementUnit
+            {
+                Previous = new MovementPose { Position = command.Position }, Home = command.Position.xz
+            };
             State.Sides[slot] = command.Side;
             State.Sizes[slot] = command.Size;
             State.Alive[slot] = 1;
