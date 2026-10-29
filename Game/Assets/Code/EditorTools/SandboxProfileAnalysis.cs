@@ -18,15 +18,22 @@ namespace Northwatch.EditorTools
             => AnalyzeCaptures(new[] { "Logs/135-before.raw", "Logs/135-after-box.raw", "Logs/135-after-double.raw" },
                 "Logs/135-profile-summary.txt");
 
-        private static void AnalyzeCaptures(string[] captures, string summaryPath)
+        public static void AnalyzeMoveMarker()
+        {
+            const string after = "Logs/sandbox-2000-selection.raw";
+            AnalyzeCaptures(new[] { "Logs/137-before.raw", after }, "Logs/137-profile-summary.txt", after);
+        }
+
+        private static void AnalyzeCaptures(string[] captures, string summaryPath, string moveMarkerCapture = null)
         {
             var output = new StringBuilder();
             bool allocated = false;
             foreach (string path in captures)
             {
                 if (!ProfilerDriver.LoadProfile(path, false)) throw new InvalidOperationException("Could not load " + path);
-                foreach (string scope in new[] { "Northwatch.Simulation", "Northwatch.Drawing", "Northwatch.SelectionInput", "Northwatch.SandboxOverlay", "PlayerLoop" })
+                foreach (string scope in new[] { "Northwatch.Simulation", "Northwatch.Drawing", "Northwatch.SelectionInput", "Northwatch.SandboxOverlay", "PlayerLoop", "Northwatch.MoveMarker" })
                 {
+                    if (scope == "Northwatch.MoveMarker" && path != moveMarkerCapture) continue;
                     if (path == "Logs/selection-before.raw" && scope == "Northwatch.SelectionInput") continue;
                     int samples = 0;
                     long bytes = 0;

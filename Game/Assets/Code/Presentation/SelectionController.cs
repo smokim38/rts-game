@@ -27,7 +27,7 @@ namespace Northwatch.Presentation
         private bool centreAfterFrame, panStarted;
         private int lastGroup;
         private double lastPress = double.NegativeInfinity, lastClick = double.NegativeInfinity;
-        private RectTransform moveMarker;
+        private MoveMarker moveMarker;
         private Text help;
         public bool Modern { get; private set; }
         private static readonly ProfilerMarker Marker = new ProfilerMarker("Northwatch.SelectionInput");
@@ -69,15 +69,9 @@ namespace Northwatch.Presentation
             box.gameObject.SetActive(false);
             help = overlay.transform.Find("Panel/SelectionHelp").GetComponent<Text>();
             ShowOption();
-            var marker = new GameObject("MoveMarker", typeof(RectTransform), typeof(Text));
-            moveMarker = (RectTransform)marker.transform;
-            moveMarker.SetParent(box.parent, false);
-            moveMarker.anchorMin = moveMarker.anchorMax = Vector2.zero;
-            moveMarker.sizeDelta = new Vector2(36, 36);
-            Text label = marker.GetComponent<Text>();
-            label.font = help.font; label.fontSize = 36; label.alignment = TextAnchor.MiddleCenter;
-            label.color = Color.green; label.raycastTarget = false; label.text = "+";
-            marker.SetActive(false);
+            moveMarker = new GameObject("MoveMarker").AddComponent<MoveMarker>();
+            moveMarker.transform.SetParent(driver.transform, false);
+            moveMarker.Initialize(driver.SelectionMaterial, view);
         }
 
         private void ShowOption() => help.text = HelpText(Modern);
@@ -224,11 +218,7 @@ namespace Northwatch.Presentation
                 if (driver.Simulation.SelectedCount > 0) cameraController.CentreOn(driver.Simulation.SelectedCentre);
             }
             if (driver.Simulation.MoveMarkerVersion == 0) return;
-            Vector3 screen = view.WorldToScreenPoint(driver.Simulation.MoveMarkerPosition);
-            moveMarker.gameObject.SetActive(screen.z > 0 && view.pixelRect.Contains(screen));
-            var parent = (RectTransform)moveMarker.parent;
-            RectTransformUtility.ScreenPointToLocalPointInRectangle(parent, screen, view, out Vector2 local);
-            moveMarker.anchoredPosition = local - parent.rect.min;
+            moveMarker.Show(driver.Simulation.MoveMarkerPosition, Time.unscaledTimeAsDouble);
         }
 
         private void OnDisable()

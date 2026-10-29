@@ -18,6 +18,7 @@ namespace Northwatch.Presentation
         private static readonly ProfilerMarker SimulationMarker = new ProfilerMarker("Northwatch.Simulation");
         private static readonly ProfilerMarker DrawingMarker = new ProfilerMarker("Northwatch.Drawing");
         public UnitSimulation Simulation => simulation;
+        public Material SelectionMaterial => selectedSide;
 
         public void Configure(Mesh mesh, Material first, Material second)
         {
