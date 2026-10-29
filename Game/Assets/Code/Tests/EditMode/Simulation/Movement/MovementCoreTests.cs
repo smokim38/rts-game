@@ -168,8 +168,8 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
                 pipeline.Corrected[i] = next;
             }
             using var map = new NativeArray<byte>(0, Allocator.Persistent);
-            // Exact binary positions make only the head fail initially. Each fallback
-            // then blocks precisely the next member, independently of overlap steering.
+            // Exact binary positions make only the blocked pair fail initially. Each
+            // fallback then blocks the next member, independently of overlap steering.
             var handle = new BucketUnitsJob { Positions = state.Positions, Alive = state.Alive, Buckets = pipeline.Grid.Buckets }
                 .ScheduleParallel(24, 1, default);
             handle = new BuildSpatialGridJob { Positions = state.Positions, Units = state.Movement, Alive = state.Alive, Grid = pipeline.Grid }
@@ -180,7 +180,7 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
             new SerialMoveCheckJob { Data = data, Choices = pipeline.Choices, Levels = pipeline.Levels,
                 Affected = pipeline.Affected, Changed = pipeline.Changed, Marks = pipeline.Marks,
                 Metrics = pipeline.Metrics, MaxSerialFallbacks = cap }.Schedule(handle).Complete();
-            Assert.That(pipeline.Metrics[0], Is.EqualTo(1));
+            Assert.That(pipeline.Metrics[0], Is.EqualTo(2));
             Assert.That(pipeline.Metrics[1], Is.EqualTo(math.min(22, cap)));
             Assert.That(pipeline.Metrics[2], Is.EqualTo(math.min(22, cap)));
             Assert.That(pipeline.Metrics[3] > 0, Is.EqualTo(cap < 22));

@@ -71,6 +71,7 @@ namespace Northwatch.Simulation.Movement
                 var query = Data.Neighbours(i);
                 while (query.Next(out int other))
                 {
+                    if (Marks[other] == epoch) continue;
                     float reach = Footprint.Radius(Data.Sizes[i]) + Footprint.Radius(Data.Sizes[other]);
                     if (math.distancesq(Data.Poses[i].Position.xz, Data.Poses[other].Position.xz) <= reach * reach)
                         AddAffected(other);
@@ -92,12 +93,14 @@ namespace Northwatch.Simulation.Movement
             // either endpoint. No restored footprint can reach a unit outside this closure.
             epoch++;
             for (int k = 0; k < affectedCount; k++) Marks[Affected[k]] = epoch;
-            for (int k = 0; k < affectedCount; k++)
+            // Once every slot is in the set, no outside neighbour remains to discover.
+            for (int k = 0; k < affectedCount && affectedCount < Data.Poses.Length; k++)
             {
                 int i = Affected[k];
                 var query = Data.Neighbours(i);
                 while (query.Next(out int other))
                 {
+                    if (Marks[other] == epoch) continue;
                     float reach = Footprint.Radius(Data.Sizes[i]) + Footprint.Radius(Data.Sizes[other]) + 2 * Data.StepBound;
                     if (math.distancesq(Data.Start[i].Position.xz, Data.Start[other].Position.xz) <= reach * reach) AddAffected(other);
                 }

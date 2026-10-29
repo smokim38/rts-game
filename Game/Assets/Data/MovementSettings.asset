@@ -1,0 +1,21 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: aa3342512c402a0439633ac97c17e07b, type: 3}
+  m_Name: MovementSettings
+  m_EditorClassIdentifier: Northwatch.Presentation::Northwatch.Presentation.MovementSettings
+  smallSpeed: 4
+  largeSpeed: 2.5
+  acceleration: 16
+  deceleration: 16
+  turnSpeed: 6.2831855
+  slotSpacing: 1.25
+  maxSerialFallbacks: 32
