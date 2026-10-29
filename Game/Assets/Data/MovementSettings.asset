@@ -18,4 +18,4 @@ MonoBehaviour:
   deceleration: 16
   turnSpeed: 6.2831855
   slotSpacing: 1.25
-  maxSerialFallbacks: 8
+  maxSerialFallbacks: 1792

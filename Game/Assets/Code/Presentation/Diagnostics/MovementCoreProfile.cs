@@ -101,8 +101,9 @@ namespace Northwatch.Presentation.Diagnostics
             driver.Simulation.CompleteFrame();
             using (var writer = new StreamWriter(output + "-ticks.csv"))
             {
-                writer.WriteLine("tick,grid_ms,integration_ms,overlap_ms,first_check_ms,serial_ms,commit_ms,total_ms,first_fallbacks,serial_fallbacks,rounds,rollback_set,one_tick_stalls,still_over_5s,longest_still_ticks,alive,first_apply_collect_ms,round_decisions_ms,closure_ms");
-                for (int t = firstTick; t < measurement.TickCount; t++)
+                writer.WriteLine("tick,grid_ms,integration_ms,overlap_ms,first_check_ms,serial_ms,commit_ms,total_ms,first_fallbacks,serial_fallbacks,rounds,rollback_set,one_tick_stalls,still_over_5s,longest_still_ticks,alive,footprint_overlaps,static_regressions,first_apply_collect_ms,round_decisions_ms,closure_ms");
+                // Negative ticks retain warm-up validation, without including it in timings.
+                for (int t = 0; t < measurement.TickCount; t++)
                 {
                     writer.Write(t - firstTick);
                     for (int b = 0; b < 6; b++) writer.Write("," + CounterMilliseconds(measurement.Timestamp(t, b + 1) - measurement.Timestamp(t, b)));
@@ -110,7 +111,7 @@ namespace Northwatch.Presentation.Diagnostics
                     for (int m = 0; m < MovementMeasurement.MetricCount; m++) writer.Write("," + measurement.Metric(t, m));
                     writer.Write("," + CounterMilliseconds(measurement.Timestamp(t, 8) - measurement.Timestamp(t, 7)));
                     bool rollback = measurement.Metric(t, 3) != 0;
-                    writer.Write("," + CounterMilliseconds(rollback ? measurement.Timestamp(t, 9) - measurement.Timestamp(t, 8) : 0));
+                    writer.Write("," + CounterMilliseconds((rollback ? measurement.Timestamp(t, 9) : measurement.Timestamp(t, 5)) - measurement.Timestamp(t, 8)));
                     writer.Write("," + CounterMilliseconds(rollback ? measurement.Timestamp(t, 10) - measurement.Timestamp(t, 9) : 0));
                     writer.WriteLine();
                 }

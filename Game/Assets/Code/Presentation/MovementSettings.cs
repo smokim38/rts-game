@@ -12,7 +12,7 @@ namespace Northwatch.Presentation
         [SerializeField] private float deceleration = 16f;
         [SerializeField] private float turnSpeed = 6.2831853f;
         [SerializeField] private float slotSpacing = 1.25f;
-        [SerializeField] private int maxSerialFallbacks = 8;
+        [SerializeField] private int maxSerialFallbacks = 1792;
 
         public MovementParameters Snapshot()
         {

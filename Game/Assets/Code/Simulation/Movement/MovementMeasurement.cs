@@ -1,5 +1,6 @@
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
 using System;
+using Northwatch.Simulation.Spatial;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
@@ -11,11 +12,12 @@ namespace Northwatch.Simulation.Movement
     public sealed class MovementMeasurement : IDisposable
     {
         public const int SampleCapacity = 8192;
-        public const int MetricCount = 8;
+        public const int MetricCount = 10;
         public const int TimestampStride = 11;
         internal NativeArray<byte> Walkable;
         internal NativeArray<long> Timestamps;
         private NativeArray<int> samples, stillTicks;
+        private NativeArray<int2> violations;
         private readonly int scene;
         public int TickCount { get; private set; }
 
@@ -28,6 +30,7 @@ namespace Northwatch.Simulation.Movement
             Timestamps = new NativeArray<long>(SampleCapacity * TimestampStride, Allocator.Persistent);
             samples = new NativeArray<int>(SampleCapacity * MetricCount, Allocator.Persistent);
             stillTicks = new NativeArray<int>(state.Alive.Length, Allocator.Persistent);
+            violations = new NativeArray<int2>(state.Alive.Length, Allocator.Persistent);
             new SetupJob { State = state, Map = Walkable, Scene = scene, Count = count }.Schedule().Complete();
         }
 
@@ -38,14 +41,20 @@ namespace Northwatch.Simulation.Movement
                 Units = state.Movement, Scene = scene }.Schedule(state.Alive.Length, 64, dependency);
         }
 
-        internal JobHandle Record(UnitState state, NativeArray<int> metrics, JobHandle dependency)
-            => new RecordJob { State = state, Metrics = metrics, Samples = samples, StillTicks = stillTicks,
-                Offset = TickCount++ * MetricCount }.Schedule(dependency);
+        internal JobHandle Record(UnitState state, MovementPipeline pipeline, JobHandle dependency)
+        {
+            // Validation follows the final chain timestamp, so it is outside stage timings.
+            var handle = new ValidateJob { State = state, Map = Walkable, Grid = pipeline.Grid,
+                StepBound = pipeline.Settings.StepBound, Violations = violations }
+                .Schedule(state.Alive.Length, 64, dependency);
+            return new RecordJob { State = state, Metrics = pipeline.Metrics, Samples = samples, StillTicks = stillTicks,
+                Violations = violations, Offset = TickCount++ * MetricCount }.Schedule(handle);
+        }
 
         public long Timestamp(int tick, int boundary) => Timestamps[tick * TimestampStride + boundary];
         public int Metric(int tick, int metric) => samples[tick * MetricCount + metric];
 
-        public void Dispose() { Walkable.Dispose(); Timestamps.Dispose(); samples.Dispose(); stillTicks.Dispose(); }
+        public void Dispose() { Walkable.Dispose(); Timestamps.Dispose(); samples.Dispose(); stillTicks.Dispose(); violations.Dispose(); }
 
         [BurstCompile]
         private struct SetupJob : IJob
@@ -98,20 +107,53 @@ namespace Northwatch.Simulation.Movement
         }
 
         [BurstCompile]
+        private struct ValidateJob : IJobParallelFor
+        {
+            [ReadOnly] internal UnitState State;
+            [ReadOnly] internal NativeArray<byte> Map;
+            [ReadOnly] internal SpatialGrid Grid;
+            internal float StepBound;
+            internal NativeArray<int2> Violations;
+            public void Execute(int i)
+            {
+                int2 errors = 0;
+                if (State.Alive[i] != 0)
+                {
+                    var pose = new MovementPose { Position = State.Positions[i], Heading = State.Movement[i].Heading };
+                    float radius = Footprint.Radius(State.Sizes[i]);
+                    if (!StaticClamp.NoWorse(pose.Position.xz, State.Movement[i].Previous.Position.xz, radius, Map)) errors.y++;
+                    // The grid contains start-of-tick poses. The other unit may have
+                    // moved by StepBound since then; do not miss a pair across a bucket.
+                    var query = new SpatialQuery(Grid, pose.Position.xz, radius + Footprint.LargeRadius + StepBound);
+                    while (query.Next(out int other))
+                    {
+                        if (other <= i) continue;
+                        var neighbour = new MovementPose { Position = State.Positions[other], Heading = State.Movement[other].Heading };
+                        if (Footprint.Overlap(pose, State.Sizes[i], neighbour, State.Sizes[other]) > 0) errors.x++;
+                    }
+                }
+                Violations[i] = errors;
+            }
+        }
+
+        [BurstCompile]
         private struct RecordJob : IJob
         {
             [ReadOnly] internal UnitState State;
             [ReadOnly] internal NativeArray<int> Metrics;
+            [ReadOnly] internal NativeArray<int2> Violations;
             internal NativeArray<int> Samples, StillTicks;
             internal int Offset;
             public void Execute()
             {
                 for (int m = 0; m < 4; m++) Samples[Offset + m] = Metrics[m];
                 int stopped = 0, overFiveSeconds = 0, longest = 0, alive = 0;
+                int2 errors = 0;
                 for (int i = 0; i < State.Alive.Length; i++)
                 {
                     if (State.Alive[i] == 0) continue;
                     alive++;
+                    errors += Violations[i];
                     bool still = math.distancesq(State.Positions[i], State.Movement[i].Previous.Position) < 1e-12f;
                     StillTicks[i] = still ? StillTicks[i] + 1 : 0;
                     if (still) stopped++;
@@ -120,6 +162,7 @@ namespace Northwatch.Simulation.Movement
                 }
                 Samples[Offset + 4] = stopped; Samples[Offset + 5] = overFiveSeconds;
                 Samples[Offset + 6] = longest; Samples[Offset + 7] = alive;
+                Samples[Offset + 8] = errors.x; Samples[Offset + 9] = errors.y;
             }
         }
     }

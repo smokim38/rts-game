@@ -232,6 +232,26 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
         }
 
         [Test]
+        public void MeasurementDetectsFootprintOverlapsAndStaticRegressions()
+        {
+            using var ownedState = new UnitState(2);
+            UnitState state = ownedState;
+            using var measurement = new MovementMeasurement(state, 2, 2);
+            using var pipeline = new MovementPipeline(2, Settings(), measurement.Walkable);
+            Place(state, 0, new float2(-2, -2));
+            Place(state, 1, new float2(-3, -2));
+            state.Positions[0] = new float3(.1f, 0, .1f);
+            state.Positions[1] = new float3(.2f, 0, .1f);
+            measurement.Walkable[128 * 256 + 128] = 0;
+            var handle = new BucketUnitsJob { Positions = state.Positions, Alive = state.Alive, Buckets = pipeline.Grid.Buckets }
+                .ScheduleParallel(2, 1, default);
+            handle = new BuildSpatialGridJob { Positions = state.Positions, Units = state.Movement, Alive = state.Alive, Grid = pipeline.Grid }.Schedule(handle);
+            measurement.Record(state, pipeline, handle).Complete();
+            Assert.That(measurement.Metric(0, 8), Is.EqualTo(1));
+            Assert.That(measurement.Metric(0, 9), Is.EqualTo(2));
+        }
+
+        [Test]
         public void FullTwoThousandUnitMovingChainAllocatesNoManagedBytesAfterWarmup()
         {
             using var ownedState = new UnitState(2000);

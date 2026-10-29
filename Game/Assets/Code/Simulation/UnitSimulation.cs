@@ -147,7 +147,7 @@ namespace Northwatch.Simulation
                 {
                     pending = Measurement.Input(State, pending);
                     pending = movement.Schedule(State, pending, 64, Measurement.Timestamps, Measurement.TickCount * MovementMeasurement.TimestampStride);
-                    pending = Measurement.Record(State, movement.Metrics, pending);
+                    pending = Measurement.Record(State, movement, pending);
                 }
                 else
 #endif
