@@ -22,6 +22,9 @@ namespace Northwatch.Presentation.Diagnostics
         private Mouse selectionMouse;
         private bool doubleClickCheck;
         private Vector2 doubleClickPoint;
+        private bool moveMarkerCheck;
+        private Keyboard checkKeyboard;
+        private Vector2 moveClick;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void StartCheck()
@@ -40,13 +43,15 @@ namespace Northwatch.Presentation.Diagnostics
             check.output = output;
             check.selectionCheck = System.Array.IndexOf(arguments, "-sandbox-selection") >= 0;
             check.doubleClickCheck = System.Array.IndexOf(arguments, "-sandbox-double-click") >= 0;
-            check.selectionCheck |= check.doubleClickCheck;
+            check.moveMarkerCheck = System.Array.IndexOf(arguments, "-sandbox-move-marker") >= 0;
+            check.selectionCheck |= check.doubleClickCheck || check.moveMarkerCheck;
             if (check.selectionCheck)
             {
                 check.output += "-selection";
                 if (check.doubleClickCheck) check.output += "-double";
                 // A batch Player has no native pointer. The virtual device feeds the same action bindings.
                 check.selectionMouse = Mouse.current ?? InputSystem.AddDevice<Mouse>();
+                if (check.moveMarkerCheck) check.checkKeyboard = Keyboard.current ?? InputSystem.AddDevice<Keyboard>();
                 check.gameObject.AddComponent<SelectionInputPump>();
                 // Keep edge panning idle throughout warm-up, before the first diagnostic drag.
                 InputSystem.QueueStateEvent(check.selectionMouse, new MouseState
@@ -91,10 +96,13 @@ namespace Northwatch.Presentation.Diagnostics
             if ((!Application.isBatchMode && !UnityEngine.Rendering.SplashScreen.isFinished) ||
                 Time.realtimeSinceStartupAsDouble < 10.0) return;
             frames++;
-            if (selectionCheck) CheckSelectionFrame();
+            if (moveMarkerCheck) CheckMoveMarkerFrame();
+            else if (selectionCheck) CheckSelectionFrame();
             if (!enabled) return;
             if (frames > 120) { measuredFrames++; measuredSeconds += Time.unscaledDeltaTime; }
             UnityEngine.Rendering.RenderPipeline.SubmitRenderRequest(captureCamera, renderRequest);
+            if (moveMarkerCheck && (frames == 60 || frames == 80 || frames == 100 || frames == 120 || frames == 140 || frames == 160))
+                CaptureMoveMarker();
             if (frames == (selectionCheck ? 63 : 60) || (selectionCheck && frames == 62))
             {
                 RenderTexture previous = RenderTexture.active;
@@ -108,7 +116,7 @@ namespace Northwatch.Presentation.Diagnostics
                 RenderTexture.active = previous;
                 Destroy(image);
             }
-            if (frames == 120)
+            if (frames == (moveMarkerCheck ? 180 : 120))
             {
 #if DEVELOPMENT_BUILD
                 UnityEngine.Profiling.Profiler.logFile = output + ".raw";
@@ -131,7 +139,7 @@ namespace Northwatch.Presentation.Diagnostics
                 "; frame_ms=" + overlay.FrameMilliseconds.ToString("F3", System.Globalization.CultureInfo.InvariantCulture) +
                 "; measured_fps=" + (measuredFrames / measuredSeconds).ToString("F2", System.Globalization.CultureInfo.InvariantCulture) +
                 "; gpu=" + SystemInfo.graphicsDeviceName + "; cpu=" + SystemInfo.processorType);
-            if (selectionCheck)
+            if (selectionCheck && !moveMarkerCheck)
                 Debug.Log("Selection check: own_units=2000; samples=" + selectionSamples +
                     "; response_frames=1; selected_frame_average_ms=" + (selectionTotalMs / selectionSamples).ToString("F6", System.Globalization.CultureInfo.InvariantCulture) +
                     "; selected_frame_max_ms=" + selectionMaxMs.ToString("F6", System.Globalization.CultureInfo.InvariantCulture) +
@@ -142,6 +150,10 @@ namespace Northwatch.Presentation.Diagnostics
         private void CheckSelectionFrame()
         {
             if (frames < 50) return;
+            if (frames == 54)
+                driver.Simulation.QueueSelection(Simulation.SelectionRequest.PointerClick(
+                    captureCamera.ScreenPointToRay(captureCamera.WorldToScreenPoint(new Vector3(30, 0, 0))),
+                    captureCamera.projectionMatrix * captureCamera.worldToCameraMatrix, false, true, false, false, false));
             if (Time.frameCount == selectionResponseFrame)
             {
                 if (driver.Simulation.SelectedCount != 2000 ||
@@ -181,6 +193,69 @@ namespace Northwatch.Presentation.Diagnostics
                 buttons = phase == 2 || phase == 7 ? (ushort)0 : (ushort)1
             });
             if (phase == 2) selectionResponseFrame = Time.frameCount + 1;
+        }
+
+        private void CheckMoveMarkerFrame()
+        {
+            if (frames < 50) return;
+            if (frames < 54)
+            {
+                // Use the real box gesture before giving move orders to all 2,000 cubes.
+                Vector2 p = frames == 50 ? new Vector2(0.4f, 0.4f) : new Vector2(0.6f, 0.6f);
+                InputSystem.QueueStateEvent(selectionMouse, new MouseState
+                    { position = captureCamera.ViewportToScreenPoint(p), buttons = frames < 52 ? (ushort)1 : (ushort)0 });
+                return;
+            }
+            if (driver.Simulation.SelectedCount != 2000) { FailSelection("Move marker check lost its selection."); return; }
+            // Far, near, then a drag pan, in Classic followed by Modern. Zoom through the wheel binding.
+            int phase = frames < 105 ? frames : frames - 60;
+            Vector2 position = new Vector2(Screen.width * 0.5f, Screen.height * 0.5f);
+            ushort buttons = 0;
+            if (phase == 55 || phase == 75 || phase == 95)
+            {
+                moveClick = captureCamera.WorldToScreenPoint(new Vector3(30, 0, 0));
+                position = moveClick; buttons = frames < 105 ? (ushort)1 : (ushort)2;
+            }
+            else if (phase == 56 || phase == 76 || phase == 96) position = moveClick;
+            else if (phase == 90 || phase == 91)
+            {
+                position += Vector2.right * (phase == 90 ? 0 : 100);
+                buttons = frames < 105 ? (ushort)2 : (ushort)4;
+            }
+            else if (phase == 92) position += Vector2.right * 100;
+            InputSystem.QueueStateEvent(selectionMouse, new MouseState
+            {
+                position = position, buttons = buttons,
+                scroll = new Vector2(0, phase == 70 ? 12000 : frames == 110 ? -12000 : 0)
+            });
+            InputSystem.QueueStateEvent(checkKeyboard, frames == 105 ? new KeyboardState(Key.F2) : new KeyboardState());
+        }
+
+        private void CaptureMoveMarker()
+        {
+            RenderTexture previous = RenderTexture.active;
+            RenderTexture.active = captureTarget;
+            var image = new Texture2D(1920, 1080, TextureFormat.RGB24, false);
+            image.ReadPixels(new Rect(0, 0, 1920, 1080), 0, 0); image.Apply();
+            int pixels = 0;
+            Vector2 sum = Vector2.zero;
+            // Magenta is absent from the grey ground and the blue, red and yellow units.
+            for (int y = Mathf.Max(0, (int)moveClick.y - 40); y < Mathf.Min(1080, moveClick.y + 40); y++)
+                for (int x = Mathf.Max(0, (int)moveClick.x - 40); x < Mathf.Min(1920, moveClick.x + 40); x++)
+                {
+                    Color colour = image.GetPixel(x, y);
+                    if (colour.r < 0.6f || colour.b < 0.6f || colour.g > 0.4f) continue;
+                    pixels++; sum += new Vector2(x + 0.5f, y + 0.5f);
+                }
+            string option = frames <= 100 ? "classic" : "modern";
+            string zoom = frames == 60 || frames == 120 ? "far" : frames == 80 || frames == 140 ? "near" : "pan";
+            System.IO.File.WriteAllBytes(output + "-" + option + "-" + zoom + ".png", image.EncodeToPNG());
+            Debug.Log("Move marker: " + option + "; " + zoom + "; click=" + moveClick + "; pixels=" + pixels +
+                "; centre_error_px=" + (pixels == 0 ? -1f : Vector2.Distance(sum / pixels, moveClick)) +
+                "; zoom=" + captureCamera.orthographicSize);
+            RenderTexture.active = previous; Destroy(image);
+            if (pixels == 0 || Vector2.Distance(sum / pixels, moveClick) > 8f)
+                FailSelection("Move marker pixels must be within 8 pixels of the click.");
         }
 
         private void FailSelection(string message)

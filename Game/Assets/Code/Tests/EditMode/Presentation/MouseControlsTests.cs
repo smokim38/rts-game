@@ -80,6 +80,7 @@ namespace Northwatch.Tests.EditMode.Presentation
             Switch(modern);
             Click(ground, modern ? (ushort)2 : (ushort)1);
             Assert.That(Simulation.MoveMarkerVersion, Is.Zero, "No selected units means no order.");
+            Assert.That(driver.transform.Find("MoveMarker").GetComponent<MeshRenderer>().enabled, Is.False);
             Step(own, 1);
             Assert.That(Simulation.SelectedCount, Is.Zero, "A press has no click effect.");
             Step(own);
@@ -93,7 +94,7 @@ namespace Northwatch.Tests.EditMode.Presentation
             Ray ray = view.ScreenPointToRay(ground + Vector2.right * radius);
             new Plane(Vector3.up, 0).Raycast(ray, out float distance);
             Assert.That(Vector3.Distance(Simulation.MoveMarkerPosition, ray.GetPoint(distance)), Is.LessThan(0.001f));
-            Assert.That(overlay.transform.Find("MoveMarker").gameObject.activeSelf, Is.True);
+            Assert.That(driver.transform.Find("MoveMarker").GetComponent<MeshRenderer>().enabled, Is.True);
             Click(ground, 1, Key.LeftCtrl); Click(ground, 1, Key.LeftAlt);
             Assert.That(Simulation.MoveMarkerVersion, Is.EqualTo(1));
             Click(ground, 1, Key.LeftShift);
@@ -108,6 +109,42 @@ namespace Northwatch.Tests.EditMode.Presentation
             Assert.That(view.transform.position, Is.EqualTo(before));
             Click(own); Step(own, 0, true, Key.Escape);
             Assert.That(Simulation.SelectedCount, Is.Zero);
+            Assert.That(driver.transform.Find("MoveMarker").GetComponent<MeshRenderer>().enabled, Is.True,
+                "The last marker persists even after deselection.");
+        }
+
+        [Test]
+        public void MarkerIsAGroundRingPulsingTwicePerSecondWithoutAllocations()
+        {
+            MoveMarker marker = driver.transform.Find("MoveMarker").GetComponent<MoveMarker>();
+            Mesh mesh = marker.GetComponent<MeshFilter>().sharedMesh;
+            Vector3[] vertices = mesh.vertices;
+            Assert.That(vertices.Length, Is.EqualTo(96));
+            foreach (Vector3 vertex in vertices)
+            {
+                Assert.That(vertex.y, Is.Zero);
+                Assert.That(vertex.magnitude, Is.InRange(0.2999f, 0.5001f));
+            }
+            int[] triangles = mesh.triangles;
+            for (int i = 0; i < triangles.Length; i += 3)
+                Assert.That(Vector3.Cross(vertices[triangles[i + 1]] - vertices[triangles[i]],
+                    vertices[triangles[i + 2]] - vertices[triangles[i]]).y, Is.GreaterThan(0), "The ground ring faces up.");
+            var point = new Vector3(30, 0, -20);
+            marker.Show(point, 0.125);
+            Assert.That(marker.transform.position, Is.EqualTo(point + Vector3.up * 0.02f));
+            Assert.That(marker.transform.localScale.x, Is.EqualTo(1.15f).Within(0.0001f));
+            marker.Show(point, 0.375);
+            Assert.That(marker.transform.localScale.x, Is.EqualTo(0.85f).Within(0.0001f));
+            marker.Show(point, 0.625);
+            Assert.That(marker.transform.localScale.x, Is.EqualTo(1.15f).Within(0.0001f));
+            Material material = marker.GetComponent<MeshRenderer>().sharedMaterial;
+            Assert.That(material.GetColor("_BaseColor"), Is.EqualTo(Color.magenta));
+            Assert.That(material, Is.Not.SameAs(driver.SelectionMaterial), "Team colours must remain unchanged.");
+            Click(own); Click(ground);
+            for (int i = 0; i < 16; i++) selection.CompleteFrame();
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            for (int i = 0; i < 256; i++) selection.CompleteFrame();
+            Assert.That(GC.GetAllocatedBytesForCurrentThread() - before, Is.Zero);
         }
 
         [TestCase(false, 1)]
