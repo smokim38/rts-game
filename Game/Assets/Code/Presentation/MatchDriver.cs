@@ -20,6 +20,7 @@ namespace Northwatch.Presentation
         private static readonly ProfilerMarker DrawingMarker = new ProfilerMarker("Northwatch.Drawing");
         public UnitSimulation Simulation => simulation;
         public Material SelectionMaterial => selectedSide;
+        public MovementSettings MovementSettings => movementSettings;
 
         public void Configure(Mesh mesh, Material first, Material second)
         {
@@ -29,6 +30,7 @@ namespace Northwatch.Presentation
         }
 
         public void ConfigureSelection(Material selected) => selectedSide = selected;
+        public void ConfigureMovement(MovementSettings settings) => movementSettings = settings;
 
         private void OnEnable()
         {

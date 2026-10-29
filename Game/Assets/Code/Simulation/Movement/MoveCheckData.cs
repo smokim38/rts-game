@@ -34,6 +34,8 @@ namespace Northwatch.Simulation.Movement
             while (query.Next(out int other))
             {
                 if (other == unit) continue;
+                float reach = Footprint.Radius(Sizes[unit]) + Footprint.Radius(Sizes[other]);
+                if (math.distancesq(pose.Position.xz, Poses[other].Position.xz) >= reach * reach) continue;
                 if (Footprint.Overlap(pose, Sizes[unit], Poses[other], Sizes[other]) >
                     Footprint.Overlap(Start[unit], Sizes[unit], Start[other], Sizes[other])) return false;
             }

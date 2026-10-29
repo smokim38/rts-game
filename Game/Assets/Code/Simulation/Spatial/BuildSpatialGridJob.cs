@@ -2,6 +2,7 @@ using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
 using Unity.Mathematics;
+using Northwatch.Simulation.Movement;
 
 namespace Northwatch.Simulation.Spatial
 {
@@ -10,13 +11,14 @@ namespace Northwatch.Simulation.Spatial
     {
         [ReadOnly] internal NativeArray<float3> Positions;
         [ReadOnly] internal NativeArray<byte> Alive;
+        [ReadOnly] internal NativeArray<MovementUnit> Units;
         internal SpatialGrid Grid;
 
         public void Execute()
         {
             for (int b = 0; b < Grid.Counts.Length; b++) Grid.Counts[b] = 0;
             for (int i = 0; i < Alive.Length; i++)
-                if (Alive[i] != 0) Grid.Counts[SpatialGrid.Bucket(Positions[i].xz)]++;
+                if (Alive[i] != 0) Grid.Counts[Grid.Buckets[i]]++;
             int sum = 0;
             for (int b = 0; b < Grid.Counts.Length; b++)
             {
@@ -27,8 +29,10 @@ namespace Northwatch.Simulation.Spatial
             for (int i = 0; i < Alive.Length; i++)
             {
                 if (Alive[i] == 0) continue;
-                int bucket = SpatialGrid.Bucket(Positions[i].xz);
-                Grid.Indices[Grid.Cursors[bucket]++] = i;
+                int sorted = Grid.Cursors[Grid.Buckets[i]]++;
+                Grid.Indices[sorted] = i;
+                Grid.Poses[sorted] = new MovementPose { Position = Positions[i], Heading = Units[i].Heading };
+                Grid.Velocities[sorted] = Units[i].Velocity;
             }
         }
     }

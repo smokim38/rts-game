@@ -23,6 +23,7 @@ namespace Northwatch.Presentation.Diagnostics
         private double began, measuredAt;
         private bool measuring, draining, finished;
         private long counterFrequency;
+        private MovementSettings settings;
         private static readonly ProfilerMarker ScheduleMarker = new ProfilerMarker("Northwatch.Movement.Schedule");
         private static readonly ProfilerMarker CompleteMarker = new ProfilerMarker("Northwatch.Movement.Complete");
 
@@ -31,9 +32,10 @@ namespace Northwatch.Presentation.Diagnostics
         {
             string[] args = Environment.GetCommandLineArgs();
             if (Array.IndexOf(args, "-movement-core-profile") < 0) return;
+            MovementSettings settings = FindFirstObjectByType<MatchDriver>().MovementSettings;
             foreach (var behaviour in FindObjectsByType<MonoBehaviour>(FindObjectsSortMode.None)) behaviour.enabled = false;
             foreach (var canvas in FindObjectsByType<Canvas>(FindObjectsSortMode.None)) canvas.enabled = false;
-            new GameObject("MovementCoreProfile").AddComponent<MovementCoreProfile>();
+            new GameObject("MovementCoreProfile").AddComponent<MovementCoreProfile>().settings = settings;
         }
 
         private void Start()
@@ -55,9 +57,8 @@ namespace Northwatch.Presentation.Diagnostics
             if (!output.StartsWith(Path.Combine(project, "Logs") + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
                 throw new ArgumentException("Movement output must be under this project's Logs folder.");
             Directory.CreateDirectory(Path.GetDirectoryName(output));
-            var settings = ScriptableObject.CreateInstance<MovementSettings>();
+            if (settings == null) throw new InvalidOperationException("The match has no movement settings asset.");
             measurement = new MovementMeasurement(settings.Snapshot(), int.Parse(args[sceneIndex + 1], CultureInfo.InvariantCulture));
-            Destroy(settings);
             schedule = new long[FrameCapacity]; complete = new long[FrameCapacity]; allocations = new long[FrameCapacity]; ticksPerFrame = new int[FrameCapacity];
             gc = ProfilerRecorder.StartNew(ProfilerCategory.Memory, "GC Allocated In Frame", FrameCapacity);
             if (!gc.Valid) throw new InvalidOperationException("Whole-frame GC recorder is unavailable.");

@@ -39,10 +39,15 @@ namespace Northwatch.Simulation.Movement
                     int i = Affected[k];
                     byte choice = Data.Choose(i, Levels[i]);
                     Choices[i] = choice;
-                    if (choice != Levels[i]) Changed[changedCount++] = i;
+                    if (choice != Levels[i])
+                    {
+                        Changed[changedCount++] = i;
+                        // Stop selecting as soon as the round cannot fit. Nothing in this
+                        // round has been applied, and the entire frontier seeds rollback.
+                        if (Metrics[1] + changedCount > MaxSerialFallbacks) { RollBackConnectedSet(); return; }
+                    }
                 }
                 if (changedCount == 0) return;
-                if (Metrics[1] + changedCount > MaxSerialFallbacks) { RollBackConnectedSet(); return; }
                 for (int k = 0; k < changedCount; k++)
                 {
                     int i = Changed[k];
@@ -64,8 +69,14 @@ namespace Northwatch.Simulation.Movement
                 int i = Changed[k];
                 AddAffected(i);
                 var query = Data.Neighbours(i);
-                while (query.Next(out int other)) AddAffected(other);
+                while (query.Next(out int other))
+                {
+                    float reach = Footprint.Radius(Data.Sizes[i]) + Footprint.Radius(Data.Sizes[other]);
+                    if (math.distancesq(Data.Poses[i].Position.xz, Data.Poses[other].Position.xz) <= reach * reach)
+                        AddAffected(other);
+                }
             }
+            Affected.GetSubArray(0, affectedCount).Sort();
         }
 
         private void AddAffected(int unit)

@@ -43,26 +43,28 @@ namespace Northwatch.Simulation.Movement
             NativeArray<long> timestamps = default, int timestampOffset = 0)
         {
             var handle = MovementTimestampJob.Stamp(timestamps, timestampOffset, dependency);
-            handle = new BuildSpatialGridJob { Positions = state.Positions, Alive = state.Alive, Grid = Grid }.Schedule(handle);
+            handle = new BucketUnitsJob { Positions = state.Positions, Alive = state.Alive, Buckets = Grid.Buckets }
+                .ScheduleParallel(state.Alive.Length, batchSize, handle);
+            handle = new BuildSpatialGridJob { Positions = state.Positions, Units = state.Movement, Alive = state.Alive, Grid = Grid }.Schedule(handle);
             handle = MovementTimestampJob.Stamp(timestamps, timestampOffset + 1, handle);
             handle = new IntegrateMovementJob
             {
                 Positions = state.Positions, Sizes = state.Sizes, Alive = state.Alive, Walkable = walkable,
                 Units = state.Movement, Start = Start, Integrated = Integrated, Velocities = Velocities, Settings = Settings
-            }.Schedule(state.Alive.Length, batchSize, handle);
+            }.ScheduleParallel(state.Alive.Length, batchSize, handle);
             handle = MovementTimestampJob.Stamp(timestamps, timestampOffset + 2, handle);
             handle = new OverlapMovementJob
             {
                 Start = Start, Integrated = Integrated, Units = state.Movement, Sizes = state.Sizes, Sides = state.Sides,
                 Alive = state.Alive, Walkable = walkable, Grid = Grid, Corrected = Corrected, Settings = Settings
-            }.Schedule(state.Alive.Length, batchSize, handle);
+            }.ScheduleParallel(state.Alive.Length, batchSize, handle);
             handle = MovementTimestampJob.Stamp(timestamps, timestampOffset + 3, handle);
             var check = new MoveCheckData
             {
                 Start = Start, Poses = Corrected, Sizes = state.Sizes, Alive = state.Alive,
                 Walkable = walkable, Grid = Grid, StepBound = Settings.StepBound
             };
-            handle = new InitialMoveCheckJob { Data = check, Choices = Choices }.Schedule(state.Alive.Length, batchSize, handle);
+            handle = new InitialMoveCheckJob { Data = check, Choices = Choices }.ScheduleParallel(state.Alive.Length, batchSize, handle);
             handle = MovementTimestampJob.Stamp(timestamps, timestampOffset + 4, handle);
             handle = new SerialMoveCheckJob
             {
@@ -74,7 +76,7 @@ namespace Northwatch.Simulation.Movement
             {
                 Start = Start, Poses = Corrected, Velocities = Velocities, Alive = state.Alive,
                 Levels = Levels, Positions = state.Positions, Units = state.Movement
-            }.Schedule(state.Alive.Length, batchSize, handle);
+            }.ScheduleParallel(state.Alive.Length, batchSize, handle);
             return MovementTimestampJob.Stamp(timestamps, timestampOffset + 6, handle);
         }
 

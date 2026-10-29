@@ -6,7 +6,7 @@ using Unity.Mathematics;
 namespace Northwatch.Simulation.Movement
 {
     [BurstCompile]
-    internal struct CommitMovementJob : IJobParallelFor
+    internal struct CommitMovementJob : IJobFor
     {
         [ReadOnly] internal NativeArray<MovementPose> Start, Poses;
         [ReadOnly] internal NativeArray<float2> Velocities;

@@ -7,7 +7,7 @@ using Unity.Mathematics;
 namespace Northwatch.Simulation.Movement
 {
     [BurstCompile]
-    internal struct OverlapMovementJob : IJobParallelFor
+    internal struct OverlapMovementJob : IJobFor
     {
         [ReadOnly] internal NativeArray<MovementPose> Start, Integrated;
         [ReadOnly] internal NativeArray<MovementUnit> Units;

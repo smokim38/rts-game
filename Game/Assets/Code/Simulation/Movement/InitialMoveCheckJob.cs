@@ -5,7 +5,7 @@ using Unity.Jobs;
 namespace Northwatch.Simulation.Movement
 {
     [BurstCompile]
-    internal struct InitialMoveCheckJob : IJobParallelFor
+    internal struct InitialMoveCheckJob : IJobFor
     {
         [ReadOnly] internal MoveCheckData Data;
         [WriteOnly] internal NativeArray<byte> Choices;

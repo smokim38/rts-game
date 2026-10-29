@@ -1,4 +1,5 @@
 using System;
+using Northwatch.Simulation.Movement;
 using Unity.Collections;
 using Unity.Mathematics;
 
@@ -8,7 +9,9 @@ namespace Northwatch.Simulation.Spatial
     {
         internal const int Width = 128;
         internal const float BucketSize = 2f;
-        internal NativeArray<int> Starts, Counts, Indices, Cursors;
+        internal NativeArray<int> Starts, Counts, Indices, Cursors, Buckets;
+        internal NativeArray<MovementPose> Poses;
+        internal NativeArray<float2> Velocities;
 
         internal SpatialGrid(int capacity)
         {
@@ -16,11 +19,18 @@ namespace Northwatch.Simulation.Spatial
             Counts = new NativeArray<int>(Width * Width, Allocator.Persistent);
             Cursors = new NativeArray<int>(Width * Width, Allocator.Persistent);
             Indices = new NativeArray<int>(capacity, Allocator.Persistent);
+            Buckets = new NativeArray<int>(capacity, Allocator.Persistent);
+            Poses = new NativeArray<MovementPose>(capacity, Allocator.Persistent);
+            Velocities = new NativeArray<float2>(capacity, Allocator.Persistent);
         }
 
         internal static int2 Cell(float2 position) => math.clamp((int2)math.floor((position + UnitSimulation.MapHalfWidth) / BucketSize), 0, Width - 1);
         internal static int Bucket(float2 position) { int2 cell = Cell(position); return cell.y * Width + cell.x; }
 
-        public void Dispose() { Starts.Dispose(); Counts.Dispose(); Cursors.Dispose(); Indices.Dispose(); }
+        public void Dispose()
+        {
+            Starts.Dispose(); Counts.Dispose(); Cursors.Dispose(); Indices.Dispose();
+            Buckets.Dispose(); Poses.Dispose(); Velocities.Dispose();
+        }
     }
 }

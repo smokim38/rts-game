@@ -2,8 +2,10 @@ using System;
 using Northwatch.Presentation;
 using Northwatch.Simulation;
 using Northwatch.Simulation.Movement;
+using Northwatch.Simulation.Spatial;
 using NUnit.Framework;
 using Unity.Collections;
+using Unity.Jobs;
 using Unity.Jobs.LowLevel.Unsafe;
 using Unity.Mathematics;
 using UnityEngine;
@@ -117,6 +119,8 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
                     int unit = pipeline.Grid.Indices[pipeline.Grid.Starts[b] + k];
                     Assert.That(unit, Is.GreaterThan(previous));
                     Assert.That(unit, Is.Not.EqualTo(4));
+                    Assert.That(pipeline.Grid.Poses[pipeline.Grid.Starts[b] + k].Position,
+                        Is.EqualTo(state.Movement[unit].Previous.Position));
                     previous = unit; total++;
                 }
             }
@@ -147,24 +151,41 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
             AssertClear(state, map);
         }
 
-        [Test]
-        public void SerialRoundsPropagateFallbacksWithoutExceedingCap()
+        [TestCase(0)]
+        [TestCase(3)]
+        [TestCase(100)]
+        public void SerialRoundsPropagateFallbacksWithoutExceedingCap(int cap)
         {
             using var ownedState = new UnitState(24);
             UnitState state = ownedState;
-            using var pipeline = new MovementPipeline(24, Settings(3));
+            using var pipeline = new MovementPipeline(24, Settings(cap));
             for (int i = 0; i < 24; i++)
             {
                 Place(state, i, new float2(i * .5f, 0));
-                var unit = state.Movement[i]; unit.NewVelocity = unit.Velocity = new float2(4, 0); state.Movement[i] = unit;
+                pipeline.Start[i] = Pose(state, i);
+                MovementPose next = pipeline.Start[i];
+                if (i != 23) next.Position.x += .125f;
+                pipeline.Corrected[i] = next;
             }
-            var front = state.Movement[23]; front.Mode = MovementMode.Hold; front.Velocity = 0; state.Movement[23] = front;
-            pipeline.Schedule(state, default).Complete();
-            Assert.That(pipeline.Metrics[1], Is.InRange(1, 3));
-            Assert.That(pipeline.Metrics[2], Is.GreaterThan(0));
-            Assert.That(pipeline.Metrics[3], Is.GreaterThan(0));
             using var map = new NativeArray<byte>(0, Allocator.Persistent);
-            AssertClear(state, map);
+            // Exact binary positions make only the head fail initially. Each fallback
+            // then blocks precisely the next member, independently of overlap steering.
+            var handle = new BucketUnitsJob { Positions = state.Positions, Alive = state.Alive, Buckets = pipeline.Grid.Buckets }
+                .ScheduleParallel(24, 1, default);
+            handle = new BuildSpatialGridJob { Positions = state.Positions, Units = state.Movement, Alive = state.Alive, Grid = pipeline.Grid }
+                .Schedule(handle);
+            var data = new MoveCheckData { Start = pipeline.Start, Poses = pipeline.Corrected, Sizes = state.Sizes,
+                Alive = state.Alive, Walkable = map, Grid = pipeline.Grid, StepBound = pipeline.Settings.StepBound };
+            handle = new InitialMoveCheckJob { Data = data, Choices = pipeline.Choices }.ScheduleParallel(24, 1, handle);
+            new SerialMoveCheckJob { Data = data, Choices = pipeline.Choices, Levels = pipeline.Levels,
+                Affected = pipeline.Affected, Changed = pipeline.Changed, Marks = pipeline.Marks,
+                Metrics = pipeline.Metrics, MaxSerialFallbacks = cap }.Schedule(handle).Complete();
+            Assert.That(pipeline.Metrics[0], Is.EqualTo(1));
+            Assert.That(pipeline.Metrics[1], Is.EqualTo(math.min(22, cap)));
+            Assert.That(pipeline.Metrics[2], Is.EqualTo(math.min(22, cap)));
+            Assert.That(pipeline.Metrics[3] > 0, Is.EqualTo(cap < 22));
+            for (int i = 0; i < 24; i++)
+                Assert.That(pipeline.Corrected[i], Is.EqualTo(pipeline.Start[i]));
         }
 
         [Test]
@@ -179,7 +200,7 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
                 {
                     JobsUtility.JobWorkerCount = workers;
                     using var ownedState = new UnitState(64);
-            UnitState state = ownedState;
+                    UnitState state = ownedState;
                     using var pipeline = new MovementPipeline(64, Settings(8));
                     for (int i = 0; i < 64; i++) Place(state, i, new float2((i % 8) * .51f, (i / 8) * .51f));
                     for (int tick = 0; tick < 90; tick++)

@@ -22,6 +22,27 @@ namespace Northwatch.EditorTools
         private const string CameraPath = "Assets/Prefabs/CameraRig.prefab";
         private const string OverlayPath = "Assets/Prefabs/DebugOverlay.prefab";
         private const string InputPath = "Assets/Settings/InputSystem_Actions.inputactions";
+        public const string MovementSettingsPath = "Assets/Data/MovementSettings.asset";
+
+        public static void BuildMovement()
+        {
+            EnsureFolder("Data");
+            MovementSettings settings = AssetDatabase.LoadAssetAtPath<MovementSettings>(MovementSettingsPath);
+            if (settings == null)
+            {
+                settings = ScriptableObject.CreateInstance<MovementSettings>();
+                AssetDatabase.CreateAsset(settings, MovementSettingsPath);
+            }
+            var defaults = ScriptableObject.CreateInstance<MovementSettings>();
+            EditorUtility.CopySerialized(defaults, settings);
+            UnityEngine.Object.DestroyImmediate(defaults);
+            settings.name = "MovementSettings";
+            settings.Snapshot();
+            AssetDatabase.SaveAssetIfDirty(settings);
+            GameObject driver = PrefabRoot(DriverPath, "MatchDriver");
+            ComponentOrAdd<MatchDriver>(driver).ConfigureMovement(settings);
+            SavePrefab(driver, DriverPath);
+        }
 
         [MenuItem("Northwatch/Build sandbox assets")]
         public static void Build()
@@ -65,6 +86,7 @@ namespace Northwatch.EditorTools
 
         private static void BuildAssets()
         {
+            BuildMovement();
             EnsureFolder("Prefabs");
             EnsureFolder("Materials");
             Material first = SideMaterial("FirstSide", new Color(0.1f, 0.35f, 0.95f));
