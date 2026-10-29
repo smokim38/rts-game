@@ -13,8 +13,6 @@ namespace Northwatch.Presentation
         [SerializeField] private InputActionAsset actions;
         [SerializeField] private DebugOverlay overlay;
         [SerializeField] private RectTransform box;
-        [SerializeField] private float doubleTapInterval;
-        [SerializeField] private float dragThreshold;
         [SerializeField] private MatchDriver driver;
         [SerializeField] private Camera view;
         [SerializeField] private CameraController cameraController;
@@ -34,11 +32,9 @@ namespace Northwatch.Presentation
         public bool Modern { get; private set; }
         private static readonly ProfilerMarker Marker = new ProfilerMarker("Northwatch.SelectionInput");
 
-        public void Configure(InputActionAsset input, DebugOverlay debugOverlay, RectTransform rectangle,
-            float interval, float threshold)
+        public void Configure(InputActionAsset input, DebugOverlay debugOverlay, RectTransform rectangle)
         {
             actions = input; overlay = debugOverlay; box = rectangle;
-            doubleTapInterval = interval; dragThreshold = threshold;
         }
 
         public void Bind(MatchDriver match, Camera camera, CameraController controller)
@@ -46,8 +42,6 @@ namespace Northwatch.Presentation
 
         private void OnEnable()
         {
-            // Existing sandbox prefabs predate the GDD's fixed click rules.
-            doubleTapInterval = 0.35f; dragThreshold = 6f;
             Modern = false;
             // Merging can discard the press origin or an out-and-back excursion within a frame.
             previousSettings = InputSystem.settings;
@@ -86,7 +80,9 @@ namespace Northwatch.Presentation
             marker.SetActive(false);
         }
 
-        private void ShowOption() => help.text = Modern
+        private void ShowOption() => help.text = HelpText(Modern);
+
+        public static string HelpText(bool modern) => modern
             ? "Modern (F2 test switch): left selects; right moves; middle drags.\nShift adds; double click selects type; Ctrl+1-9 saves; 1-9 recalls."
             : "Classic (F2 test switch): left selects / moves; right clears / drags.\nShift adds; double click selects type; Ctrl+1-9 saves; 1-9 recalls.";
 
@@ -103,7 +99,7 @@ namespace Northwatch.Presentation
         private void TrackPointer(InputAction.CallbackContext context)
         {
             Vector2 position = context.ReadValue<Vector2>();
-            for (int i = 0; i < gestures.Length; i++) gestures[i].Track(position, dragThreshold * Screen.height / 1080f);
+            for (int i = 0; i < gestures.Length; i++) gestures[i].Track(position, PointerGesture.Radius(Screen.height));
         }
 
         public void Advance(bool focused, double now)
@@ -137,7 +133,7 @@ namespace Northwatch.Presentation
                     if (!groups[i].WasPressedThisFrame()) continue;
                     bool save = control.IsPressed();
                     driver.Simulation.QueueSelection(SelectionRequest.Group(i + 1, save));
-                    centreAfterFrame = !save && lastGroup == i + 1 && now - lastPress <= doubleTapInterval;
+                    centreAfterFrame = !save && lastGroup == i + 1 && now - lastPress <= PointerGesture.DoublePressInterval;
                     lastGroup = save || centreAfterFrame ? 0 : i + 1;
                     lastPress = now;
                     CancelDrag(); lastClick = double.NegativeInfinity;
@@ -146,7 +142,7 @@ namespace Northwatch.Presentation
                 for (int i = 0; i < buttons.Length; i++)
                 {
                     if (buttons[i].WasPressedThisFrame()) lastGroup = 0;
-                    gestures[i].Track(current, dragThreshold * Screen.height / 1080f);
+                    gestures[i].Track(current, PointerGesture.Radius(Screen.height));
                     anyDrag |= gestures[i].Dragging;
                     if (gestures[i].Dragging)
                     {
@@ -187,7 +183,7 @@ namespace Northwatch.Presentation
             else if (button == 0 || (button == 1 && Modern))
             {
                 float radius = PointerGesture.Radius(Screen.height);
-                bool doubleClick = button == 0 && now - lastClick <= 0.35 &&
+                bool doubleClick = button == 0 && now - lastClick <= PointerGesture.DoublePressInterval &&
                     PointerGesture.WithinRadius(lastClickPosition, current, radius);
                 driver.Simulation.QueueSelection(SelectionRequest.PointerClick(view.ScreenPointToRay(current),
                     view.projectionMatrix * view.worldToCameraMatrix, selectUnit: button == 0,

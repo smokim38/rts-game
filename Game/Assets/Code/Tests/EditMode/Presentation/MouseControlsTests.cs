@@ -10,6 +10,7 @@ using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.LowLevel;
+using UnityEngine.UI;
 
 namespace Northwatch.Tests.EditMode.Presentation
 {
@@ -68,6 +69,8 @@ namespace Northwatch.Tests.EditMode.Presentation
             Assert.That(selection.Modern, Is.False);
             if (modern) { Step(own, 0, true, Key.F2); Step(own); }
             Assert.That(selection.Modern, Is.EqualTo(modern));
+            Assert.That(overlay.transform.Find("Panel/SelectionHelp").GetComponent<Text>().text,
+                Does.StartWith(modern ? "Modern (F2 test switch)" : "Classic (F2 test switch)"));
         }
 
         [TestCase(false)]
@@ -151,13 +154,41 @@ namespace Northwatch.Tests.EditMode.Presentation
             Assert.That(Simulation.SelectedCount, Is.EqualTo(2), "Shift double-click adds without toggling the type.");
             now += 0.4;
             Click(own);
-            now += 0.25; // The next release is exactly 0.35 s after the first.
+            now += 0.24; // Keep the 0.34 s release interval clear of floating-point rounding at the boundary.
             Click(own);
             Assert.That(Simulation.SelectedCount, Is.EqualTo(2));
             now += 0.4;
             Click(ground);
             Click(own);
             Assert.That(Simulation.SelectedCount, Is.EqualTo(1), "Distant clicks cannot form a double-click.");
+        }
+
+        [TestCase(false, 0.34, 2)]
+        [TestCase(false, 0.36, 1)]
+        [TestCase(true, 0.34, 2)]
+        [TestCase(true, 0.36, 1)]
+        public void DoubleClickUsesDesignInterval(bool modern, double interval, int expectedCount)
+        {
+            Switch(modern);
+            Click(own);
+            now += interval - 0.1;
+            Click(own);
+            Assert.That(Simulation.SelectedCount, Is.EqualTo(expectedCount));
+        }
+
+        [TestCase(0.34, true)]
+        [TestCase(0.36, false)]
+        public void GroupDoubleTapUsesSameDesignInterval(double interval, bool centres)
+        {
+            Click(own);
+            Step(own, 0, true, Key.LeftCtrl, Key.Digit1); Step(own);
+            camera.CentreOn(new Vector3(80, 0, 80));
+            Vector3 before = view.transform.position;
+            Step(own, 0, true, Key.Digit1); Step(own);
+            Assert.That(view.transform.position, Is.EqualTo(before));
+            now += interval - 0.1;
+            Step(own, 0, true, Key.Digit1);
+            Assert.That(view.transform.position != before, Is.EqualTo(centres));
         }
 
         [Test]

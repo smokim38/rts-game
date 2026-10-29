@@ -4,6 +4,8 @@ namespace Northwatch.Presentation
 {
     public struct PointerGesture
     {
+        public const double DoublePressInterval = 0.35;
+
         public Vector2 Start { get; private set; }
         public bool Held { get; private set; }
         public bool Dragging { get; private set; }

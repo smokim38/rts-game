@@ -522,8 +522,6 @@ MonoBehaviour:
   actions: {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}
   overlay: {fileID: 8104596488439384506}
   box: {fileID: 1449460654247471340}
-  doubleTapInterval: 0.3
-  dragThreshold: 5
   driver: {fileID: 0}
   view: {fileID: 0}
   cameraController: {fileID: 0}
@@ -1316,10 +1314,10 @@ MonoBehaviour:
     m_HorizontalOverflow: 0
     m_VerticalOverflow: 0
     m_LineSpacing: 1
-  m_Text: 'F1 off: click / drag own A units; Shift adds (click toggles).
+  m_Text: 'Classic (F2 test switch): left selects / moves; right clears / drags.
 
-    Ctrl+1-9
-    saves; 1-9 recalls; double tap centres camera.'
+    Shift
+    adds; double click selects type; Ctrl+1-9 saves; 1-9 recalls.'
 --- !u!1 &4944215515814202789
 GameObject:
   m_ObjectHideFlags: 0
