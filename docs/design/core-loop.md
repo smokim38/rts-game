@@ -4,9 +4,9 @@
 
 ## Overview
 
-A match is one human player against AI opponents on a skirmish map. Each side starts with a small base. You gather one resource, **Supply**, with harvesting vehicles. You spend it on buildings, then on an army, and you fight until one side has no base left. A typical match should last 15 to 25 minutes.
+A match is one human player against 1 to 7 AI opponents on a skirmish map, as a free-for-all or in teams. Teams set in setup are only the starting alliances: any side, human or AI, can make and break alliances during the match. Each side starts with a small base. You gather one resource, **Supply**, with harvesting vehicles. You spend it on buildings, then on an army, and you fight until only one side, or one group of allies, is left, or until you are out yourself (then you can leave, or watch the rest as a spectator). There is no time limit and no target match length: a match runs as long as that takes (see [Match pace](#match-pace)).
 
-The first release has **two factions**. They play by the same rules and economy, and differ in their units. The AI opponent plays by exactly the same rules as the player. It sees only what its own units see, gets no free resources, and gives the same orders a player can give.
+The first release has **two factions**. They play by the same rules and economy, and differ in their units. The AI opponent plays by exactly the same rules as the player. It sees only what its own and its allies' units see, gets no free resources, and gives the same orders a player can give.
 
 Before any art exists, we build all of this in a **grey-box sandbox**: flat ground, units as plain cubes and buildings as plain boxes. Movement comes first, because it has to work well before anything else is built on top of it. The [Grey-box sandbox](#grey-box-sandbox) part lists the systems in build order, with acceptance criteria for each.
 
@@ -23,21 +23,112 @@ Before any art exists, we build all of this in a **grey-box sandbox**: flat grou
 
 | Setting | First release | Why |
 |---|---|---|
-| Sides | 1 human player against 1 to 3 AI opponents. Free-for-all, or all AIs on one team | Vision: skirmish against AI only. 1 against 1 is the main case and is built first |
+| Sides | **2 to 8 sides:** 1 human player against 1 to 7 AI opponents | Owner (Issue #145): up to 8 sides, as in the classic games of this style. Vision: skirmish against AI only. 1 against 1 is the main case and is built first ([Grey-box sandbox](#grey-box-sandbox)) |
+| Teams | Free-for-all, or teams set in setup as the starting alliances (see [Teams](#teams)). Alliances can change during the match (see [Alliances during the match](#alliances-during-the-match)) | Owner (Issue #145): "Allies can also change mid game" |
 | Faction choice | Each side picks one of the two factions, or Random | Two factions (owner, 2026-10-22) |
-| Unit cap | **2,000 mobile units in the whole match**, shared equally between the sides (1,000 each in a 1 against 1, 500 each with four sides). Buildings don't count | Owner: "Max 2000 units". This matches the vision's performance target of 2,000 active units, so a full match is always inside what we test (see open question 1) |
-| AI difficulty | Easy, Normal, Hard (see [The AI opponent](#the-ai-opponent)) | P2 |
+| Unit cap | **One shared pool of 2,000 mobile units for the whole match, first come first served.** No side has a share of its own. Buildings don't count | Owner (Issue #145): "first come first served", "all players shared the same pool of 2000 unit cap"; an equal share "makes it too fair". 2,000 matches the vision's performance target of 2,000 active units, so a full match is always inside what we test. A higher cap for 6 to 8 sides is open question 9 |
+| AI difficulty | Easy, Normal, Hard, set for each AI side (see [The AI opponent](#the-ai-opponent)) | P2 |
 
-**Pillars:** P1, P4. **Per-unit cost:** none. The cap is what keeps every other per-unit cost bounded.
+**The shared unit pool.**
+- **One count for the match:** every mobile unit on the map, of every side, counts against the pool. That includes Collectors, Field Trucks and the units each side starts with (8 per side, so 64 in an 8-side match). Buildings never count. A Field Truck stops counting when it unfolds into an Outpost.
+- **First come, first served.** Any side may build as many units as the pool has room for. A side with a bigger economy can fill more of it, and that is intended.
+- **When the pool is full** (2,000 units on the map), every side's unit production waits. A unit that finishes while the pool is full stays inside its Yard, ready, and its queue shows "Unit pool full". The queue doesn't start its next unit until that one has left.
+- **A place frees up** whenever a mobile unit is lost anywhere: destroyed, or removed because its side is out. The freed place goes to the waiting unit that finished first, whatever its side. If several finished at the same moment, one of them is chosen at random (open question 11).
+- **Every side sees the pool count** (for example "Units in match: 1,987 / 2,000") next to its own unit count (open question 12).
+
+**Pillars:** P1 (one number to read, one rule); P2 (the economy race now also decides who can field an army); P4. **Per-unit cost:** none. The pool is one counter and one short waiting list for the whole match. It keeps every other per-unit cost bounded: whatever the number of sides, the match never has more than 2,000 mobile units, so per-unit costs stay inside what we test. What grows is per-side work (up to 7 AI commanders, one fog of war per side) and map size (see [The map](#the-map)). The performance check should also run on the largest 8-side map once it exists.
+
+### Teams
+
+The setup screen has one slot per side: the human first, then each AI. Each slot sets the faction, the team, the start position (or Random) and, for an AI, its difficulty.
+
+- **Team** is None or Team 1 to 4. Sides with the same team number start the match as allies. A side set to None starts alone. Four numbers are enough: 8 sides can form at most four teams of two or more. Teams are only the starting alliances; they can change once the match runs (see [Alliances during the match](#alliances-during-the-match)).
+- **Layout presets** fill in every slot's team in one click. Any slot can still be changed afterwards.
+
+| Sides | Free-for-all | Team layouts offered |
+|---|---|---|
+| 2 | 1v1 | none |
+| 3 | 1v1v1 | 1v2 |
+| 4 | 1v1v1v1 | 2v2, 1v3 |
+| 5 | 1v1v1v1v1 | 2v3, 1v4 |
+| 6 | 1v1v1v1v1v1 | 3v3, 2v2v2, 1v5 |
+| 7 | 1v1v1v1v1v1v1 | 3v4, 1v6 |
+| 8 | 1v1v1v1v1v1v1v1 | 4v4, 2v2v2v2, 1v7 |
+
+- **1vN** puts the human alone against every AI on one team. In other layouts the human can have AI allies, for example the human and three AIs against four AIs in a 4v4.
+- **Uneven teams** (such as 1v3 or 3v5) are allowed.
+- **The match can't start** unless it has at least two sides and at least two opposing parties: if every side is on the same team, setup refuses to start and says why.
+- **Allies on the same team start on neighbouring start positions,** unless positions are chosen by hand (open question 10).
+
+**Pillars:** P1 (named layouts, set up in one click); P2 (AI allies and opponents play by the same rules as the player). **Per-unit cost:** none; see [Alliances during the match](#alliances-during-the-match) for what an alliance costs.
+
+### Alliances during the match
+
+Any side, human or AI, can make and break alliances while the match runs (owner, Issue #145). The teams from setup are simply the alliances in place at second 0.
+
+**An alliance is between two sides.** Every pair of sides is either **allied** or **enemies**, and both sides of the pair always agree. There is no one-sided alliance and no neutral state. A team of three at setup is three pairs, each allied. Alliances don't chain: if A is allied with B and B with C, A and C are still enemies unless they ally with each other too (open question 13).
+
+**What being allied means** (defaults, open question 10):
+- Allies never attack each other. Auto-targeting and attack-move ignore allied units and buildings, and an attack order on an ally is refused.
+- Allies share vision: each side sees what its own units and buildings see, plus what each of its allies' own units and buildings see. Vision passes one step only: A doesn't see through B's other allies. Ground seen through an ally counts as explored for the side, as if its own units had seen it.
+- Allies share nothing else. Supply, units, build radius, Depots and production stay with each side. Only a side's own idle units step aside for its moving units (S3 item 5).
+
+**Offering and accepting** (open question 14):
+- Each side has a diplomacy panel that lists every other side still in the match, its relation (allied, enemy, offer waiting, alliance ending) and the actions below. Only the two sides involved see an offer.
+- **Offer:** a side offers an alliance to one enemy side. The offer stays open for **30 seconds**, until the receiver accepts or refuses it, or until the offering side withdraws it.
+- **Accept:** the receiver accepts while the offer is open. The alliance starts at once, and every side is told (for example "Blue and Green are now allies").
+- **Refused or expired:** the same side can't offer to the same side again for **60 seconds**.
+- **At the moment an alliance starts:** both sides' vision is shared; units with an attack order on the new ally drop it and stand where they are; auto-targeting and attack-move stop picking the new ally; shots already fired still land, but no new shot is fired.
+- **No alliance that would end the match.** An offer is refused, with a message, if forming it would leave no two sides in the match as enemies. A match ends by sides being knocked out, not by everyone agreeing to stop (owner: "until victory when all other teams are destroyed"; open question 15).
+
+**Breaking** (open question 14):
+- **Either side can break an alliance at any time,** without the other's consent. Every side is told.
+- **At once:** shared vision between the two ends in both directions.
+- **After a 10-second warning,** shown to both sides as a countdown, the two become enemies, and auto-targeting picks up each other's units and buildings. Until then neither can attack the other. The warning gives armies standing side by side a moment to pull apart, so the betrayal is readable (P1). A break can't be undone. Neither side can offer the other a new alliance until 60 seconds after the break completes.
+- **Other alliances are untouched.** If A breaks with B, any alliance A or B has with C stays. C may end up allied with two sides that are now enemies; that is allowed, and because vision passes one step only, neither sees the other through C.
+- **Leave all** breaks every alliance the side has at once, each with its own 10-second warning.
+- When a side is out, all its alliances end with it.
+
+**AI sides** use the same panel actions, by the same rules, and each one counts towards the AI's order limit (see [The AI opponent](#the-ai-opponent)).
+
+**Pillars:** P1 (two relations only, every change announced, a visible warning before a break); P2 (alliances are a new kind of decision for the AI commander, made with the same information and actions as the player). **Per-unit cost:**
+- The enemy check in target search is one lookup in a small side-against-side table (8 by 8) per candidate target, about the same cost as telling own from enemy.
+- Shared vision is combined per side on the cell grid (a side's grid plus up to 7 allies' grids), not per unit.
+- When an alliance starts, the two sides' units drop any attack order on each other once. That is one pass over those units at a rare event, not work every frame.
 
 ### The map
 
-- **Size is set by travel time, not by cells.** On a map for two sides, a medium-speed vehicle crosses from one base to the other in about **60 to 90 seconds**. Maps for four sides keep the same distance between neighbouring bases. This keeps first contact early (P1) and gives large armies room to move (P3, P4).
-- **Start positions** are fair: each one has the same open building space, one Supply field next to it, and two more fields within a short drive (the natural places to expand). Positions are random unless chosen in setup.
+- **Size is set by travel time, not by cells.** On a map for two sides, a medium-speed vehicle crosses from one base to the other in about **60 to 90 seconds**. Maps for 4, 6 and 8 sides keep **the same distance between neighbouring bases** (the nearest other start positions). This keeps first contact early with any number of sides (P1) and gives large armies room to move (P3, P4).
+- **Start positions** are fair at every side count. Each one has:
+  - the same open building space, one Supply field next to it, and two more fields within a short drive (the natural places to expand)
+  - the same number of neighbouring bases, at the neighbour distance, with every neighbour distance on the map within 5% of the others.
+
+  Maps are mirrored or rotated copies of one quarter or half wherever the square grid allows. Positions are random unless chosen in setup.
+
+| Sides | Start layout | Neighbours per base |
+|---|---|---|
+| 2 | Facing each other across the map, one half a rotated copy of the other | 1 |
+| 4 | One near each corner, each quarter a rotated copy | 2 |
+| 6 | A ring of six round the middle of the map | 2 |
+| 8 | A ring of eight round the middle of the map | 2 |
+
+- **8-side maps are a core target, not an edge case.** Matches with 8 sides are common in games of this style, so the first release wants maps sized for 8 players, with the same neighbour distance as every other map (owner, Issue #145).
+- **Fewer sides than positions:** a map can be played with fewer sides than its start positions. Unused positions stay empty.
+- **Size limit.** A map may have at most **87,381 cells (about 295 x 295)** until a storage decision is made first ([ADR 0011](../adr/0011-flow-field-storage.md)). A larger map can't be built before then. **The 8-side map is larger, so it needs that decision before it is built.**
+- **Rough sizes.** The neighbour distance is a balance number, fixed by tuning the 2-side map. For planning only, at 128 cells (a medium-speed vehicle at about 2 cells per second, with detours) and room for a base between each start position and the map edge:
+
+| Sides | Rough map size | Cells | Within the size limit? |
+|---|---|---|---|
+| 2 | about 150 x 150 | about 22,500 | Yes |
+| 4 | about 180 x 180 | about 32,400 | Yes |
+| 6 | about 305 x 270 | about 82,400 | Only just. Over the limit if the distance ends up much above 128 cells |
+| 8 | about 385 x 385 | about 148,000 | No. Needs the storage decision (ADR 0011) first. The 8-side map is not shrunk to fit |
+
+- **The first build is the 2-side map.** Maps for 4, 6 and 8 sides come later (see [Grey-box sandbox](#grey-box-sandbox)). The 6-side map should be checked against the limit once the neighbour distance is tuned.
 - **Terrain in the first release:** open ground, impassable blocks (cliffs, rocks, buildings) and narrow passes between them. Height, water and bridges are later questions (open question 4).
 - **In the sandbox:** one flat square of ground, start positions marked on it, and boxes as obstacles.
 
-**Pillars:** P1, P3. **Per-unit cost:** none. Blocked terrain costs movement time per unit, and that is covered under movement.
+**Pillars:** P1, P3, P4. **Per-unit cost:** none. Blocked terrain costs movement time per unit, and that is covered under movement. Bigger maps and more sides add work per cell for each side (vision and explored ground), which grows with map size and side count, not with units.
 
 ### What each side starts with
 
@@ -56,7 +147,7 @@ The match is one repeating cycle: **gather → build → train → fight → exp
 ### 1. Gather
 
 - **One gathered resource: Supply.** It lies in fields on the map. Collectors drive to a field, fill up, drive to the nearest Depot and unload, and the side's Supply goes up by exactly the amount unloaded. They repeat this on their own until ordered otherwise.
-- **Fields run out and don't regrow.** A Collector whose field runs dry moves on to the nearest field it knows about. With no field left, it goes back to its Depot and waits, and the player is told. Finite fields push sides to expand and stop matches stalling (P1).
+- **Fields run out and don't regrow.** A Collector whose field runs dry moves on to the nearest field it knows about. With no field left, it goes back to its Depot and waits, and the player is told. Finite fields push sides to expand and keep matches moving (P1).
 - **Each new Depot comes with one free Collector,** so building a Depot at a new field starts income there right away.
 - **Power is not a resource you collect.** Generators produce power, and most buildings use it. Power isn't stockpiled; it is the difference between what is produced and what is used (see [Build](#2-build)).
 
@@ -89,7 +180,7 @@ Building categories that both factions share:
 
 - **Production queues are per category,** one for infantry and one for vehicles, not one per building. Each extra Yard of the same kind makes that queue faster. A big army then takes few clicks (P1, P4).
 - **Rally point:** new units drive to the rally point the player set, and gather there as a group (P3).
-- **At the unit cap,** production pauses with a message and carries on as soon as the side drops below its cap.
+- **When the unit pool is full,** a finished unit waits in its Yard with a message, and leaves as soon as a place in the pool is freed for it (see [The shared unit pool](#players-and-the-unit-cap)).
 
 **Pillars:** P1, P3, P4. **Per-unit cost:** none beyond the unit existing. A unit leaving a Yard is an ordinary move order.
 
@@ -107,7 +198,7 @@ Building categories that both factions share:
 - **Retreat:** a group that is clearly losing pulls back towards its rally point. The group decides this together, not each unit on its own. A direct player order (hold position, attack this) always overrides retreat.
 - **Formation:** a group fighting on attack-move stays together instead of stringing out behind its fastest units.
 
-**Vision and fog of war:** each unit and building sees a set radius. A side sees only what its units see. Ground it has explored shows the buildings last seen there, and unexplored ground is hidden. The AI uses exactly the same fog (P2: no information it shouldn't have).
+**Vision and fog of war:** each unit and building sees a set radius. A side sees only what its units see. Ground it has explored shows the buildings last seen there, and unexplored ground is hidden. The AI uses exactly the same fog (P2: no information it shouldn't have). The one exception is a knocked-out player who spectates: they have no side and see the whole map (see [Spectating after defeat](#spectating-after-defeat)).
 
 **Per-unit costs (P4):**
 
@@ -127,26 +218,47 @@ Fields near the start run out, so sides must claim and hold new fields with Depo
 ## Win and loss
 
 - **A side is out** when it has **no buildings and no Field Truck** left. Its other units are removed from the map at that moment. Units alone can't keep a side alive, so nobody has to hunt down the last stray unit (P1).
-- **Victory:** the player wins when every opponent is out. On teams, a team is out when all of its members are out.
-- **Defeat:** the player loses as soon as they are out. The match ends then; there is no spectating in the first release.
-- **Draw:** if the last sides are knocked out at the same moment, the match is a draw.
-- **Surrender:** the player can quit at any time, and it counts as a loss.
-- **No time limit.** The end screen shows match time, units built and lost, and Supply gathered.
+- **The match ends** at the first of these:
+  - **The player is out** (or surrenders) **and chooses to leave.** The defeat screen shows at once and offers two choices: leave the match, or spectate the rest of it (see [Spectating after defeat](#spectating-after-defeat)). Leaving ends the match at that moment.
+  - **The spectating player leaves.** A player who chose to spectate can leave at any time, and that ends the match at that moment.
+  - **No two sides still in the match are enemies:** either one side is left, or every side left is allied with every other side left. Because alliances change during the match, this is checked whenever a side goes out or an alliance starts or ends. An alliance in its 10-second breaking warning already counts as enemies for this check.
+- **Victory:** the player wins if they are still in the match when it ends. Every side still in the match, AI allies included, shares the win.
+- **Defeat:** the player loses as soon as they are out, even if AI allies are still playing, and even if the player's last enemies go out at the same moment and an AI ally is left. The result is fixed at that moment: spectating never changes it, even if an AI ally of the player goes on to win.
+- **Draw:** if every side still in the match is knocked out at the same moment, the match is a draw.
+- **Surrender:** the player can quit at any time. It counts as a loss, and gives the same defeat screen and the same choice (leave or spectate) as being out.
+- **No time limit.** The match runs until it ends by the rules above. Nothing is added to end a long match, and a match where no side can finish another is not treated as a problem (see [Match pace](#match-pace)). The end screen shows match time, units built and lost, and Supply gathered.
+- **Matches with no human player** exist only as an AI test tool, not as a mode in the player's setup screen. They end only when no two sides left are enemies (see [AI-against-AI test matches](#ai-against-ai-test-matches)).
 
-**Pillars:** P1. **Per-unit cost:** none. The check counts buildings and Field Trucks per side.
+**Pillars:** P1. **Per-unit cost:** none. The check counts buildings and Field Trucks per side and reads the 8 by 8 alliance table.
 
-## Target match length
+### Spectating after defeat
 
-| Phase | Target time (1 against 1, Normal AI) | What happens |
-|---|---|---|
-| Opening | 0 to 4 minutes | Economy and first buildings; scouts meet |
-| First fights | about 4 to 6 minutes | The first real attack or raid |
-| Middle | 6 to 15 minutes | Expanding, tech, armies in the hundreds |
-| End | 15 to 25 minutes | Large battles, one base falls |
+A player who is out may watch the rest of a match against AI (owner, Issue #145: "if a player is defeated they have the option to spectate", with "full view of the map with no fog of war"). This replaces the earlier rule of no spectating.
 
-These are targets to tune against, not limits. Hard AI matches may be shorter. Matches with four sides may run longer.
+- **The choice.** The defeat screen shows the end-screen numbers so far and two choices: **Leave match** and **Spectate**. The match is paused while the defeat screen waits, so nothing is missed and nothing changes before the player chooses.
+- **Only while the match goes on.** If the match is already over at the moment the player goes out (no two sides left are enemies, for example the player and their last enemies go out together and only an AI ally is left, or it is a draw), the defeat or draw screen offers only Leave match.
+- **What the spectator sees:** the whole map with no fog of war. Every cell is shown as if in sight, and every unit and building of every side is shown as it is now, wherever it is. Nothing is hidden and nothing is shown as last seen. The camera can go anywhere on the map.
+- **No orders.** The spectator can't give any order: no move, attack, build, production, rally point or alliance action. Clicks and order hotkeys do nothing, and the command bar, production queues and alliance panel are not shown. The spectator has no side, so the AI sides play exactly as if the player had left: their fog, alliances and choices don't change, and nothing the spectator sees reaches any AI.
+- **How it ends.** The match runs on under the normal rules until no two sides left are enemies (one side, or one group of allies), then shows the end screen: Defeat for the player, which side or sides won, and the end-screen numbers for every side. The spectator can leave at any time; leaving stops the match at once and shows the defeat end screen with the numbers up to that moment.
+- **A spectated match that never ends** is the same AI flaw as an AI-against-AI test match that never ends (see [AI-against-AI test matches](#ai-against-ai-test-matches)). Nothing is added to end it for the spectator; they can leave whenever they like.
+- **Setup doesn't change.** Every match still starts with the human as a side. Spectating is only what a player can do after being knocked out, so it doesn't make AI-only matches a setup mode.
+- **Multiplayer is decided later.** This covers matches against AI, which is all the first release has. Whether and how a knocked-out player can spectate an online match is left to the online multiplayer question in [vision.md](vision.md#open-questions) (open question 5).
 
-**Pillars:** P1 (quick matches); P4 (the middle and end are where big battles are normal play).
+**Pillars:** P1 (one clear choice, and a clear view of how the match ends); P2 (the player can watch the AI sides fight and choose their alliances to the end). **Per-unit cost (P4):** none beyond drawing. The spectator view reads no side's fog and adds no vision work: it simply shows every cell. The knocked-out player's side has no units left, so its own vision work stops. Each AI side keeps its own fog as before. With no fog, every unit inside the camera view is drawn, which is never more than the 2,000-unit pool the performance target already covers.
+
+## Match pace
+
+There is **no target match length and no time limit** (owner, Issue #145: in a classic strategy game "you can play indefinitely in a single game until victory when all other teams are destroyed"). A match lasts as long as the fighting takes.
+
+That doesn't make matches slow. Pace comes from the rules, not from a clock:
+- **Early contact:** neighbouring bases are the same distance apart on every map, so scouts meet and first fights start early whatever the number of sides.
+- **Finite fields** push every side to expand and fight over new ground.
+- **The AI keeps up pressure:** it scouts, attacks and picks its fights (see [The AI opponent](#the-ai-opponent)).
+- **Changing alliances** can reopen a match that has settled into a standoff.
+
+**Stalled matches are not a design problem** (owner, Issue #145). A match where no side can finish another (for example, every field empty and every army spent) simply goes on until a side goes out or the player surrenders. The design adds no fix for it: no late field regrowth, no clock, no sudden death. A human player who is losing ends the match by being knocked out or by surrendering and then leaving, and a spectator can leave at any time (see [Win and loss](#win-and-loss)). Between AI sides, including a match a knocked-out player is spectating, a match that never ends is a flaw in the AI, fixed in the AI and never by changing these rules (see [AI-against-AI test matches](#ai-against-ai-test-matches)).
+
+**Pillars:** P1 (a fast pace without a clock); P4 (long matches are where big battles are normal play).
 
 ## The AI opponent
 
@@ -159,12 +271,40 @@ The AI plays by the player's rules. It works on three levels.
 | **Units** | The same unit behaviour the player's units have (auto-targeting, chase limit, formation) | Shared with player units; nothing extra |
 
 **Fairness rules** (P2):
-- Same starting assets, same costs, same unit cap. No hidden resource or production bonuses at any difficulty.
-- Same fog of war. The AI knows only what its units have seen.
-- Same orders. The AI gives the orders a player can give, and no others.
+- Same starting assets, same costs, the same shared unit pool, served in the same order. No hidden resource or production bonuses at any difficulty.
+- Same fog of war. The AI knows only what its units have seen, plus what its allies see, exactly as for the player.
+- Same orders. The AI gives the orders a player can give, and no others. That includes the diplomacy actions (offer, accept, refuse, break).
 - A limit on how many orders per minute the AI gives, set by difficulty, so it can't win only by inhuman speed.
 
 **Difficulty** changes the quality of decisions, not the rules: how well it plans its economy, how much it scouts, how fast it reacts, and how well it picks fights. Selectable personalities (aggressive, defensive) remain an open question in vision.md and #18.
+
+### With up to 7 AI sides
+
+- **One Commander per AI side,** so up to 7 in an 8-side match. Each has its own difficulty and its own order limit. Seven Commanders do seven times the planning work of one, so their planning must be spread over time rather than all landing in the same frame (for the AI's technical design to settle).
+- **Choosing whom to fight.** Each Commander picks its targets among its enemies from what it has seen: first whoever threatens its own base, then the enemy it judges it can hurt most (near, weak, or busy fighting someone else). It treats the human like any other side. No rule makes the AIs gang up on the player or spare them.
+- **Choosing allies.** A Commander offers, accepts, refuses and breaks alliances by its own judgement, with any side including the human, using only the panel actions and the information it has (open question 16). Several AIs may well end up allied against the player, or against each other; that comes from their own choices, never from a rule that favours or targets the human.
+- **Teamwork with allies: no restriction** (owner, Issue #145: "they can do whatever they want with each other if they are allies"). Allied AI Commanders may share plans, send help to an ally's base under attack, attack the same target together, split up the map between them, and form or break alliances, as they judge best. An AI allied with the human helps the human the same way, but takes no orders from them in the first release. Teamwork never adds information: an AI still knows only what its own and its allies' units see.
+
+**Pillars:** P2 (a fair opponent that picks its fights and its friends, in any match size); P4. **Per-unit cost:** none. Commanders are per side, and shared plans are per alliance. Choosing whom to fight or ally with is a Commander decision, not a unit one. Joint attacks and defence are squad orders like any other.
+
+### AI-against-AI test matches
+
+Matches between AI sides only, with no human player, are a **test tool** for the AI, not a mode the player picks in setup (owner, Issue #145). They use the normal rules and end only when no two sides left are enemies.
+
+- **A test match that never ends is a flaw in the AI.** It means the Commanders stopped making progress: for example, they stopped attacking, kept armies home, or kept making and breaking alliances without fighting. It is filed as an AI bug and fixed in the AI (planning, attack choices, alliance choices). It is never fixed by changing the match rules: no clock, no field regrowth, no sudden death (see [Match pace](#match-pace)).
+- **The check:** on Normal, with random factions and start positions, AI-only test matches must reach a single remaining side or a single group of allies within the time below, in **at least 9 of 10 runs** at each side count. The times are pass marks for this test, not match rules.
+
+| Sides | Layouts tested | Pass mark (match time) | Why |
+|---|---|---|---|
+| 2 | 1v1 | 60 minutes | Three times S12's 20-minute mark against an opponent that does nothing, since here the opponent fights back |
+| 4 | Free-for-all and 2v2 | 90 minutes | More sides to knock out, but the same neighbour distance, so first fights come just as early |
+| 6 | Free-for-all and 3v3 | 120 minutes | As above, with more sides |
+| 8 | Free-for-all and 4v4 | 120 minutes | The pool caps the armies at 2,000 units whatever the side count, so a full map should not take much longer than 6 sides |
+
+- **Every run that misses the mark** is kept as a failed run, even when the 9-of-10 check passes. Its log records the setup (map, factions, start positions, difficulties) and, for each side, when it last attacked an enemy base, its unit count over time, and every alliance change, so the cause can be found in the AI. The test harness may stop such a run at 4 hours of match time; that is a limit of the test, not a match rule.
+- 2-side runs are part of S12. Runs for 4, 6 and 8 sides are added as each map exists (see [Grey-box sandbox](#grey-box-sandbox)). The times are first guesses, to be tuned once real AI matches have been measured.
+
+**Pillars:** P2 (AI that finishes its fights is part of a smarter AI). **Per-unit cost:** none in the game; this is a test. Long test runs at 6 and 8 sides take hours of PC time each, so the test plan should say how often they run.
 
 ## The two factions
 
@@ -194,6 +334,8 @@ Everything here is built and tested with **plain ground and simple shapes**: a f
 Every system below must keep working with the sandbox spawn tool (place any number of cubes for either side) and an on-screen counter for units and frame rate. "Performance target" means the vision's target: 2,000 active units at 60 fps at 1080p on the reference PC, measured as settled by vision.md open question 3.
 
 Suggested build order. Each system is one or more later Issues.
+
+**8-side matches** (4 to 7 AI opponents, the larger team layouts, and maps for 6 and 8 sides) are a core target of the first release. They are built after S1 to S13 work, as later Issues, and the 8-side map also waits for the storage decision ([The map](#the-map)).
 
 ### S1. Camera and selection
 
@@ -269,14 +411,26 @@ Suggested build order. Each system is one or more later Issues.
 1. Each category (infantry, vehicles) has one queue of up to 15 units. Cost is taken as production goes, as for buildings.
 2. Each extra Yard of a category makes that queue produce faster, at a rate set in the economy section.
 3. New units drive to the rally point and gather there as a group, following S2's rules.
-4. At its unit cap, a side's production pauses with a message, and it carries on as soon as the side is below the cap.
+4. The match has one unit pool of 2,000 shared by every side, and the on-screen count shows the same pool total to every side. Every mobile unit counts, including Collectors, Field Trucks, starting units and units placed with the spawn tool; buildings don't. The spawn tool refuses to place units beyond 2,000.
+5. With one side holding 1,990 units and another 10, the side with 10 can still produce. No side has a limit of its own below the pool.
+6. With the pool at 2,000, a unit that finishes stays in its Yard, its queue shows "Unit pool full" and doesn't start its next unit, and the pool count never goes above 2,000, even when several units finish on the same frame. This holds for every side, and for the free Collector of a new Depot.
+7. With units of two sides waiting, destroying one unit of a third side frees one place: the unit that finished first leaves its Yard within 1 s, and the other keeps waiting. Units that finished on the same frame are served in random order, so over 20 runs each side is served first at least once.
+8. A Field Truck unfolding into an Outpost frees one place. A side going out frees one place for each of its removed units at once, and that many waiting units leave their Yards in the order they finished.
 
 ### S11. Match flow, win and loss
 
 1. The setup screen sets the map, each side's faction, the number of AI opponents (1 to 3), teams and difficulty. Each side starts with exactly the items in [What each side starts with](#what-each-side-starts-with).
 2. A side with no buildings and no Field Truck is out at once, and its remaining units are removed.
-3. The player sees the victory screen when every opponent is out, and the defeat screen as soon as they are out. Sides knocked out at the same moment give a draw.
-4. The end screen shows match time, units built, units lost and Supply gathered for each side.
+3. The player sees the victory screen when they are still in and no two sides left in the match are enemies, and the defeat screen as soon as they are out. When every side left is knocked out at the same moment, the match is a draw.
+4. In a match of the player and AI A allied against AI B, knocking out B ends the match with a win for the player and A. If A is in its 10-second breaking warning with the player when B goes out, the match doesn't end, and the player and A become enemies when the warning ends.
+5. In a match of the player and AI A allied against AIs B and C, when the player goes out while A, B and C are still in, the defeat screen shows within 1 s and offers exactly two choices, Leave match and Spectate. While it waits, the match is paused: no AI side takes any action and the match clock doesn't move. The same happens when the player surrenders. If the player goes out at the same moment as B and C, with A left, it is still a defeat, and only Leave match is offered.
+6. A match has no time limit: a match of the player against a do-nothing test AI, left with no orders for 2 hours of match time, is still running, with no end screen, no time warning, and fields that have not regrown. Knocking out the AI afterwards still ends it with the victory screen.
+7. The end screen shows match time, units built, units lost and Supply gathered for each side.
+8. **Leave.** In S11.5's match, choosing Leave match ends the match at once: the AI sides take no further actions and the defeat end screen shows. The same holds for a spectator choosing to leave: within 1 s the match stops, and the end screen shows Defeat with the numbers up to that moment.
+9. **Spectator view has no fog.** In S11.5's match, after choosing Spectate, every cell of the map is shown as in sight, with no hidden or last-seen ground. Every unit and building of A, B and C appears wherever it is, including ones no remaining side can see, and an enemy building destroyed out of every side's sight disappears from the view within 0.25 s. The camera can be moved to every corner of the map.
+10. **Spectator gives no orders.** While spectating, clicking on or near any unit or building of any side, and pressing every order hotkey, changes nothing in the match. The command bar, production queues and alliance panel are not shown. Match logs show no order from the human after the moment they went out, and each AI side's knowledge of enemy units still matches its own fog (S7.4).
+11. **Spectated match ends by the normal rule.** In S11.5's match with the player spectating, the match runs on until no two sides left are enemies, then the end screen shows Defeat for the player and names the side or sides that won. If A wins, the player's result is still Defeat.
+12. **Spectating at scale.** Spectating a match with 2,000 units spread over the map holds the performance target with the camera at any position.
 
 ### S12. AI commander, first version
 
@@ -284,15 +438,39 @@ Suggested build order. Each system is one or more later Issues.
 2. Logs show the AI receives no Supply other than from Collectors, and no knowledge of enemy units outside its fog.
 3. On Normal, the AI builds its economy, scouts, and makes its first attack by minute 6.
 4. When its base is attacked, the AI sends defenders within 15 s.
-5. The AI beats an opponent that does nothing within 20 minutes in 10 out of 10 matches.
+5. The AI beats an opponent that does nothing within 20 minutes in 10 out of 10 matches. (The 20 minutes is a pass mark for this test, not a match rule.)
+6. AI-against-AI test matches end: on the 2-side map, on Normal, at least 9 of 10 matches between two AIs end with one side out within 60 minutes of match time. Each run that doesn't is logged as in [AI-against-AI test matches](#ai-against-ai-test-matches) and filed as an AI bug; no match rule is changed to make it end.
+
+### S13. Alliances during the match
+
+Tested with the player and up to 3 AI sides (S11's setup).
+
+1. Sides on the same setup team are allied at second 0: they can't attack each other and share vision. Any of those alliances can be broken like one made during the match.
+2. Offer and accept: when the player offers an alliance to an enemy AI and it is accepted within 30 s, at once every side is told, vision is shared within 0.25 s, units with an attack order on the new ally drop it and stand still, and an attack order on the new ally is refused. Shots already in flight still land; no new shot is fired between the two.
+3. An offer not answered in 30 s expires. After a refusal or expiry, the same side can't offer to the same side again for 60 s, and the panel says so.
+4. An offer that would leave no two sides in the match as enemies is refused with a message, for the player and for an AI.
+5. Breaking: either side breaks an alliance alone; every side is told; shared vision ends within 0.25 s; for 10 s neither side can attack the other; after 10 s each side's units auto-target the other's. A third side's alliances with either of them don't change.
+6. With A allied with B and C, and B and C enemies, B's view never shows what only C's units see, and C's never shows what only B's units see.
+7. AI diplomacy: logs show every AI alliance change went through the same panel actions as the player's, counted towards the AI's order limit, and used no information outside the AI's own and its allies' vision.
+8. AI teamwork, on Normal, in 2 AI against 2 AI test matches: in at least 8 of 10 matches, an AI sends units to an ally's base under attack at least once, and two allied AIs attack the same enemy base within 60 s of each other at least once.
 
 ## Open questions for the owner
 
-1. **The unit cap.** The owner's note says "Max 2000 units on the ladder". Does this mean 2,000 units for the whole match (this section's assumption, shared equally between sides), or 2,000 per side? And what does "ladder" mean here? A ranked ladder would need online play, which is a non-goal for the first release. *Recommendation:* 2,000 mobile units for the whole match, split equally, with buildings not counted. It matches the performance target exactly.
-2. **Number of AI opponents.** *Recommendation:* build and tune 1 against 1 first; support up to 3 AI opponents by release.
+1. **The unit cap.** *Decided for now (owner, Issue #145):* one shared pool of 2,000 mobile units for the whole match, first come first served, with no share per side and buildings not counted. A ranked "ladder" would need online play, which belongs to the online multiplayer question in vision.md (open question 5). A higher cap for 6 to 8 sides is question 9.
+2. **Number of AI opponents and map sizes.** *Decided (owner, Issue #145):* 1 to 7 AI opponents (2 to 8 sides), free-for-all or teams, alliances that can change during the match, no time limit, and full-size 8-side maps as a core target. 1 against 1 is built and tuned first; 8-side matches come after S1 to S13, and the 8-side map after the storage decision (ADR 0011).
 3. **Faction themes, names and rosters.** For the factions section. *Recommendation:* the same economy for both, with differences in units and at most one signature mechanic each.
 4. **Air units, water and height.** *Recommendation:* no naval units and no water in the first release. Decide on air units in the factions section, since they add a second kind of movement. Keep them out of the sandbox.
 5. **Power.** Keep power as a second economy rule, or drop it to make things simpler? *Recommendation:* keep it. It adds raid targets and planning for the AI at no per-unit cost.
 6. **Superweapons** (one very large attack on a long timer). *Recommendation:* leave them out of the first release and revisit once the loop plays well.
 7. **Balance numbers** (costs, build times, health, damage, speeds, starting Supply). For the units and economy sections, tuned in the sandbox.
 8. **Start already in place, or start with a Field Truck?** *Recommendation:* start with the HQ already in place. It's faster and the first decision would almost always be "unfold here" anyway.
+9. **A higher unit cap for 6 to 8 sides.** With 8 sides on one pool of 2,000, the sides together field no more than in a 1 against 1, and the strongest economies take most of it. Should matches with 6 to 8 sides get a pool above 2,000? That needs a new, higher performance target in vision.md first, because the current one is 2,000 active units. *Recommendation:* decide after movement and combat (S2 to S6) are built and measured against the current target, and raise the cap only if those measurements show room to spare on the reference PC.
+10. **What allies share, and where they start.** Default: shared vision only (one step, not chained); allies never attack each other; no shared Supply, units, build radius or Depots; only a side's own units step aside for it; allies on the same setup team start on neighbouring positions. *Recommendation:* keep this for the first build, and revisit shared Depots and allied stepping aside after team matches have been playtested.
+11. **Who gets a freed place in the unit pool.** Default: production runs to the end even when the pool is full, the finished unit waits in its Yard, and a freed place goes to the waiting unit that finished first, ties at random. The alternative is to block a unit from starting while the pool is full, which wastes no Supply but makes "first" harder to see. *Recommendation:* keep the default; it is the plainest reading of "first come, first served".
+12. **Showing the pool count to every side.** Default: every side sees the match total ("Units in match: 1,987 / 2,000"). It reveals how many units all other sides hold together, but not who holds them. *Recommendation:* show it. Without it, a player can't tell why production stopped, and the AI sees the same number.
+13. **Alliances between pairs, not teams.** Default: each pair of sides is allied or enemies, and alliances don't chain. The alternative is joinable teams, where joining one allies you with every member; that needs every member to agree and makes leaving harder to define. *Recommendation:* pairs. They are simpler to change during a match, and the match end rule (no two enemies left) works with any pattern of alliances.
+14. **Offer, accept and break timings.** Defaults: an offer stays open 30 s; a refused or expired offer can't be repeated to the same side for 60 s, nor can a new offer follow a break between the same two sides within 60 s; a break needs no consent, ends shared vision at once, and makes the two sides enemies after a 10 s warning; every side is told of every alliance made or broken, but only the two sides see an offer. *Recommendation:* keep these and tune in playtests. A break with no warning at all would allow surprise attacks between armies standing together, which is hard to read (P1).
+15. **No alliance that would end the match.** Default: an offer is refused if it would leave no two sides as enemies, so a match ends only when sides are knocked out. Without this rule, the last two sides could ally and both win. *Recommendation:* keep it; it follows the owner's "until victory when all other teams are destroyed".
+16. **How the AI chooses allies.** Default for the first build: an AI accepts an offer from a side that shares an enemy it rates as stronger than either of them, offers alliances on the same grounds, and breaks an alliance when that common enemy is out or when the ally is weak, near and its own army is far stronger. Difficulty changes how well it judges strength, not the rules. It treats the human like any other side. *Recommendation:* start with these few rules, read the logs from AI-against-AI matches, and add more only if alliances look random or never change.
+17. **Matches that stall.** *Decided (owner, Issue #145):* not a design problem, and no design fix (no late regrowth, no clock). A player who is out can leave or spectate (owner, Issue #145, replacing the earlier "no spectating"), and a match between AI sides that never ends, whether a test match or one being spectated, is a flaw in the AI. Spectating in online multiplayer is left to vision.md open question 5. See [Match pace](#match-pace), [Win and loss](#win-and-loss) and [AI-against-AI test matches](#ai-against-ai-test-matches).
+18. **Locking alliances in setup.** Should setup offer a "fixed alliances" option, for players who want a plain team match with no betrayal? *Recommendation:* not in the first release; changeable alliances are what the owner asked for. Revisit after playtests.
