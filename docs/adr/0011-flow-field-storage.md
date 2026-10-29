@@ -32,6 +32,7 @@ The worst single-run p95 was 15.8 ms (512², blocked). Builds missed their due t
 - Two slots can publish 60 fields per second. The run replaced 21.6 per second, which is the 64 fields divided by the 3 s lease (21.3). So each publish waited for a lease to expire.
 - With 200 goals in use and 64 fields, groups take turns, and each spends about 1 − 64/200 = 68% of its time without a field, which matches the 68.4% measured.
 - So no lease or queue setting fixes it, and neither does a cheaper build. Only enough fields for the goals in use does.
+- Enough fields costs memory. #141 found that a larger `fieldCapacity` would cost 150 MiB at 512²: that is 200 whole-map fields, one for each goal in use (200 × 262,144 cells × 3 B), over ADR 0008's 64 MB pool trigger. By the same arithmetic, 200 fields take 37.5 MiB at 256².
 
 **Movement chain** (throwaway: small cubes only, prebuilt fields, no pace or slots, instrumentation included). At 2,000 units the chain's median was about 1.24 to 1.55 ms and its p99 3.0 to 6.1 ms. The move check's serial rounds had a p99 of 1.9 to 5.0 ms, over their 0.5 ms share at 1,000 and 2,000 units in every scene. No footprint overlapped on any tick in the 33 crowd runs. Two items went unmeasured because the Editor's profile loader showed only the last 2,000 frames of each capture: main-thread time over the whole window (0.5 ms budget), and 0 B GC Alloc over the whole window.
 
@@ -44,7 +45,7 @@ The worst single-run p95 was 15.8 ms (512², blocked). Builds missed their due t
 
 ## Decision
 
-**Keep whole-map flow fields and raise `fieldCapacity` from 64 to 256. That fits maps of up to 87,381 cells (for example 256 × 256, or at most 295 × 295) in 64 MiB. Fix the sampling function now, so the storage behind it can change later without touching movement. Don't adopt flow-field tiles.**
+**Keep whole-map flow fields and raise `fieldCapacity` from 64 to 256. That fits maps of up to 87,381 cells (for example 256 × 256, or at most 295 × 295) in 64 MiB, and that is the map limit at any capacity. Fix the sampling function now, so the storage behind it can change later without touching movement. Don't adopt flow-field tiles.**
 
 ### Why
 
@@ -57,7 +58,7 @@ The worst single-run p95 was 15.8 ms (512², blocked). Builds missed their due t
 
 These rules replace ADR 0008's `fieldCapacity` default and its "more than 64" saturation threshold. The rest of its "Field pool and requests" stays.
 - `fieldCapacity` is 256 by default. Saturation now needs more than 256 different (goal cell, class) pairs in use by moving units at once. ADR 0008's turn-taking then applies unchanged.
-- **Match-start checks.** The pool (`fieldCapacity` × cells × 3 B) must be at most 64 MiB, `fieldCapacity` at least 200 (the stream's goals in use), and `buildSlots` between 2 and 4. If any check fails, the match logs an error and doesn't start, as with ADR 0008 rule 6. Tests that build a pool directly may use any capacity.
+- **Match-start checks.** The map must have at most 87,381 cells, the pool (`fieldCapacity` × cells × 3 B) must be at most 64 MiB, `fieldCapacity` at least 200 (the stream's goals in use), and `buildSlots` between 2 and 4. If any check fails, the match logs an error and doesn't start, as with ADR 0008 rule 6. Tests that build a pool directly may use any capacity and map size.
 - **Why 64 MiB.** ADR 0008's trigger says 64 MB, but its memory table writes MiB as MB: 64 fields at 256² is its "12 MB", which is exactly 12 MiB. So this ADR reads the trigger as 64 MiB.
 - **Empty groups drop their request.** If a request reaches the head of the queue after every unit of its group has left for a new order, it is dropped without a build.
 
@@ -68,7 +69,7 @@ These rules replace ADR 0008's `fieldCapacity` default and its "more than 64" sa
 | 384² | 147,456 | 108 MiB | No |
 | 512² | 262,144 | 192 MiB | No |
 
-A map over 87,381 cells needs a superseding storage ADR first (see Triggers).
+**The map limit doesn't depend on `fieldCapacity`.** It is 87,381 cells, what 256 fields fit in 64 MiB, and it is checked on its own. A lower capacity would let the memory check pass on a larger map (334² at 200 fields), but with no spare fields for recurring goals beyond the stream's 200, and even 200 fields take 150 MiB at 512² (#141). So lowering `fieldCapacity` never raises the limit. A map over 87,381 cells needs a superseding storage ADR first (see Triggers).
 
 ### Target for the field Issue
 
@@ -118,11 +119,14 @@ What `Sample` does. No storage change may alter these eight points:
 1. **Inputs.** `field` is the field index the unit's group holds for the unit's class, or `NoField`. `position` is the unit's world x and z, which callers never offset.
 2. **No field.** `NoField` gives `Unavailable`. A later storage may also return `Unavailable` where a field holds no data. Callers treat `Unavailable` and `Unreachable` alike, as a unit still waiting for its field, and use stopgap direct seek (ADR 0008). They never request a field per unit.
 3. **Where values sit.** A class-k field's value (x, y) belongs to the world point origin + (x, y) + (k + 1) / 2. That point is the centre of the (k + 1) × (k + 1) square of cells whose lowest-x, lowest-z cell is (x, y), which is how clearance-based planning anchors a square to a cell ([HAA*][haa]). For class 0 the point is the cell centre. For class 1 it is the corner shared by four cells. Issue 2 anchors passability per class the same way.
-4. **Weights.** Let p = position − origin − (k + 1) / 2, i = floor(p) and t = p − i. The values at i, i + (1, 0), i + (0, 1) and i + (1, 1) get the weights (1 − tx)(1 − ty), tx(1 − ty), (1 − tx)ty and tx·ty. A value outside the map, or with distance 65,535, is unreachable and gets weight 0. The other weights are scaled to sum to 1. If no value is reachable, the result is `Unreachable`, with zero direction and distance.
-5. **Distance.** The weighted mean of the reachable values' distances, in cells (tenths ÷ 10).
-6. **Direction.** The normalised weighted sum of the direction vectors of the reachable values whose distance is above 0.
-   - If that sum is shorter than 0.001 because the directions cancel, use the direction of the heaviest such value. On a tie, use the first in the order of point 4.
-   - If no such value exists (only goal values), the direction is zero.
+4. **Weights.** Let p = position − origin − (k + 1) / 2, i = floor(p) and t = p − i. The values at i, i + (1, 0), i + (0, 1) and i + (1, 1) get the weights (1 − tx)(1 − ty), tx(1 − ty), (1 − tx)ty and tx·ty. A value outside the map, or with distance 65,535, is unreachable. A value *contributes* when it is reachable and its weight is above 0. The contributing values' weights are scaled to sum to 1.
+   - If no value contributes, the result is `Unreachable`, with zero direction and distance.
+   - That includes a position exactly on an unreachable value's point, or on the line between two unreachable values, even when a value with weight 0 next to it is reachable. Values with weight 0 are never used, so the scaling never divides by zero.
+5. **Distance.** The weighted mean of the contributing values' distances, in cells (tenths ÷ 10).
+6. **Direction.** The candidates are the contributing values whose distance is above 0. Let s be the sum of each candidate's direction vector times its weight, and W the sum of their weights.
+   - If there is no candidate, the direction is zero. So exactly on the goal value's point, where only the goal value contributes, the distance is 0 and the direction is zero.
+   - Otherwise, if s is shorter than 0.001 × W because the directions cancel, use the direction of the heaviest candidate. On a tie, use the first in the order of point 4.
+   - Otherwise, the direction is s normalised.
 7. **Encoding.** A direction byte d (0 to 7) is the vector (cos 45d°, sin 45d°) in world (x, z), turning from +x toward +z. Distances are ADR 0008's: a `ushort` in tenths of a cell, saturating at 65,534, with 65,535 meaning unreachable.
 8. **Safe in jobs.** `Sample` writes nothing and allocates nothing. It compiles with Burst, is safe in parallel jobs, and reads at most four values from each array.
 
@@ -157,7 +161,7 @@ These continue ADR 0008's rules 1 to 9, and add to ADR 0004's rules.
 
 10. **Fields only through the reader.** Movement jobs read fields only through `FlowFieldReader.Sample`. Only the field pool's own code (builds, publishing and the reader) indexes the field arrays.
 11. **No field means stopgap direct seek.** `Unavailable` and `Unreachable` both mean stopgap direct seek. Field requests stay per group and class.
-12. **The pool fits or the match doesn't start.** These are the match-start checks under Field pool.
+12. **The map and the pool fit, or the match doesn't start.** These are the match-start checks under Field pool.
 
 ### What this ADR supersedes
 
@@ -216,7 +220,7 @@ Memory is given for a pool of 256 fields, which the stream needs. Build times ar
   - *Gains:* memory is close to D, routes stay exact, and build time stays as measured.
   - *Unknowns:* how many pages an order needs, and how often crowds leave their pages. Nobody has measured either, and we found no published account of this method.
   - *Not chosen now.* It is the first candidate when a map goes over the limit (Triggers).
-- **F. Store distances only (2 B per cell),** and work out directions from the eight neighbours when sampling, which takes 16 reads instead of 4. A third more fields per MiB isn't needed at 256² and isn't enough at 512². Not chosen.
+- **F. Store distances only (2 B per cell),** and work out directions from the eight neighbours when sampling, which takes 16 reads instead of 4. A third less memory per field, so half as many fields again per MiB, isn't needed at 256² and isn't enough at 512² (128 fields in 64 MiB). Not chosen.
 - **G. Shorter leases, more build slots or queue priorities only.** The stream shows the share is about 1 − capacity ÷ goals in use, whatever the lease. Shorter leases only add rebuilds. Not chosen. `buildSlots` stays a lever for bursts.
 - **H. A\* paths while fields are scarce.** It breaks ADR 0008 rule 1 ("Fields, not paths") with a second way to follow a route, and pushed units would need repair paths. Not chosen.
 
@@ -245,7 +249,7 @@ Memory is given for a pool of 256 fields, which the stream needs. Build times ar
   - **The 5% target fails.** On an allowed map, the stream or a full AI-against-AI match leaves more than 5% of moving unit-ticks on stopgap direct seek after the levers.
   - **Builds get slow.** On reference-class hardware, builds take more than 20 ms at the 95th percentile on the largest allowed map, or more than 1% miss their due tick at `buildLatencyTicks` 2. Tiles (D) are then the candidate, because only they cut build time.
 - **Levers.** These replace ADR 0008's last lever. They are tuning and need no new ADR:
-  - `fieldCapacity`, from 200 up to the 64 MiB limit
+  - `fieldCapacity`, from 200 up to what fits in 64 MiB on the map. It never raises the map limit.
   - `buildSlots`, from 2 to 4. More slots shorten bursts but take workers from the chain, so a change shows its ladder entry.
   - `minLease`
   - `buildLatencyTicks`
@@ -254,7 +258,7 @@ Memory is given for a pool of 256 fields, which the stream needs. Build times ar
 - **Follow-up Issues.** ADR 0008's Issues 2 to 5 change as follows. Everything else in them stays. "The four scenes" means ADR 0008's spike scenes: the ladder scenario, 200 units through a 3-cell gap, dense contact and wall contact.
   2. **Static maps and flow fields.**
      - *Scope:* `fieldCapacity` 256, the match-start checks, dropping requests for empty groups, and passability and builds anchored as in Sampling point 3. It fills the storage layout above. It doesn't create or edit the three Sampling types before Issue 3 merges.
-     - *Tests:* ADR 0008's list, where "65 goals with 64 fields" becomes `fieldCapacity` + 1 goals at a small test capacity. Also the stream test above, at most 5%, and a match-start check that fails for a 296² map and passes for 295².
+     - *Tests:* ADR 0008's list, where "65 goals with 64 fields" becomes `fieldCapacity` + 1 goals at a small test capacity. Also the stream test above, at most 5%, and match-start checks that fail for a 296² map and pass for 295² at the defaults, and fail for 320² at `fieldCapacity` 200, where the pool alone would fit.
      - *Measurements:* the same as #141 but on its own build job:
        - build median and p95 at 256², open and 20% blocked
        - missed due ticks during the stream
@@ -269,6 +273,7 @@ Memory is given for a pool of 256 fields, which the stream needs. Build times ar
        - Measurement sets the cap's default so that the serial rounds' p99 is at most 0.5 ms at 2,000 units in the four scenes. Start from 32.
      - *Tests:*
        - Sampling points 2 to 7: a value read at its own point, a blend halfway between values, an unreachable value skipped, all four unreachable, a position outside the map, directions that cancel, a class-1 value read at its cell corner, and `NoField`.
+       - Zero weights: a position exactly on an unreachable value's point, and one on the line between two unreachable values, each with reachable values of weight 0 beside it, give `Unreachable` with zero direction and distance. A position exactly on the goal value's point, with reachable non-goal values beside it, gives `Ready`, distance 0 and zero direction.
        - Two parallel Burst jobs sharing one reader's arrays, with safety checks on and no error.
        - With a cap of 0, a queue that forms a chain adds no footprint overlap, and its rollback set stalls for one tick.
      - *Measurements:*
