@@ -125,18 +125,48 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
 
         [TestCase(1)]
         [TestCase(2)]
+        public void PipelineFollowerWaitsForMovingLeaderUntilSecondPass(int passes)
+        {
+            using var ownedState = new UnitState(2);
+            UnitState state = ownedState;
+            using var pipeline = new MovementPipeline(2, Settings(passes));
+            using var map = new NativeArray<byte>(0, Allocator.Persistent);
+            Place(state, 0, 0);
+            Place(state, 1, new float2(.5f, 0));
+            for (int i = 0; i < 2; i++)
+            {
+                MovementUnit unit = state.Movement[i];
+                unit.Velocity = unit.NewVelocity = new float2(3.75f, 0);
+                state.Movement[i] = unit;
+            }
+
+            pipeline.Schedule(state, default).Complete();
+
+            Assert.That(pipeline.Levels[1], Is.Zero);
+            Assert.That(state.Positions[1].x, Is.GreaterThan(.5f));
+            Assert.That(pipeline.Corrected[0].Position.x, Is.GreaterThan(0));
+            Assert.That(pipeline.Levels[0], Is.EqualTo(passes == 1 ? 2 : 0));
+            Assert.That(state.Positions[0], Is.EqualTo(passes == 1 ? pipeline.Start[0].Position : pipeline.Corrected[0].Position));
+            Assert.That(state.Movement[0].Velocity, Is.EqualTo(passes == 1 ? float2.zero : new float2(3.75f, 0)));
+            AssertClear(state, map);
+        }
+
+        [TestCase(1)]
+        [TestCase(2)]
         public void ConflictOnlyWithNeighbourOldHeadingClearsOnSecondPass(int passes)
         {
             using var state = new UnitState(2);
             using var pipeline = new MovementPipeline(2, Settings(passes));
             Place(state, 0, new float2(-.2f, 0));
-            Place(state, 1, new float2(.55f, 0), heading: math.PI / 4);
+            Place(state, 1, new float2(.7f, 0), heading: math.PI / 4);
             pipeline.Start[0] = Pose(state, 0); pipeline.Start[1] = Pose(state, 1);
             var candidate = pipeline.Start[0]; candidate.Position.x = 0;
-            var neighbour = pipeline.Start[1]; neighbour.Heading = 0;
+            var neighbour = pipeline.Start[1]; neighbour.Position.x = .55f; neighbour.Heading = 0;
+            var oldHeading = neighbour; oldHeading.Heading = pipeline.Start[1].Heading;
             pipeline.Corrected[0] = candidate; pipeline.Corrected[1] = neighbour;
             Assert.That(Footprint.Overlap(candidate, UnitSize.Small, neighbour, UnitSize.Small), Is.Zero);
-            Assert.That(Footprint.Overlap(candidate, UnitSize.Small, pipeline.Start[1], UnitSize.Small), Is.GreaterThan(0));
+            Assert.That(Footprint.Overlap(candidate, UnitSize.Small, pipeline.Start[1], UnitSize.Small), Is.Zero);
+            Assert.That(Footprint.Overlap(candidate, UnitSize.Small, oldHeading, UnitSize.Small), Is.GreaterThan(0));
             CheckCandidates(state, pipeline);
             Assert.That(pipeline.Levels[1], Is.Zero);
             Assert.That(pipeline.Levels[0], Is.EqualTo(passes == 1 ? 2 : 0));
