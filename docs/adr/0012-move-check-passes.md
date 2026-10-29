@@ -83,7 +83,7 @@ The proof needs no order between units, so the result doesn't depend on workers 
 - That is the price of a check that holds whatever each neighbour ends with. k-robust plans pay a similar price to stay collision-free "even if a limited number of such delays occur" ([Atzmon et al.][robust]).
 - A later pass lets a unit follow a neighbour whose move is already final. So a queue in contact gains one more moving unit per pass.
 
-The default accepts following conflicts, because:
+The default accepts forbidding following conflicts, because:
 - They only affect a unit that is less than one step from a neighbour. That is 0.133 cells for the small cube at 4 cells/s. ORCA's disc spacing usually leaves more room: small cubes at disc spacing, facing the same way, are 0.21 cells apart.
 - From the same tick inputs, no number of passes ends a unit at a better level than the exact rounds would. Each pass tests every pose the rounds can test, and more. Even so, one-pass advanced faster in #148's crossing, and it got 5 units through the gap at 1,000 against 0. Those scenes press units together without ORCA, so this isn't a general advantage, but no loss was measured.
 - If Issue 5 shows a loss, `moveCheckPasses` is the lever (Consequences).
@@ -169,7 +169,7 @@ None are added.
 
 | Option | Move check p99 (ms) | Serial work | Overlap safety | Freezes and stalls | Movement quality | Work for the team |
 |---|---|---|---|---|---|---|
-| **A. Parallel passes, 1 by default (chosen)** | 0.29–0.41 for 1 pass at 2,000, measured | None | Holds after every pass (proof above) | No rollback. Following conflicts make a unit wait a tick | Higher in #148: crossing 0.249 / 0.010 at 2,000, gap 5 at 1,000 | Small: one job replaces two |
+| **A. Parallel passes, 1 by default (chosen)** | 0.29–0.41 for 1 pass at 2,000, measured | None | Holds after every pass (proof above) | No rollback. Forbidding following conflicts makes a unit wait a tick | Higher in #148: crossing 0.249 / 0.010 at 2,000, gap 5 at 1,000 | Small: one job replaces two |
 | **B. Exact rounds, no cap** (#143 as merged) | 0.79–1.57 at 2,000, measured | Unbounded: up to 2N fallbacks, one round per link | Holds | No rollback | The best possible per tick. Measured 0.050 / 0.000 and gap 0 | None |
 | **C. Exact rounds, capped, with a footprint-based rollback set** | Not measured | The cap, plus a closure as serial as the rounds | Holds | The set stalls. Smaller than E's, size unmeasured | Below B | Medium |
 | **D. Exact rounds as parallel jobs** | Not measured | None, but a fixed number of rounds | Only with C's closure, or a fallback to A when the rounds run out | As C or A | Up to B when the rounds are enough | High |
@@ -195,11 +195,11 @@ None are added.
 
 - **Benefits.**
   - At the 99th percentile, the move check is 2.3 to 5.6 times cheaper than the exact rounds (#148). It runs on all cores and has no serial job.
-  - There's no rollback set, so no frozen crowd.
+  - There's no rollback set, so no rollback can freeze the crowd. The proof shows that no overlap is added, not that units make progress: moves that depend on each other, such as a ring of units in contact that each need the next one's space, can still stall.
   - The guarantee holds after every pass, by a short proof that needs no order between units.
   - There's less code: one job replaces two, and three per-unit index arrays go.
 - **Tradeoffs.**
-  - Following conflicts. A unit that falls back also restarts from rest (ADR 0008). At the current acceleration of 16 cells/s², a small cube takes 0.25 s to get back to 4 cells/s, and ends about 0.6 cells further behind a leader that kept going (arithmetic). So a queue that starts in contact spreads out as it moves off.
+  - Forbidding following conflicts. A unit that falls back also restarts from rest (ADR 0008). At the current acceleration of 16 cells/s², a small cube takes 0.25 s to get back to 4 cells/s, and ends about 0.6 cells further behind a leader that kept going (arithmetic). So a queue that starts in contact spreads out as it moves off.
   - Every pass after the first adds one job to the chain.
 - **Cost at 2,000 units.**
   - Pass 1 has a p99 of 0.29–0.41 ms on the ladder PC (#148).
@@ -208,7 +208,7 @@ None are added.
   - No allocation and no GPU cost.
 - **Risks.**
   - The ladder PC has 12 cores. A 6-core reference CPU runs parallel jobs more slowly, so pass 1 may use more of its 0.5 ms share there. Unmeasured.
-  - With ORCA, following conflicts may slow units pushing through an arrived block (S3.5) or queueing at the gap (S3.3). For example, an idle unit stepping aside frees space that the mover wants in that same tick. Issue 5 measures this at 1 and 2 passes.
+  - With ORCA, forbidding following conflicts may slow units pushing through an arrived block (S3.5) or queueing at the gap (S3.3). For example, an idle unit stepping aside frees space that the mover wants in that same tick. Issue 5 measures this at 1 and 2 passes.
   - The 60 fps total and the cost of later passes stay unmeasured until Issue A.
 - **Reversibility.** Easy. The check is one job with the same inputs (start and corrected poses) and the same output (levels) as before, and the exact rounds are in #143's code at 75aa082.
 - **Triggers for a superseding ADR.**
