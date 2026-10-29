@@ -4,7 +4,7 @@
 
 ## Overview
 
-A match is one human player against 1 to 7 AI opponents on a skirmish map, as a free-for-all or in teams. Teams set in setup are only the starting alliances: any side, human or AI, can make and break alliances during the match. Each side starts with a small base. You gather one resource, **Supply**, with harvesting vehicles. You spend it on buildings, then on an army, and you fight until only one side, or one group of allies, is left. There is no time limit and no target match length: a match runs as long as that takes (see [Match pace](#match-pace)).
+A match is one human player against 1 to 7 AI opponents on a skirmish map, as a free-for-all or in teams. Teams set in setup are only the starting alliances: any side, human or AI, can make and break alliances during the match. Each side starts with a small base. You gather one resource, **Supply**, with harvesting vehicles. You spend it on buildings, then on an army, and you fight until only one side, or one group of allies, is left, or until you are out yourself. There is no time limit and no target match length: a match runs as long as that takes (see [Match pace](#match-pace)).
 
 The first release has **two factions**. They play by the same rules and economy, and differ in their units. The AI opponent plays by exactly the same rules as the player. It sees only what its own and its allies' units see, gets no free resources, and gives the same orders a player can give.
 
@@ -147,7 +147,7 @@ The match is one repeating cycle: **gather → build → train → fight → exp
 ### 1. Gather
 
 - **One gathered resource: Supply.** It lies in fields on the map. Collectors drive to a field, fill up, drive to the nearest Depot and unload, and the side's Supply goes up by exactly the amount unloaded. They repeat this on their own until ordered otherwise.
-- **Fields run out and don't regrow.** A Collector whose field runs dry moves on to the nearest field it knows about. With no field left, it goes back to its Depot and waits, and the player is told. Finite fields push sides to expand and stop matches stalling (P1).
+- **Fields run out and don't regrow.** A Collector whose field runs dry moves on to the nearest field it knows about. With no field left, it goes back to its Depot and waits, and the player is told. Finite fields push sides to expand and keep matches moving (P1).
 - **Each new Depot comes with one free Collector,** so building a Depot at a new field starts income there right away.
 - **Power is not a resource you collect.** Generators produce power, and most buildings use it. Power isn't stockpiled; it is the difference between what is produced and what is used (see [Build](#2-build)).
 
@@ -218,12 +218,15 @@ Fields near the start run out, so sides must claim and hold new fields with Depo
 ## Win and loss
 
 - **A side is out** when it has **no buildings and no Field Truck** left. Its other units are removed from the map at that moment. Units alone can't keep a side alive, so nobody has to hunt down the last stray unit (P1).
-- **The match ends** when no two sides still in the match are enemies: either one side is left, or every side left is allied with every other side left. Because alliances change during the match, this is checked whenever a side goes out or an alliance starts or ends. An alliance in its 10-second breaking warning already counts as enemies for this check.
+- **The match ends** at the first of these:
+  - **The player is out** (or surrenders). The match ends for the player at that moment with the defeat screen.
+  - **No two sides still in the match are enemies:** either one side is left, or every side left is allied with every other side left. Because alliances change during the match, this is checked whenever a side goes out or an alliance starts or ends. An alliance in its 10-second breaking warning already counts as enemies for this check.
 - **Victory:** the player wins if they are still in the match when it ends. Every side still in the match, AI allies included, shares the win.
-- **Defeat:** the player loses as soon as they are out, even if AI allies are still playing. The match ends then; there is no spectating in the first release.
+- **Defeat:** the player loses as soon as they are out, even if AI allies are still playing, and even if the player's last enemies go out at the same moment and an AI ally is left. The match stops there: the remaining AI sides are not played on, and the player can't stay to watch them. There is no spectating (owner, Issue #145: a player who loses ends the game rather than sitting and spectating).
 - **Draw:** if every side still in the match is knocked out at the same moment, the match is a draw.
-- **Surrender:** the player can quit at any time, and it counts as a loss.
-- **No time limit.** The match runs until it ends by the rules above. The end screen shows match time, units built and lost, and Supply gathered.
+- **Surrender:** the player can quit at any time. It counts as a loss and ends the match the same way as being out.
+- **No time limit.** The match runs until it ends by the rules above. Nothing is added to end a long match, and a match where no side can finish another is not treated as a problem (see [Match pace](#match-pace)). The end screen shows match time, units built and lost, and Supply gathered.
+- **Matches with no human player** exist only as an AI test tool, not as a mode in the player's setup screen. They end only when no two sides left are enemies (see [AI-against-AI test matches](#ai-against-ai-test-matches)).
 
 **Pillars:** P1. **Per-unit cost:** none. The check counts buildings and Field Trucks per side and reads the 8 by 8 alliance table.
 
@@ -237,7 +240,7 @@ That doesn't make matches slow. Pace comes from the rules, not from a clock:
 - **The AI keeps up pressure:** it scouts, attacks and picks its fights (see [The AI opponent](#the-ai-opponent)).
 - **Changing alliances** can reopen a match that has settled into a standoff.
 
-A match where no side can finish another (for example, every field empty and every army spent) can go on until someone surrenders (open question 17).
+**Stalled matches are not a design problem** (owner, Issue #145). A match where no side can finish another (for example, every field empty and every army spent) simply goes on until a side goes out or the player surrenders. The design adds no fix for it: no late field regrowth, no clock, no sudden death. A human player who is losing ends the match by being knocked out or by surrendering (see [Win and loss](#win-and-loss)). Between AI sides, a match that never ends is a flaw in the AI, fixed in the AI and never by changing these rules (see [AI-against-AI test matches](#ai-against-ai-test-matches)).
 
 **Pillars:** P1 (a fast pace without a clock); P4 (long matches are where big battles are normal play).
 
@@ -267,6 +270,25 @@ The AI plays by the player's rules. It works on three levels.
 - **Teamwork with allies: no restriction** (owner, Issue #145: "they can do whatever they want with each other if they are allies"). Allied AI Commanders may share plans, send help to an ally's base under attack, attack the same target together, split up the map between them, and form or break alliances, as they judge best. An AI allied with the human helps the human the same way, but takes no orders from them in the first release. Teamwork never adds information: an AI still knows only what its own and its allies' units see.
 
 **Pillars:** P2 (a fair opponent that picks its fights and its friends, in any match size); P4. **Per-unit cost:** none. Commanders are per side, and shared plans are per alliance. Choosing whom to fight or ally with is a Commander decision, not a unit one. Joint attacks and defence are squad orders like any other.
+
+### AI-against-AI test matches
+
+Matches between AI sides only, with no human player, are a **test tool** for the AI, not a mode the player picks in setup (owner, Issue #145). They use the normal rules and end only when no two sides left are enemies.
+
+- **A test match that never ends is a flaw in the AI.** It means the Commanders stopped making progress: for example, they stopped attacking, kept armies home, or kept making and breaking alliances without fighting. It is filed as an AI bug and fixed in the AI (planning, attack choices, alliance choices). It is never fixed by changing the match rules: no clock, no field regrowth, no sudden death (see [Match pace](#match-pace)).
+- **The check:** on Normal, with random factions and start positions, AI-only test matches must reach a single remaining side or a single group of allies within the time below, in **at least 9 of 10 runs** at each side count. The times are pass marks for this test, not match rules.
+
+| Sides | Layouts tested | Pass mark (match time) | Why |
+|---|---|---|---|
+| 2 | 1v1 | 60 minutes | Three times S12's 20-minute mark against an opponent that does nothing, since here the opponent fights back |
+| 4 | Free-for-all and 2v2 | 90 minutes | More sides to knock out, but the same neighbour distance, so first fights come just as early |
+| 6 | Free-for-all and 3v3 | 120 minutes | As above, with more sides |
+| 8 | Free-for-all and 4v4 | 120 minutes | The pool caps the armies at 2,000 units whatever the side count, so a full map should not take much longer than 6 sides |
+
+- **Every run that misses the mark** is kept as a failed run, even when the 9-of-10 check passes. Its log records the setup (map, factions, start positions, difficulties) and, for each side, when it last attacked an enemy base, its unit count over time, and every alliance change, so the cause can be found in the AI. The test harness may stop such a run at 4 hours of match time; that is a limit of the test, not a match rule.
+- 2-side runs are part of S12. Runs for 4, 6 and 8 sides are added as each map exists (see [Grey-box sandbox](#grey-box-sandbox)). The times are first guesses, to be tuned once real AI matches have been measured.
+
+**Pillars:** P2 (AI that finishes its fights is part of a smarter AI). **Per-unit cost:** none in the game; this is a test. Long test runs at 6 and 8 sides take hours of PC time each, so the test plan should say how often they run.
 
 ## The two factions
 
@@ -385,8 +407,9 @@ Suggested build order. Each system is one or more later Issues.
 2. A side with no buildings and no Field Truck is out at once, and its remaining units are removed.
 3. The player sees the victory screen when they are still in and no two sides left in the match are enemies, and the defeat screen as soon as they are out. When every side left is knocked out at the same moment, the match is a draw.
 4. In a match of the player and AI A allied against AI B, knocking out B ends the match with a win for the player and A. If A is in its 10-second breaking warning with the player when B goes out, the match doesn't end, and the player and A become enemies when the warning ends.
-5. A match has no time limit: an AI-against-AI test match left running for 2 hours ends only by a side going out or by surrender, never by the clock.
-6. The end screen shows match time, units built, units lost and Supply gathered for each side.
+5. In a match of the player and AI A allied against AIs B and C, when the player goes out while A, B and C are still in, the defeat screen shows within 1 s and the match stops: the AI sides take no further actions, and the end screen offers no way to keep watching. The same happens when the player surrenders. If the player goes out at the same moment as B and C, with A left, it is still a defeat.
+6. A match has no time limit: a match of the player against a do-nothing test AI, left with no orders for 2 hours of match time, is still running, with no end screen, no time warning, and fields that have not regrown. Knocking out the AI afterwards still ends it with the victory screen.
+7. The end screen shows match time, units built, units lost and Supply gathered for each side.
 
 ### S12. AI commander, first version
 
@@ -395,6 +418,7 @@ Suggested build order. Each system is one or more later Issues.
 3. On Normal, the AI builds its economy, scouts, and makes its first attack by minute 6.
 4. When its base is attacked, the AI sends defenders within 15 s.
 5. The AI beats an opponent that does nothing within 20 minutes in 10 out of 10 matches. (The 20 minutes is a pass mark for this test, not a match rule.)
+6. AI-against-AI test matches end: on the 2-side map, on Normal, at least 9 of 10 matches between two AIs end with one side out within 60 minutes of match time. Each run that doesn't is logged as in [AI-against-AI test matches](#ai-against-ai-test-matches) and filed as an AI bug; no match rule is changed to make it end.
 
 ### S13. Alliances during the match
 
@@ -427,5 +451,5 @@ Tested with the player and up to 3 AI sides (S11's setup).
 14. **Offer, accept and break timings.** Defaults: an offer stays open 30 s; a refused or expired offer can't be repeated to the same side for 60 s, nor can a new offer follow a break between the same two sides within 60 s; a break needs no consent, ends shared vision at once, and makes the two sides enemies after a 10 s warning; every side is told of every alliance made or broken, but only the two sides see an offer. *Recommendation:* keep these and tune in playtests. A break with no warning at all would allow surprise attacks between armies standing together, which is hard to read (P1).
 15. **No alliance that would end the match.** Default: an offer is refused if it would leave no two sides as enemies, so a match ends only when sides are knocked out. Without this rule, the last two sides could ally and both win. *Recommendation:* keep it; it follows the owner's "until victory when all other teams are destroyed".
 16. **How the AI chooses allies.** Default for the first build: an AI accepts an offer from a side that shares an enemy it rates as stronger than either of them, offers alliances on the same grounds, and breaks an alliance when that common enemy is out or when the ally is weak, near and its own army is far stronger. Difficulty changes how well it judges strength, not the rules. It treats the human like any other side. *Recommendation:* start with these few rules, read the logs from AI-against-AI matches, and add more only if alliances look random or never change.
-17. **Matches that stall.** With no time limit, a match where every field is empty and no side can finish another can go on until someone surrenders. *Recommendation:* accept this for now, as the owner asked for no time limit, and watch AI-against-AI test matches for it. If stalls turn up often, consider a design fix (for example, fields that slowly regrow late in a match) rather than a clock.
+17. **Matches that stall.** *Decided (owner, Issue #145):* not a design problem, and no design fix (no late regrowth, no clock). A player who is out leaves the match with no spectating, and an AI-only test match that never ends is a flaw in the AI. See [Match pace](#match-pace), [Win and loss](#win-and-loss) and [AI-against-AI test matches](#ai-against-ai-test-matches).
 18. **Locking alliances in setup.** Should setup offer a "fixed alliances" option, for players who want a plain team match with no betrayal? *Recommendation:* not in the first release; changeable alliances are what the owner asked for. Revisit after playtests.
