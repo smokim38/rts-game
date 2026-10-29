@@ -132,11 +132,13 @@ namespace Northwatch.Tests.EditMode.EditorTools
                         paths[i] == "ProjectSettings/EditorBuildSettings.asset")
                         File.WriteAllBytes(paths[i], Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(before[i])
                             .Replace("\r\n", "\n").Replace("\n", lineEnding)));
+                AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
                 string[] expectedPaths = AssetAndSettingsPaths();
                 byte[][] expected = expectedPaths.Select(File.ReadAllBytes).ToArray();
                 for (int run = 0; run < 2; run++)
                 {
                     build();
+                    AssertSourceDatabaseIsCurrent();
                     // Include changes left dirty by this build before another baseline can absorb them.
                     AssetDatabase.SaveAssets();
                     Assert.That(AssetAndSettingsPaths(), Is.EqualTo(expectedPaths), "The builder must not add assets or settings.");
@@ -150,7 +152,18 @@ namespace Northwatch.Tests.EditMode.EditorTools
                     if (!File.Exists(paths[i]) || !File.ReadAllBytes(paths[i]).SequenceEqual(before[i]))
                         File.WriteAllBytes(paths[i], before[i]);
                 if (!paths.Contains(templateSettings) && File.Exists(templateSettings)) File.Delete(templateSettings);
+                AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
             }
+        }
+
+        private static void AssertSourceDatabaseIsCurrent()
+        {
+            string[] paths = { "Assets/Prefabs/CameraRig.prefab", PerformanceLadderBuilder.ScenePath };
+            Hash128[] before = paths.Select(AssetDatabase.GetAssetDependencyHash).ToArray();
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+            for (int i = 0; i < paths.Length; i++)
+                Assert.That(AssetDatabase.GetAssetDependencyHash(paths[i]), Is.EqualTo(before[i]),
+                    "The builder must return with current imported source bytes: " + paths[i]);
         }
 
         private static void WithUnrelatedMaterial(System.Action<Material, string> check)
