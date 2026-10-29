@@ -62,3 +62,4 @@ Thousands of units can fight at once on a modest PC.
 2. **An AI that learns from every game:** is it wanted and feasible? See #18. Not promised.
 3. **Measuring the performance target:** which test scenario, what counts as an "active" unit, and whether 60 fps is an average or a minimum. To be settled before performance testing starts.
 4. **Factions:** how many, and their themes. To be answered in the factions section of the GDD.
+5. **Online multiplayer** (people playing each other over the internet, including any ranked ladder): a separate decision for later (owner, Issue #145). The first release stays skirmish against AI, with up to 8 sides. *Recommendation:* keep it out of the first release. If online play is likely one day, say so early: it usually needs every PC to run the match identically, which is much cheaper to plan for than to add afterwards.
