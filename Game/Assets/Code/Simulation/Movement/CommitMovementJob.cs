@@ -18,11 +18,13 @@ namespace Northwatch.Simulation.Movement
         {
             if (Alive[i] == 0) return;
             MovementUnit unit = Units[i];
+            MovementPose pose = Levels[i] == 2 ? Start[i] : Poses[i];
+            if (Levels[i] == 1) pose.Heading = Start[i].Heading;
             unit.Previous = Start[i];
-            unit.Heading = Poses[i].Heading;
+            unit.Heading = pose.Heading;
             unit.Velocity = Levels[i] == 2 ? float2.zero : Velocities[i];
             Units[i] = unit;
-            Positions[i] = Poses[i].Position;
+            Positions[i] = pose.Position;
         }
     }
 }

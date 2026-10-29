@@ -51,20 +51,20 @@ namespace Northwatch.Tests.EditMode.EditorTools
         public void MovementBuilderPreservesSavedTuning()
         {
             var settings = AssetDatabase.LoadAssetAtPath<MovementSettings>(SandboxSceneBuilder.MovementSettingsPath);
-            int previous = settings.Snapshot().MaxSerialFallbacks;
+            int previous = settings.Snapshot().MoveCheckPasses;
             using var serialized = new SerializedObject(settings);
             try
             {
-                serialized.FindProperty("maxSerialFallbacks").intValue = 7;
+                serialized.FindProperty("moveCheckPasses").intValue = 3;
                 serialized.ApplyModifiedPropertiesWithoutUndo();
                 AssetDatabase.SaveAssetIfDirty(settings);
                 SandboxSceneBuilder.BuildMovement();
-                Assert.That(settings.Snapshot().MaxSerialFallbacks, Is.EqualTo(7));
+                Assert.That(settings.Snapshot().MoveCheckPasses, Is.EqualTo(3));
             }
             finally
             {
                 serialized.Update();
-                serialized.FindProperty("maxSerialFallbacks").intValue = previous;
+                serialized.FindProperty("moveCheckPasses").intValue = previous;
                 serialized.ApplyModifiedPropertiesWithoutUndo();
                 AssetDatabase.SaveAssetIfDirty(settings);
             }

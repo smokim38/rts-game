@@ -18,12 +18,42 @@ namespace Northwatch.Presentation.Diagnostics
         private ProfilerRecorder main, wait, gc, gcBytes;
         private long[] mainTimes, waitTimes, allocations, allocationCounts;
         private int[] scheduled, completed;
-        private int frames, firstTick;
+        private int frames, firstTick, invalidFrames;
         private string output;
         private double began, measuredAt;
         private bool measuring, finished;
         private long counterFrequency;
         private int targetFrameRate = -1;
+        private static MovementCoreProfile allocationProfile;
+        private ProfilerRecorder scopedGc;
+        private long simulationAllocations, drawingAllocations;
+        private bool scopeCapacityReached;
+
+        internal readonly struct AllocationScope : IDisposable
+        {
+            private readonly MovementCoreProfile owner;
+            private readonly bool drawing;
+            internal AllocationScope(MovementCoreProfile owner, bool drawing)
+            {
+                this.owner = owner; this.drawing = drawing;
+                owner.scopedGc.Reset(); owner.scopedGc.Start();
+            }
+            public void Dispose()
+            {
+                if (owner == null) return;
+                owner.scopedGc.Stop();
+                if (!owner.measuring) return;
+                int count = owner.scopedGc.Count;
+                if (count == 256) owner.scopeCapacityReached = true;
+                long allocations = 0;
+                for (int i = 0; i < count; i++) allocations += owner.scopedGc.GetSample(i).Count;
+                if (drawing) owner.drawingAllocations += allocations;
+                else owner.simulationAllocations += allocations;
+            }
+        }
+
+        internal static AllocationScope TraceAllocations(bool drawing)
+            => allocationProfile == null || allocationProfile.finished ? default : new AllocationScope(allocationProfile, drawing);
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Launch()
@@ -74,6 +104,18 @@ namespace Northwatch.Presentation.Diagnostics
             gc = ProfilerRecorder.StartNew(ProfilerCategory.Memory, "GC.Alloc", 1, options);
             gcBytes = ProfilerRecorder.StartNew(ProfilerCategory.Memory, "GC Allocated In Frame", 1, options);
             if (!main.Valid || !wait.Valid || !gc.Valid || !gcBytes.Valid) throw new InvalidOperationException("Required driver/wait/GC recorders are unavailable.");
+            if (Array.IndexOf(args, "-movement-gc-scopes") >= 0)
+            {
+                // Individual samples delimit the driver's scopes without a raw capture.
+                scopedGc = ProfilerRecorder.StartNew(ProfilerCategory.Memory, "GC.Alloc", 256,
+                    ProfilerRecorderOptions.CollectOnlyOnCurrentThread | ProfilerRecorderOptions.WrapAroundWhenCapacityReached);
+                if (!scopedGc.Valid) throw new InvalidOperationException("Scoped allocation recorder unavailable.");
+                scopedGc.Reset(); scopedGc.Start();
+                GC.KeepAlive(new byte[256]);
+                scopedGc.Stop();
+                if (scopedGc.Count == 0) throw new InvalidOperationException("Scoped recorder did not detect its setup allocation.");
+                allocationProfile = this;
+            }
             if (QueryPerformanceFrequency(out counterFrequency) == 0) throw new InvalidOperationException("Performance counter unavailable.");
             QualitySettings.vSyncCount = 0; Application.targetFrameRate = targetFrameRate; Application.runInBackground = true;
             Screen.SetResolution(1920, 1080, FullScreenMode.FullScreenWindow);
@@ -86,9 +128,10 @@ namespace Northwatch.Presentation.Diagnostics
             double now = Time.realtimeSinceStartupAsDouble;
             if (measuring)
             {
+                if (!Application.isFocused || Screen.width != 1920 || Screen.height != 1080) invalidFrames++;
                 if (frames == FrameCapacity) throw new InvalidOperationException("Movement frame capacity exhausted.");
                 // Before BeginFrame: record the preceding frame's summed scopes and
-                // counters together. Tick frames completed at least one tick.
+                // counters together, preserving the S, C and U frame sets (ADR 0012).
                 mainTimes[frames] = main.LastValue; waitTimes[frames] = wait.LastValue;
                 allocations[frames] = gcBytes.LastValue;
                 allocationCounts[frames] = gc.Count == 0 ? 0 : gc.GetSample(0).Count;
@@ -106,22 +149,22 @@ namespace Northwatch.Presentation.Diagnostics
 
         private void Finish()
         {
+            double windowSeconds = Time.realtimeSinceStartupAsDouble - measuredAt;
             finished = true;
             driver.Simulation.CompleteFrame();
             using (var writer = new StreamWriter(output + "-ticks.csv"))
             {
-                writer.WriteLine("tick,grid_ms,integration_ms,overlap_ms,first_check_ms,serial_ms,commit_ms,total_ms,first_fallbacks,serial_fallbacks,rounds,rollback_set,one_tick_stalls,still_over_5s,longest_still_ticks,alive,footprint_overlaps,static_regressions,first_apply_collect_ms,round_decisions_ms,closure_ms");
+                writer.WriteLine("tick,grid_ms,integration_ms,overlap_ms,move_check_ms,commit_ms,total_ms,level_1,level_2,one_tick_stalls,still_over_5s,longest_still_ticks,alive,footprint_overlaps,static_regressions,gap_crossed,first_advance_cells,second_advance_cells");
                 // Negative ticks retain warm-up validation, without including it in timings.
                 for (int t = 0; t < measurement.TickCount; t++)
                 {
                     writer.Write(t - firstTick);
-                    for (int b = 0; b < 6; b++) writer.Write("," + CounterMilliseconds(measurement.Timestamp(t, b + 1) - measurement.Timestamp(t, b)));
-                    writer.Write("," + CounterMilliseconds(measurement.Timestamp(t, 6) - measurement.Timestamp(t, 0)));
+                    for (int b = 0; b < 5; b++) writer.Write("," + CounterMilliseconds(measurement.Timestamp(t, b + 1) - measurement.Timestamp(t, b)));
+                    writer.Write("," + CounterMilliseconds(measurement.Timestamp(t, 5) - measurement.Timestamp(t, 0)));
                     for (int m = 0; m < MovementMeasurement.MetricCount; m++) writer.Write("," + measurement.Metric(t, m));
-                    writer.Write("," + CounterMilliseconds(measurement.Timestamp(t, 8) - measurement.Timestamp(t, 7)));
-                    bool rollback = measurement.Metric(t, 3) != 0;
-                    writer.Write("," + CounterMilliseconds((rollback ? measurement.Timestamp(t, 9) : measurement.Timestamp(t, 5)) - measurement.Timestamp(t, 8)));
-                    writer.Write("," + CounterMilliseconds(rollback ? measurement.Timestamp(t, 10) - measurement.Timestamp(t, 9) : 0));
+                    var progress = measurement.Progress(t);
+                    writer.Write("," + progress.x.ToString("R", CultureInfo.InvariantCulture));
+                    writer.Write("," + progress.y.ToString("R", CultureInfo.InvariantCulture));
                     writer.WriteLine();
                 }
             }
@@ -135,12 +178,21 @@ namespace Northwatch.Presentation.Diagnostics
                     allocationCounts[f] + "," + allocations[f]);
             }
             File.WriteAllText(output + "-info.txt", "scene=PerformanceLadder; drawing=on; vSync=0; targetFrameRate=" + targetFrameRate + "; warmup_s=10; window_s=60\n" +
-                "cap=" + driver.MovementSettings.Snapshot().MaxSerialFallbacks + "; cpu=" + SystemInfo.processorType + "; gpu=" + SystemInfo.graphicsDeviceName + "\n");
-            Application.Quit(0);
+                "passes=" + driver.MovementSettings.Snapshot().MoveCheckPasses + "; cpu=" + SystemInfo.processorType + "; gpu=" + SystemInfo.graphicsDeviceName + "\n" +
+                "unfocused_or_wrong_resolution_frames=" + invalidFrames + "; measured_s=" +
+                windowSeconds.ToString("F6", CultureInfo.InvariantCulture) + "\n" +
+                "scoped_gc=" + scopedGc.Valid + "; simulation_alloc_count=" + simulationAllocations +
+                "; drawing_alloc_count=" + drawingAllocations + "; scope_capacity_reached=" + scopeCapacityReached + "\n");
+            Application.Quit(invalidFrames == 0 && !scopeCapacityReached ? 0 : 1);
         }
 
         private string CounterMilliseconds(long value) => (value * 1000.0 / counterFrequency).ToString("F6", CultureInfo.InvariantCulture);
-        private void OnDestroy() { main.Dispose(); wait.Dispose(); gc.Dispose(); gcBytes.Dispose(); }
+        private void OnDestroy()
+        {
+            if (allocationProfile == this) allocationProfile = null;
+            if (scopedGc.Valid) scopedGc.Dispose();
+            main.Dispose(); wait.Dispose(); gc.Dispose(); gcBytes.Dispose();
+        }
     }
 }
 #endif

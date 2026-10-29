@@ -9,18 +9,19 @@ namespace Northwatch.EditorTools
 {
     public static class MovementCoreProfileBuilder
     {
-        public static void TuneCap()
+        public static void TunePasses()
         {
             string[] arguments = Environment.GetCommandLineArgs();
-            int index = Array.IndexOf(arguments, "-movement-cap");
-            if (index < 0 || index + 1 >= arguments.Length || !int.TryParse(arguments[index + 1], out int cap) || cap < 0)
-                throw new ArgumentException("Pass -movement-cap N.");
+            int index = Array.IndexOf(arguments, "-movement-passes");
+            if (index < 0 || index + 1 >= arguments.Length || !int.TryParse(arguments[index + 1], out int passes) || passes < 1 || passes > 4)
+                throw new ArgumentException("Pass -movement-passes 1|2|3|4.");
             MovementSettings settings = AssetDatabase.LoadAssetAtPath<MovementSettings>(SandboxSceneBuilder.MovementSettingsPath);
             if (settings == null) throw new InvalidOperationException("Movement settings asset is missing.");
             using var serialized = new SerializedObject(settings);
-            serialized.FindProperty("maxSerialFallbacks").intValue = cap;
+            serialized.FindProperty("moveCheckPasses").intValue = passes;
             serialized.ApplyModifiedPropertiesWithoutUndo();
             settings.Snapshot();
+            EditorUtility.SetDirty(settings);
             AssetDatabase.SaveAssetIfDirty(settings);
         }
 

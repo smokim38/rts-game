@@ -14,10 +14,12 @@ namespace Northwatch.Simulation.Movement
         [ReadOnly] internal NativeArray<MovementUnit> Units;
         [WriteOnly] internal NativeArray<MovementPose> Start, Integrated;
         [WriteOnly] internal NativeArray<float2> Velocities;
+        [WriteOnly] internal NativeArray<byte> Levels;
         internal MovementParameters Settings;
 
         public void Execute(int i)
         {
+            Levels[i] = 2;
             if (Alive[i] == 0) return;
             MovementUnit unit = Units[i];
             MovementPose pose = new MovementPose { Position = Positions[i], Heading = unit.Heading };

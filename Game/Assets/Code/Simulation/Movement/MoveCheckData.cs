@@ -10,7 +10,8 @@ namespace Northwatch.Simulation.Movement
         [ReadOnly] internal NativeArray<UnitSize> Sizes;
         [ReadOnly] internal NativeArray<byte> Alive, Walkable;
         [ReadOnly] internal SpatialGrid Grid;
-        internal NativeArray<MovementPose> Poses;
+        [ReadOnly] internal NativeArray<MovementPose> Poses;
+        [ReadOnly] internal NativeArray<byte> Levels;
         internal float StepBound;
 
         internal SpatialQuery Neighbours(int unit) => new SpatialQuery(Grid, Start[unit].Position.xz,
@@ -18,13 +19,9 @@ namespace Northwatch.Simulation.Movement
 
         internal byte Choose(int unit, byte level)
         {
-            if (level == 2 || Accept(unit, Poses[unit])) return level;
-            if (level == 0)
-            {
-                MovementPose oldHeading = Poses[unit]; oldHeading.Heading = Start[unit].Heading;
-                if (Accept(unit, oldHeading)) return 1;
-            }
-            return 2;
+            for (byte candidate = 0; candidate < level; candidate++)
+                if (Accept(unit, Pose(unit, candidate))) return candidate;
+            return level;
         }
 
         private bool Accept(int unit, MovementPose pose)
@@ -35,19 +32,25 @@ namespace Northwatch.Simulation.Movement
             {
                 if (other == unit) continue;
                 float reach = Footprint.Radius(Sizes[unit]) + Footprint.Radius(Sizes[other]);
-                if (math.distancesq(pose.Position.xz, Poses[other].Position.xz) >= reach * reach) continue;
-                if (Footprint.Overlap(pose, Sizes[unit], Poses[other], Sizes[other]) >
-                    Footprint.Overlap(Start[unit], Sizes[unit], Start[other], Sizes[other])) return false;
+                if (math.distancesq(pose.Position.xz, Poses[other].Position.xz) >= reach * reach &&
+                    (Levels[other] < 2 || math.distancesq(pose.Position.xz, Start[other].Position.xz) >= reach * reach)) continue;
+                float limit = Footprint.Overlap(Start[unit], Sizes[unit], Start[other], Sizes[other]);
+                for (byte level = 0; level <= Levels[other]; level++)
+                {
+                    MovementPose neighbour = Pose(other, level);
+                    if (math.distancesq(pose.Position.xz, neighbour.Position.xz) >= reach * reach) continue;
+                    if (Footprint.Overlap(pose, Sizes[unit], neighbour, Sizes[other]) > limit) return false;
+                }
             }
             return true;
         }
 
-        internal void Apply(int unit, byte level)
+        private MovementPose Pose(int unit, byte level)
         {
             MovementPose pose = Poses[unit];
             if (level == 2) pose = Start[unit];
             else if (level == 1) pose.Heading = Start[unit].Heading;
-            Poses[unit] = pose;
+            return pose;
         }
     }
 }
