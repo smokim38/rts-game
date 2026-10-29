@@ -33,9 +33,6 @@ namespace Northwatch.EditorTools
                 settings = ScriptableObject.CreateInstance<MovementSettings>();
                 AssetDatabase.CreateAsset(settings, MovementSettingsPath);
             }
-            var defaults = ScriptableObject.CreateInstance<MovementSettings>();
-            EditorUtility.CopySerialized(defaults, settings);
-            UnityEngine.Object.DestroyImmediate(defaults);
             settings.name = "MovementSettings";
             settings.Snapshot();
             AssetDatabase.SaveAssetIfDirty(settings);

@@ -14,7 +14,21 @@ namespace Northwatch.Simulation
         internal UnitState State;
         private MovementPipeline movement;
         private NativeArray<UnitCommand> commands;
-        private NativeArray<Matrix4x4> matrices;
+        private NativeArray<Matrix4x4> matrices, nextMatrices;
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        public MovementMeasurement Measurement { get; private set; }
+
+        public void MeasureMovement(int scene, int count)
+        {
+            RequireComplete();
+            if (movement == null || Measurement != null || TickCount != 0)
+                throw new InvalidOperationException("Enable movement measurement once, before the first frame.");
+            Measurement = new MovementMeasurement(State, scene, count);
+            MovementParameters settings = movement.Settings;
+            movement.Dispose();
+            movement = new MovementPipeline(Capacity, settings, Measurement.Walkable);
+        }
+#endif
         private NativeArray<uint> selected, groups;
         private NativeArray<float4> selectionSummary;
         private NativeArray<SelectionRequest> selectionRequests;
@@ -30,6 +44,7 @@ namespace Northwatch.Simulation
             State = new UnitState(Capacity);
             commands = new NativeArray<UnitCommand>(Capacity * 2, Allocator.Persistent);
             matrices = new NativeArray<Matrix4x4>(Capacity * 3, Allocator.Persistent);
+            nextMatrices = new NativeArray<Matrix4x4>(Capacity * 3, Allocator.Persistent);
             selected = new NativeArray<uint>(Capacity, Allocator.Persistent);
             groups = new NativeArray<uint>(Capacity * 9, Allocator.Persistent);
             selectionSummary = new NativeArray<float4>(2, Allocator.Persistent);
@@ -127,6 +142,15 @@ namespace Northwatch.Simulation
                 {
                     State = State, Commands = commands, CommandCount = tick == 0 ? commandCount : 0
                 }.Schedule(pending);
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                if (Measurement != null)
+                {
+                    pending = Measurement.Input(State, pending);
+                    pending = movement.Schedule(State, pending, 64, Measurement.Timestamps, Measurement.TickCount * MovementMeasurement.TimestampStride);
+                    pending = Measurement.Record(State, movement.Metrics, pending);
+                }
+                else
+#endif
                 if (movement != null) pending = movement.Schedule(State, pending);
                 TickCount++;
             }
@@ -141,7 +165,7 @@ namespace Northwatch.Simulation
             {
                 Positions = State.Positions, Sides = State.Sides, Sizes = State.Sizes,
                 Movement = State.Movement, Interpolation = interpolation,
-                Alive = State.Alive, Selected = selected, Summary = State.Summary, Matrices = matrices
+                Alive = State.Alive, Selected = selected, Summary = State.Summary, Matrices = nextMatrices
             }.Schedule(pending);
             scheduled = true;
         }
@@ -150,6 +174,7 @@ namespace Northwatch.Simulation
         {
             if (!scheduled) return;
             pending.Complete();
+            (matrices, nextMatrices) = (nextMatrices, matrices);
             scheduled = false;
         }
 
@@ -178,8 +203,12 @@ namespace Northwatch.Simulation
             CompleteFrame();
             State.Dispose();
             movement?.Dispose();
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            Measurement?.Dispose();
+#endif
             commands.Dispose();
             matrices.Dispose();
+            nextMatrices.Dispose();
             selected.Dispose(); groups.Dispose(); selectionSummary.Dispose(); selectionRequests.Dispose();
             disposed = true;
         }

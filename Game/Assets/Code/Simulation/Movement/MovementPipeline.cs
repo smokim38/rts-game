@@ -14,6 +14,7 @@ namespace Northwatch.Simulation.Movement
         internal NativeArray<float2> Velocities;
         internal NativeArray<byte> Choices, Levels;
         internal NativeArray<int> Affected, Changed, Marks, Metrics;
+        internal NativeArray<long> EmptyTimings;
         private NativeArray<byte> emptyMap;
         private NativeArray<byte> walkable;
 
@@ -35,6 +36,7 @@ namespace Northwatch.Simulation.Movement
             Changed = new NativeArray<int>(capacity, Allocator.Persistent);
             Marks = new NativeArray<int>(capacity, Allocator.Persistent);
             Metrics = new NativeArray<int>(4, Allocator.Persistent);
+            EmptyTimings = new NativeArray<long>(0, Allocator.Persistent);
             emptyMap = new NativeArray<byte>(0, Allocator.Persistent);
             walkable = staticWalkable.IsCreated ? staticWalkable : emptyMap;
         }
@@ -69,7 +71,8 @@ namespace Northwatch.Simulation.Movement
             handle = new SerialMoveCheckJob
             {
                 Data = check, Levels = Levels, Choices = Choices, Affected = Affected,
-                Changed = Changed, Marks = Marks, Metrics = Metrics, MaxSerialFallbacks = Settings.MaxSerialFallbacks
+                Changed = Changed, Marks = Marks, Metrics = Metrics, MaxSerialFallbacks = Settings.MaxSerialFallbacks,
+                Timings = timestamps.IsCreated ? timestamps : EmptyTimings, TimingOffset = timestampOffset
             }.Schedule(handle);
             handle = MovementTimestampJob.Stamp(timestamps, timestampOffset + 5, handle);
             handle = new CommitMovementJob
@@ -83,7 +86,8 @@ namespace Northwatch.Simulation.Movement
         public void Dispose()
         {
             Grid.Dispose(); Start.Dispose(); Integrated.Dispose(); Corrected.Dispose(); Velocities.Dispose();
-            Choices.Dispose(); Levels.Dispose(); Affected.Dispose(); Changed.Dispose(); Marks.Dispose(); Metrics.Dispose(); emptyMap.Dispose();
+            Choices.Dispose(); Levels.Dispose(); Affected.Dispose(); Changed.Dispose(); Marks.Dispose(); Metrics.Dispose();
+            emptyMap.Dispose(); EmptyTimings.Dispose();
         }
     }
 }

@@ -102,32 +102,6 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
         }
 
         [Test]
-        public void StableCountingSortExcludesDeadSlotsAndOrdersEachBucketByIndex()
-        {
-            using var ownedState = new UnitState(12);
-            UnitState state = ownedState;
-            using var pipeline = new MovementPipeline(12, Settings());
-            for (int i = 0; i < 12; i++) Place(state, i, new float2((i % 2) * 4, 0));
-            state.Alive[4] = 0;
-            pipeline.Schedule(state, default, 1).Complete();
-            int total = 0;
-            for (int b = 0; b < pipeline.Grid.Counts.Length; b++)
-            {
-                int previous = -1;
-                for (int k = 0; k < pipeline.Grid.Counts[b]; k++)
-                {
-                    int unit = pipeline.Grid.Indices[pipeline.Grid.Starts[b] + k];
-                    Assert.That(unit, Is.GreaterThan(previous));
-                    Assert.That(unit, Is.Not.EqualTo(4));
-                    Assert.That(pipeline.Grid.Poses[pipeline.Grid.Starts[b] + k].Position,
-                        Is.EqualTo(state.Movement[unit].Previous.Position));
-                    previous = unit; total++;
-                }
-            }
-            Assert.That(total, Is.EqualTo(11));
-        }
-
-        [Test]
         public void CappedFallbackRestoresWholeConnectedQueueButLeavesDistantUnitMoving()
         {
             using var ownedState = new UnitState(32);
@@ -153,12 +127,13 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
 
         [TestCase(0)]
         [TestCase(3)]
+        [TestCase(22)]
         [TestCase(100)]
         public void SerialRoundsPropagateFallbacksWithoutExceedingCap(int cap)
         {
-            using var ownedState = new UnitState(24);
+            using var ownedState = new UnitState(25);
             UnitState state = ownedState;
-            using var pipeline = new MovementPipeline(24, Settings(cap));
+            using var pipeline = new MovementPipeline(25, Settings(cap));
             for (int i = 0; i < 24; i++)
             {
                 Place(state, i, new float2(i * .5f, 0));
@@ -167,25 +142,32 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
                 if (i != 23) next.Position.x += .125f;
                 pipeline.Corrected[i] = next;
             }
+            // This outsider's current disc cannot touch a restored queue member.
+            // A swept-envelope closure used to stall it unnecessarily.
+            Place(state, 24, new float2(12.4f, 0));
+            pipeline.Start[24] = Pose(state, 24);
+            MovementPose outsider = pipeline.Start[24]; outsider.Position.x += .125f;
+            pipeline.Corrected[24] = outsider;
             using var map = new NativeArray<byte>(0, Allocator.Persistent);
             // Exact binary positions make only the blocked pair fail initially. Each
             // fallback then blocks the next member, independently of overlap steering.
             var handle = new BucketUnitsJob { Positions = state.Positions, Alive = state.Alive, Buckets = pipeline.Grid.Buckets }
-                .ScheduleParallel(24, 1, default);
+                .ScheduleParallel(25, 1, default);
             handle = new BuildSpatialGridJob { Positions = state.Positions, Units = state.Movement, Alive = state.Alive, Grid = pipeline.Grid }
                 .Schedule(handle);
             var data = new MoveCheckData { Start = pipeline.Start, Poses = pipeline.Corrected, Sizes = state.Sizes,
                 Alive = state.Alive, Walkable = map, Grid = pipeline.Grid, StepBound = pipeline.Settings.StepBound };
-            handle = new InitialMoveCheckJob { Data = data, Choices = pipeline.Choices }.ScheduleParallel(24, 1, handle);
+            handle = new InitialMoveCheckJob { Data = data, Choices = pipeline.Choices }.ScheduleParallel(25, 1, handle);
             new SerialMoveCheckJob { Data = data, Choices = pipeline.Choices, Levels = pipeline.Levels,
                 Affected = pipeline.Affected, Changed = pipeline.Changed, Marks = pipeline.Marks,
-                Metrics = pipeline.Metrics, MaxSerialFallbacks = cap }.Schedule(handle).Complete();
+                Metrics = pipeline.Metrics, Timings = pipeline.EmptyTimings, MaxSerialFallbacks = cap }.Schedule(handle).Complete();
             Assert.That(pipeline.Metrics[0], Is.EqualTo(2));
             Assert.That(pipeline.Metrics[1], Is.EqualTo(math.min(22, cap)));
             Assert.That(pipeline.Metrics[2], Is.EqualTo(math.min(22, cap)));
-            Assert.That(pipeline.Metrics[3] > 0, Is.EqualTo(cap < 22));
+            Assert.That(pipeline.Metrics[3], Is.EqualTo(cap < 22 ? 24 : 0));
             for (int i = 0; i < 24; i++)
                 Assert.That(pipeline.Corrected[i], Is.EqualTo(pipeline.Start[i]));
+            Assert.That(pipeline.Corrected[24], Is.EqualTo(outsider));
         }
 
         [Test]

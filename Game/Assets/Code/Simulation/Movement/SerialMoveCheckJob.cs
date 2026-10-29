@@ -2,6 +2,7 @@ using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
 using Unity.Mathematics;
+using Northwatch.Simulation.Spatial;
 
 namespace Northwatch.Simulation.Movement
 {
@@ -12,10 +13,13 @@ namespace Northwatch.Simulation.Movement
         internal NativeArray<byte> Levels, Choices;
         internal NativeArray<int> Affected, Changed, Marks, Metrics;
         internal int MaxSerialFallbacks;
+        internal NativeArray<long> Timings;
+        internal int TimingOffset;
         private int affectedCount, changedCount, epoch;
 
         public void Execute()
         {
+            MovementTimestampJob.Write(Timings, TimingOffset + 7);
             // Metrics: first-round fallbacks, serial fallbacks, serial rounds, cap rollbacks.
             for (int i = 0; i < Metrics.Length; i++) Metrics[i] = 0;
             for (int i = 0; i < Levels.Length; i++)
@@ -28,9 +32,9 @@ namespace Northwatch.Simulation.Movement
                 Metrics[0]++;
             }
             CollectAffected();
+            MovementTimestampJob.Write(Timings, TimingOffset + 8);
             while (affectedCount > 0)
             {
-                if (Metrics[1] >= MaxSerialFallbacks) { RollBackConnectedSet(); return; }
                 changedCount = 0;
                 // Decisions all read the round's starting poses. Only this small frontier
                 // is revisited; commits happen after every decision has been made.
@@ -89,20 +93,24 @@ namespace Northwatch.Simulation.Movement
 
         private void RollBackConnectedSet()
         {
-            // Swept disc envelopes conservatively connect all pairs that could touch at
-            // either endpoint. No restored footprint can reach a unit outside this closure.
+            MovementTimestampJob.Write(Timings, TimingOffset + 9);
+            // Members return to Start; outsiders retain Poses. Add every outsider whose
+            // current disc touches a restored member, then close over the new members.
             epoch++;
             for (int k = 0; k < affectedCount; k++) Marks[Affected[k]] = epoch;
             // Once every slot is in the set, no outside neighbour remains to discover.
             for (int k = 0; k < affectedCount && affectedCount < Data.Poses.Length; k++)
             {
                 int i = Affected[k];
-                var query = Data.Neighbours(i);
+                // The member is restored, so only the candidate can move relative to
+                // the old grid. One StepBound (rather than two) covers that search.
+                var query = new SpatialQuery(Data.Grid, Data.Start[i].Position.xz,
+                    Footprint.Radius(Data.Sizes[i]) + Footprint.LargeRadius + Data.StepBound);
                 while (query.Next(out int other))
                 {
                     if (Marks[other] == epoch) continue;
-                    float reach = Footprint.Radius(Data.Sizes[i]) + Footprint.Radius(Data.Sizes[other]) + 2 * Data.StepBound;
-                    if (math.distancesq(Data.Start[i].Position.xz, Data.Start[other].Position.xz) <= reach * reach) AddAffected(other);
+                    float reach = Footprint.Radius(Data.Sizes[i]) + Footprint.Radius(Data.Sizes[other]);
+                    if (math.distancesq(Data.Start[i].Position.xz, Data.Poses[other].Position.xz) <= reach * reach) AddAffected(other);
                 }
             }
             for (int k = 0; k < affectedCount; k++)
@@ -112,6 +120,7 @@ namespace Northwatch.Simulation.Movement
                 Data.Apply(i, 2);
             }
             Metrics[3] = affectedCount;
+            MovementTimestampJob.Write(Timings, TimingOffset + 10);
         }
     }
 }
