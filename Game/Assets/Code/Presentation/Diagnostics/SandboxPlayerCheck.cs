@@ -20,6 +20,8 @@ namespace Northwatch.Presentation.Diagnostics
         private int selectionSamples, selectionResponseFrame;
         private double selectionTotalMs, selectionMaxMs;
         private Mouse selectionMouse;
+        private bool doubleClickCheck;
+        private Vector2 doubleClickPoint;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void StartCheck()
@@ -37,9 +39,12 @@ namespace Northwatch.Presentation.Diagnostics
                 throw new System.InvalidOperationException("Sandbox must start with an empty match.");
             check.output = output;
             check.selectionCheck = System.Array.IndexOf(arguments, "-sandbox-selection") >= 0;
+            check.doubleClickCheck = System.Array.IndexOf(arguments, "-sandbox-double-click") >= 0;
+            check.selectionCheck |= check.doubleClickCheck;
             if (check.selectionCheck)
             {
                 check.output += "-selection";
+                if (check.doubleClickCheck) check.output += "-double";
                 // A batch Player has no native pointer. The virtual device feeds the same action bindings.
                 check.selectionMouse = Mouse.current ?? InputSystem.AddDevice<Mouse>();
                 check.gameObject.AddComponent<SelectionInputPump>();
@@ -156,6 +161,17 @@ namespace Northwatch.Presentation.Diagnostics
                 if (milliseconds > 33.0) { FailSelection("Selection frame exceeded 33 ms."); return; }
             }
             int phase = frames % 10;
+            if (doubleClickCheck)
+            {
+                if (frames == 50) doubleClickPoint = captureCamera.WorldToScreenPoint(driver.Simulation.DrawMatrices[0].GetColumn(3));
+                InputSystem.QueueStateEvent(selectionMouse, new MouseState
+                {
+                    position = doubleClickPoint,
+                    buttons = phase == 0 || phase == 2 ? (ushort)1 : phase == 5 ? (ushort)2 : (ushort)0
+                });
+                if (phase == 3) selectionResponseFrame = Time.frameCount + 1;
+                return;
+            }
             if (phase == 3 || phase == 4 || phase == 8 || phase == 9) return;
             Vector2 viewport = phase == 0 ? new Vector2(0.4f, 0.4f) : phase <= 2 ? new Vector2(0.6f, 0.6f) :
                 phase == 5 ? new Vector2(0.9f, 0.1f) : new Vector2(0.92f, 0.12f);

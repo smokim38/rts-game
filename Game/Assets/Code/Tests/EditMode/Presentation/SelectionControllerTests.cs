@@ -64,6 +64,8 @@ namespace Northwatch.Tests.EditMode.Presentation
                 Assert.That(simulation.SelectedCount, Is.EqualTo(2), "Shift drag adds without toggling.");
                 Step(a, false, true, Key.LeftCtrl, Key.Digit9); Step(a);
                 Step(new Vector2(view.pixelWidth - 10, 10), true); Step(new Vector2(view.pixelWidth - 10, 10));
+                Assert.That(simulation.SelectedCount, Is.EqualTo(2), "Classic ground clicks keep selection.");
+                Step(a, false, true, Key.Escape); Step(a);
                 Assert.That(simulation.SelectedCount, Is.Zero);
                 camera.CentreOn(new Vector3(100, 0, 100));
                 Vector3 beforeRecall = view.transform.position;

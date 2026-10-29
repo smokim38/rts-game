@@ -137,5 +137,32 @@ namespace Northwatch.Tests.EditMode.Simulation
             Assert.Throws<ArgumentOutOfRangeException>(() => SelectionRequest.Group(10, true));
             Assert.That(simulation.QueueSelection(default), Is.False);
         }
+
+        [Test]
+        public void SameTypeClickFiltersByOwnershipSizeAndVisibleCentreAndShiftAdds()
+        {
+            using var simulation = new UnitSimulation();
+            UnitHandle first = Add(simulation, Vector3.zero);
+            UnitHandle second = Add(simulation, new Vector3(0.8f, 0, 0));
+            UnitHandle offscreen = Add(simulation, new Vector3(1.1f, 0, 0));
+            UnitHandle enemy = Add(simulation, new Vector3(-0.5f, 0, 0), Side.Second);
+            simulation.QueueAdd(Side.First, UnitSize.Large, new Vector3(-0.8f, 0, 0), out ulong request);
+            Frame(simulation, 1);
+            simulation.TryGetAddedHandle(request, out UnitHandle large);
+            void DoubleClick(bool shift) => simulation.QueueSelection(SelectionRequest.PointerClick(
+                new Ray(new Vector3(0, 10, 0), Vector3.down), Projection, true, true, false, shift, true));
+            simulation.QueueSelection(Click(-0.8f)); Frame(simulation);
+            DoubleClick(true); Frame(simulation);
+            Assert.That(simulation.SelectedCount, Is.EqualTo(3));
+            Assert.That(simulation.IsSelected(large), Is.True);
+            DoubleClick(false); Frame(simulation);
+            Assert.That(simulation.SelectedCount, Is.EqualTo(2));
+            Assert.That(simulation.IsSelected(first) && simulation.IsSelected(second), Is.True);
+            Assert.That(simulation.IsSelected(offscreen) || simulation.IsSelected(enemy) || simulation.IsSelected(large), Is.False);
+            for (int i = 0; i < 20; i++) { DoubleClick(true); Frame(simulation); }
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            for (int i = 0; i < 100; i++) { DoubleClick(true); Frame(simulation); }
+            Assert.That(GC.GetAllocatedBytesForCurrentThread() - before, Is.Zero);
+        }
     }
 }

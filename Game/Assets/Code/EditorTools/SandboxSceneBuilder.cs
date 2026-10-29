@@ -256,9 +256,9 @@ namespace Northwatch.EditorTools
             BoxEdge(selectionBox, "Bottom", new Vector2(0, 0), new Vector2(1, 0), new Vector2(0.5f, 0), new Vector2(0, 1));
             BoxEdge(selectionBox, "Top", new Vector2(0, 1), new Vector2(1, 1), new Vector2(0.5f, 1), new Vector2(0, 1));
             selectionBox.GetComponent<Image>().raycastTarget = false;
-            ComponentOrAdd<SelectionController>(root).Configure(actions, debugOverlay, selectionRect, 0.3f, 5f);
+            ComponentOrAdd<SelectionController>(root).Configure(actions, debugOverlay, selectionRect);
             selectionBox.SetActive(false);
-            Label(panel, "SelectionHelp", "F1 off: click / drag own A units; Shift adds (click toggles).\nCtrl+1-9 saves; 1-9 recalls; double tap centres camera.", 12, 250, 676, 56);
+            Label(panel, "SelectionHelp", SelectionController.HelpText(false), 12, 250, 676, 56);
             rect.sizeDelta = new Vector2(700, 310);
             SavePrefab(root, OverlayPath);
         }
