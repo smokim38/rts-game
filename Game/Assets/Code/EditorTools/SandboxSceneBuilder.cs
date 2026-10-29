@@ -42,18 +42,24 @@ namespace Northwatch.EditorTools
             {
                 // Unity serializes with LF even when Git checked out identical assets with CRLF.
                 // Restore the checkout bytes only when no serialized property has changed.
+                bool restoredAssets = false;
                 for (int i = 0; i < paths.Length; i++)
                 {
                     if (before[i] == null || !File.Exists(paths[i])) continue;
                     string original = Encoding.UTF8.GetString(before[i]);
                     string saved = Encoding.UTF8.GetString(File.ReadAllBytes(paths[i]));
                     if (original != saved && original.Replace("\r\n", "\n") == saved.Replace("\r\n", "\n"))
+                    {
                         File.WriteAllBytes(paths[i], before[i]);
+                        restoredAssets |= paths[i].StartsWith("Assets/", StringComparison.Ordinal);
+                    }
                 }
                 // Loading prefab contents initializes unrelated scene-template defaults on a fresh checkout.
                 // Leave these settings as they were, including preserving a pre-existing file.
                 if (templateSettingsBefore != null) File.WriteAllBytes(templateSettings, templateSettingsBefore);
                 else if (File.Exists(templateSettings)) File.Delete(templateSettings);
+                // Raw restores change source timestamps after Unity has imported the saved assets.
+                if (restoredAssets) AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
             }
         }
 
@@ -161,8 +167,14 @@ namespace Northwatch.EditorTools
             // Input System normalizes scroll to one unit per wheel notch.
             ComponentOrAdd<CameraController>(rig).Configure(camera, actions, 0.5f, 16f, 20f, 200f, 0.18f);
             SavePrefab(rig, CameraPath);
-            if (before != null && Encoding.UTF8.GetString(before).Replace("\r\n", "\n") ==
-                File.ReadAllText(CameraPath).Replace("\r\n", "\n")) File.WriteAllBytes(CameraPath, before);
+            if (before == null) return;
+            string original = Encoding.UTF8.GetString(before);
+            string saved = File.ReadAllText(CameraPath);
+            if (original != saved && original.Replace("\r\n", "\n") == saved.Replace("\r\n", "\n"))
+            {
+                File.WriteAllBytes(CameraPath, before);
+                AssetDatabase.ImportAsset(CameraPath, ImportAssetOptions.ForceSynchronousImport);
+            }
         }
 
         private static InputActionAsset BuildSpawnActions()
