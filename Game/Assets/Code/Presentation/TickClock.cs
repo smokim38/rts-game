@@ -6,6 +6,7 @@ namespace Northwatch.Presentation
     {
         public const double TickDuration = 1.0 / 30.0;
         private double accumulator;
+        public float Interpolation => (float)Math.Max(0, Math.Min(1, accumulator / TickDuration));
 
         public int Advance(double seconds)
         {

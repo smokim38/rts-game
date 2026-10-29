@@ -1,4 +1,5 @@
 using System;
+using Northwatch.Simulation.Movement;
 using Unity.Collections;
 using Unity.Jobs;
 using Unity.Mathematics;
@@ -11,6 +12,7 @@ namespace Northwatch.Simulation
         public const int Capacity = 2000;
         public const float MapHalfWidth = 128f;
         internal UnitState State;
+        private MovementPipeline movement;
         private NativeArray<UnitCommand> commands;
         private NativeArray<Matrix4x4> matrices;
         private NativeArray<uint> selected, groups;
@@ -32,6 +34,12 @@ namespace Northwatch.Simulation
             groups = new NativeArray<uint>(Capacity * 9, Allocator.Persistent);
             selectionSummary = new NativeArray<float4>(2, Allocator.Persistent);
             selectionRequests = new NativeArray<SelectionRequest>(16, Allocator.Persistent);
+        }
+
+        public UnitSimulation(MovementParameters settings) : this()
+        {
+            try { movement = new MovementPipeline(Capacity, settings); }
+            catch { Dispose(); throw; }
         }
 
         public int SelectedCount { get { RequireComplete(); return (int)selectionSummary[0].w; } }
@@ -107,16 +115,19 @@ namespace Northwatch.Simulation
             return true;
         }
 
-        public void ScheduleFrame(int ticks)
+        public void ScheduleFrame(int ticks, float interpolation = 1f)
         {
             RequireComplete();
             if (ticks < 0) throw new ArgumentOutOfRangeException(nameof(ticks));
+            if (!math.isfinite(interpolation) || interpolation < 0 || interpolation > 1)
+                throw new ArgumentOutOfRangeException(nameof(interpolation));
             for (int tick = 0; tick < ticks; tick++)
             {
                 pending = new ApplyCommandsJob
                 {
                     State = State, Commands = commands, CommandCount = tick == 0 ? commandCount : 0
                 }.Schedule(pending);
+                if (movement != null) pending = movement.Schedule(State, pending);
                 TickCount++;
             }
             if (ticks > 0) { commandCount = 0; queuedAdds = 0; commandBatch++; }
@@ -129,6 +140,7 @@ namespace Northwatch.Simulation
             pending = new FillDrawDataJob
             {
                 Positions = State.Positions, Sides = State.Sides, Sizes = State.Sizes,
+                Movement = State.Movement, Interpolation = interpolation,
                 Alive = State.Alive, Selected = selected, Summary = State.Summary, Matrices = matrices
             }.Schedule(pending);
             scheduled = true;
@@ -165,6 +177,7 @@ namespace Northwatch.Simulation
             if (disposed) return;
             CompleteFrame();
             State.Dispose();
+            movement?.Dispose();
             commands.Dispose();
             matrices.Dispose();
             selected.Dispose(); groups.Dispose(); selectionSummary.Dispose(); selectionRequests.Dispose();

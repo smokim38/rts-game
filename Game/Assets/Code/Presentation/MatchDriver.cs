@@ -12,6 +12,7 @@ namespace Northwatch.Presentation
         [SerializeField] private Material firstSide;
         [SerializeField] private Material secondSide;
         [SerializeField] private Material selectedSide;
+        [SerializeField] private MovementSettings movementSettings;
         private UnitSimulation simulation;
         private TickClock clock;
         private RenderParams firstParameters, secondParameters, selectedParameters;
@@ -31,7 +32,11 @@ namespace Northwatch.Presentation
 
         private void OnEnable()
         {
-            simulation = new UnitSimulation();
+            try { simulation = movementSettings == null ? new UnitSimulation() : new UnitSimulation(movementSettings.Snapshot()); }
+            catch (System.ArgumentException error)
+            {
+                Debug.LogError(error.Message); enabled = false; return;
+            }
             clock = new TickClock();
             firstParameters = new RenderParams(firstSide);
             secondParameters = new RenderParams(secondSide);
@@ -43,7 +48,8 @@ namespace Northwatch.Presentation
             using (SimulationMarker.Auto())
             {
                 // Chain at most two ticks, dropping excess time, then complete once per frame.
-                simulation.ScheduleFrame(clock.Advance(Time.unscaledDeltaTime));
+                int ticks = clock.Advance(Time.unscaledDeltaTime);
+                simulation.ScheduleFrame(ticks, clock.Interpolation);
                 simulation.CompleteFrame();
             }
             using (DrawingMarker.Auto())
