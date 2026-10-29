@@ -19,9 +19,12 @@ namespace Northwatch.EditorTools
                 "Logs/135-profile-summary.txt");
 
         public static void AnalyzeMoveMarker()
-            => AnalyzeCaptures(new[] { "Logs/137-before.raw", "Logs/137-after.raw" }, "Logs/137-profile-summary.txt");
+        {
+            const string after = "Logs/sandbox-2000-selection.raw";
+            AnalyzeCaptures(new[] { "Logs/137-before.raw", after }, "Logs/137-profile-summary.txt", after);
+        }
 
-        private static void AnalyzeCaptures(string[] captures, string summaryPath)
+        private static void AnalyzeCaptures(string[] captures, string summaryPath, string moveMarkerCapture = null)
         {
             var output = new StringBuilder();
             bool allocated = false;
@@ -30,7 +33,7 @@ namespace Northwatch.EditorTools
                 if (!ProfilerDriver.LoadProfile(path, false)) throw new InvalidOperationException("Could not load " + path);
                 foreach (string scope in new[] { "Northwatch.Simulation", "Northwatch.Drawing", "Northwatch.SelectionInput", "Northwatch.SandboxOverlay", "PlayerLoop", "Northwatch.MoveMarker" })
                 {
-                    if (scope == "Northwatch.MoveMarker" && path != "Logs/137-after.raw") continue;
+                    if (scope == "Northwatch.MoveMarker" && path != moveMarkerCapture) continue;
                     if (path == "Logs/selection-before.raw" && scope == "Northwatch.SelectionInput") continue;
                     int samples = 0;
                     long bytes = 0;

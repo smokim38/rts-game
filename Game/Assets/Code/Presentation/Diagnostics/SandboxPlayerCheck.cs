@@ -99,7 +99,8 @@ namespace Northwatch.Presentation.Diagnostics
                 Time.realtimeSinceStartupAsDouble < 10.0) return;
             frames++;
             if (moveMarkerCheck && frames <= 180) CheckMoveMarkerFrame();
-            else if (selectionCheck) CheckSelectionFrame();
+            // After the camera reset, resume on phase 0 so the first box starts with its press.
+            else if (selectionCheck && (!moveMarkerCheck || frames >= 190)) CheckSelectionFrame();
             if (!enabled) return;
             if (frames > 120) { measuredFrames++; measuredSeconds += Time.unscaledDeltaTime; }
             UnityEngine.Rendering.RenderPipeline.SubmitRenderRequest(captureCamera, renderRequest);
@@ -152,6 +153,7 @@ namespace Northwatch.Presentation.Diagnostics
         private void CheckSelectionFrame()
         {
             if (frames < 50) return;
+            // Keep the move ring visible throughout selection timing, including the plain selection run.
             if (frames == 54)
                 driver.Simulation.QueueSelection(Simulation.SelectionRequest.PointerClick(
                     captureCamera.ScreenPointToRay(captureCamera.WorldToScreenPoint(new Vector3(30, 0, 0))),
@@ -241,6 +243,11 @@ namespace Northwatch.Presentation.Diagnostics
 
         private void CaptureMoveMarker()
         {
+            if (Screen.width != 1920 || Screen.height != 1080)
+            {
+                FailSelection("Move marker screenshots require a 1920x1080 Player.");
+                return;
+            }
             RenderTexture previous = RenderTexture.active;
             RenderTexture.active = captureTarget;
             var image = new Texture2D(1920, 1080, TextureFormat.RGB24, false);
