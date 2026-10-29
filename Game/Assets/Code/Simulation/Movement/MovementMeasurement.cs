@@ -12,12 +12,13 @@ namespace Northwatch.Simulation.Movement
     public sealed class MovementMeasurement : IDisposable
     {
         public const int SampleCapacity = 8192;
-        public const int MetricCount = 10;
-        public const int TimestampStride = 11;
+        public const int MetricCount = 9;
+        public const int TimestampStride = 6;
         internal NativeArray<byte> Walkable;
         internal NativeArray<long> Timestamps;
         private NativeArray<int> samples, stillTicks;
         private NativeArray<int2> violations;
+        private NativeArray<float2> progress;
         private readonly int scene;
         public int TickCount { get; private set; }
 
@@ -31,6 +32,7 @@ namespace Northwatch.Simulation.Movement
             samples = new NativeArray<int>(SampleCapacity * MetricCount, Allocator.Persistent);
             stillTicks = new NativeArray<int>(state.Alive.Length, Allocator.Persistent);
             violations = new NativeArray<int2>(state.Alive.Length, Allocator.Persistent);
+            progress = new NativeArray<float2>(SampleCapacity, Allocator.Persistent);
             new SetupJob { State = state, Map = Walkable, Scene = scene, Count = count }.Schedule().Complete();
         }
 
@@ -47,14 +49,15 @@ namespace Northwatch.Simulation.Movement
             var handle = new ValidateJob { State = state, Map = Walkable, Grid = pipeline.Grid,
                 StepBound = pipeline.Settings.StepBound, Violations = violations }
                 .Schedule(state.Alive.Length, 64, dependency);
-            return new RecordJob { State = state, Metrics = pipeline.Metrics, Samples = samples, StillTicks = stillTicks,
-                Violations = violations, Offset = TickCount++ * MetricCount }.Schedule(handle);
+            return new RecordJob { State = state, Levels = pipeline.Levels, Samples = samples, StillTicks = stillTicks,
+                Violations = violations, Progress = progress, Scene = scene, Tick = TickCount++ }.Schedule(handle);
         }
 
         public long Timestamp(int tick, int boundary) => Timestamps[tick * TimestampStride + boundary];
         public int Metric(int tick, int metric) => samples[tick * MetricCount + metric];
+        public float2 Progress(int tick) => progress[tick];
 
-        public void Dispose() { Walkable.Dispose(); Timestamps.Dispose(); samples.Dispose(); stillTicks.Dispose(); violations.Dispose(); }
+        public void Dispose() { Walkable.Dispose(); Timestamps.Dispose(); samples.Dispose(); stillTicks.Dispose(); violations.Dispose(); progress.Dispose(); }
 
         [BurstCompile]
         private struct SetupJob : IJob
@@ -140,19 +143,29 @@ namespace Northwatch.Simulation.Movement
         private struct RecordJob : IJob
         {
             [ReadOnly] internal UnitState State;
-            [ReadOnly] internal NativeArray<int> Metrics;
+            [ReadOnly] internal NativeArray<byte> Levels;
             [ReadOnly] internal NativeArray<int2> Violations;
             internal NativeArray<int> Samples, StillTicks;
-            internal int Offset;
+            internal NativeArray<float2> Progress;
+            internal int Tick, Scene;
             public void Execute()
             {
-                for (int m = 0; m < 4; m++) Samples[Offset + m] = Metrics[m];
-                int stopped = 0, overFiveSeconds = 0, longest = 0, alive = 0;
+                int offset = Tick * MetricCount;
+                int stopped = 0, overFiveSeconds = 0, longest = 0, alive = 0, levelOne = 0, levelTwo = 0, crossed = 0;
+                float2 advance = 0;
+                int2 sides = 0;
                 int2 errors = 0;
                 for (int i = 0; i < State.Alive.Length; i++)
                 {
                     if (State.Alive[i] == 0) continue;
                     alive++;
+                    if (Levels[i] == 1) levelOne++;
+                    if (Levels[i] == 2) levelTwo++;
+                    bool first = State.Sides[i] == Side.First;
+                    int side = first ? 0 : 1;
+                    advance[side] += (State.Positions[i].x - State.Movement[i].Home.x) * (first ? 1 : -1);
+                    sides[side]++;
+                    if (Scene == 1 && State.Positions[i].x - Footprint.Radius(State.Sizes[i]) >= 1) crossed++;
                     errors += Violations[i];
                     bool still = math.distancesq(State.Positions[i], State.Movement[i].Previous.Position) < 1e-12f;
                     StillTicks[i] = still ? StillTicks[i] + 1 : 0;
@@ -160,9 +173,12 @@ namespace Northwatch.Simulation.Movement
                     if (StillTicks[i] > 150) overFiveSeconds++;
                     longest = math.max(longest, StillTicks[i]);
                 }
-                Samples[Offset + 4] = stopped; Samples[Offset + 5] = overFiveSeconds;
-                Samples[Offset + 6] = longest; Samples[Offset + 7] = alive;
-                Samples[Offset + 8] = errors.x; Samples[Offset + 9] = errors.y;
+                Samples[offset] = levelOne; Samples[offset + 1] = levelTwo;
+                Samples[offset + 2] = stopped; Samples[offset + 3] = overFiveSeconds;
+                Samples[offset + 4] = longest; Samples[offset + 5] = alive;
+                Samples[offset + 6] = errors.x; Samples[offset + 7] = errors.y;
+                Samples[offset + 8] = crossed;
+                Progress[Tick] = advance / math.max(sides, 1);
             }
         }
     }

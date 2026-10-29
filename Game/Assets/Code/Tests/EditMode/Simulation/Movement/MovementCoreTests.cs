@@ -14,12 +14,12 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
 {
     public sealed class MovementCoreTests
     {
-        private static MovementParameters Settings(int cap = 32)
+        private static MovementParameters Settings(int passes = 1)
         {
             var asset = ScriptableObject.CreateInstance<MovementSettings>();
             MovementParameters result = asset.Snapshot();
             UnityEngine.Object.DestroyImmediate(asset);
-            result.MaxSerialFallbacks = cap;
+            result.MoveCheckPasses = passes;
             return result;
         }
 
@@ -71,13 +71,13 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
             Assert.That(Footprint.Overlap(a, size, b, size), Is.GreaterThan(0));
         }
 
-        [TestCase(0, 0)]
-        [TestCase(0, 32)]
-        [TestCase(1, 0)]
-        [TestCase(1, 32)]
-        [TestCase(2, 0)]
-        [TestCase(2, 32)]
-        public void SqueezedCrowdWallAndConcaveCornerStayClearEveryTick(int scene, int cap)
+        [TestCase(0, 1)]
+        [TestCase(0, 2)]
+        [TestCase(1, 1)]
+        [TestCase(1, 2)]
+        [TestCase(2, 1)]
+        [TestCase(2, 2)]
+        public void SqueezedCrowdWallAndConcaveCornerStayClearEveryTick(int scene, int passes)
         {
             using var ownedState = new UnitState(64);
             UnitState state = ownedState;
@@ -91,7 +91,7 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
             for (int i = 0; i < state.Alive.Length; i++)
                 Place(state, i, new float2(-.8f - (i % 8) * 1.05f, -.8f - (i / 8) * 1.05f),
                     i % 7 == 0 ? UnitSize.Large : UnitSize.Small);
-            using var pipeline = new MovementPipeline(64, Settings(cap), map);
+            using var pipeline = new MovementPipeline(64, Settings(passes), map);
             AssertClear(state, map);
             for (int tick = 0; tick < 180; tick++)
             {
@@ -101,77 +101,102 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
             }
         }
 
-        [Test]
-        public void CappedFallbackRestoresWholeConnectedQueueButLeavesDistantUnitMoving()
+        [TestCase(1)]
+        [TestCase(2)]
+        public void FollowerWaitsForMovingLeaderUntilSecondPass(int passes)
         {
-            using var ownedState = new UnitState(32);
-            UnitState state = ownedState;
-            using var pipeline = new MovementPipeline(32, Settings(0));
-            for (int i = 0; i < 31; i++)
+            using var state = new UnitState(2);
+            using var pipeline = new MovementPipeline(2, Settings(passes));
+            Place(state, 0, 0);
+            Place(state, 1, new float2(.5f, 0));
+            for (int i = 0; i < 2; i++)
             {
-                Place(state, i, new float2(i * .5f, 0));
-                var unit = state.Movement[i];
-                unit.NewVelocity = unit.Velocity = new float2(-4, 0); state.Movement[i] = unit;
+                pipeline.Start[i] = Pose(state, i);
+                MovementPose next = pipeline.Start[i]; next.Position.x += .125f;
+                pipeline.Corrected[i] = next;
+                pipeline.Velocities[i] = new float2(3.75f, 0);
             }
-            MovementUnit front = state.Movement[0]; front.Mode = MovementMode.Hold; front.Velocity = 0; state.Movement[0] = front;
-            Place(state, 31, new float2(80, 0));
-            var distant = state.Movement[31]; distant.NewVelocity = new float2(4, 0); state.Movement[31] = distant;
-            pipeline.Schedule(state, default).Complete();
-            Assert.That(pipeline.Metrics[3], Is.GreaterThan(0));
-            Assert.That(pipeline.Metrics[1], Is.Zero);
-            for (int i = 0; i < 31; i++) Assert.That(state.Positions[i], Is.EqualTo(state.Movement[i].Previous.Position));
-            Assert.That(state.Positions[31].x, Is.GreaterThan(80));
+            CheckCandidates(state, pipeline);
+            Assert.That(pipeline.Levels[0], Is.EqualTo(passes == 1 ? 2 : 0));
+            Assert.That(state.Positions[0].x, Is.EqualTo(passes == 1 ? 0 : .125f));
+            Assert.That(state.Movement[0].Velocity, Is.EqualTo(passes == 1 ? float2.zero : new float2(3.75f, 0)));
+            Assert.That(state.Positions[1].x, Is.EqualTo(.625f));
+        }
+
+        [TestCase(1)]
+        [TestCase(2)]
+        public void ConflictOnlyWithNeighbourOldHeadingClearsOnSecondPass(int passes)
+        {
+            using var state = new UnitState(2);
+            using var pipeline = new MovementPipeline(2, Settings(passes));
+            Place(state, 0, new float2(-.2f, 0));
+            Place(state, 1, new float2(.55f, 0), heading: math.PI / 4);
+            pipeline.Start[0] = Pose(state, 0); pipeline.Start[1] = Pose(state, 1);
+            var candidate = pipeline.Start[0]; candidate.Position.x = 0;
+            var neighbour = pipeline.Start[1]; neighbour.Heading = 0;
+            pipeline.Corrected[0] = candidate; pipeline.Corrected[1] = neighbour;
+            Assert.That(Footprint.Overlap(candidate, UnitSize.Small, neighbour, UnitSize.Small), Is.Zero);
+            Assert.That(Footprint.Overlap(candidate, UnitSize.Small, pipeline.Start[1], UnitSize.Small), Is.GreaterThan(0));
+            CheckCandidates(state, pipeline);
+            Assert.That(pipeline.Levels[1], Is.Zero);
+            Assert.That(pipeline.Levels[0], Is.EqualTo(passes == 1 ? 2 : 0));
+            Assert.That(state.Positions[0].x, Is.EqualTo(passes == 1 ? -.2f : 0));
+            Assert.That(pipeline.Corrected[0], Is.EqualTo(candidate));
+            Assert.That(pipeline.Corrected[1], Is.EqualTo(neighbour));
+        }
+
+        private static void CheckCandidates(UnitState state, MovementPipeline pipeline)
+        {
             using var map = new NativeArray<byte>(0, Allocator.Persistent);
+            for (int i = 0; i < state.Alive.Length; i++) pipeline.LevelsA[i] = 2;
+            var handle = new BucketUnitsJob { Positions = state.Positions, Alive = state.Alive, Buckets = pipeline.Grid.Buckets }
+                .ScheduleParallel(state.Alive.Length, 1, default);
+            handle = new BuildSpatialGridJob { Positions = state.Positions, Units = state.Movement, Alive = state.Alive, Grid = pipeline.Grid }.Schedule(handle);
+            var data = new MoveCheckData { Start = pipeline.Start, Poses = pipeline.Corrected, Sizes = state.Sizes,
+                Alive = state.Alive, Walkable = map, Grid = pipeline.Grid, StepBound = pipeline.Settings.StepBound };
+            for (int pass = 0; pass < pipeline.Settings.MoveCheckPasses; pass++)
+            {
+                data.Levels = pass % 2 == 0 ? pipeline.LevelsA : pipeline.LevelsB;
+                handle = new MoveCheckPassJob { Data = data, NextLevels = pass % 2 == 0 ? pipeline.LevelsB : pipeline.LevelsA }
+                    .ScheduleParallel(state.Alive.Length, 1, handle);
+            }
+            new CommitMovementJob { Start = pipeline.Start, Poses = pipeline.Corrected, Velocities = pipeline.Velocities,
+                Alive = state.Alive, Levels = pipeline.Levels, Positions = state.Positions, Units = state.Movement }
+                .ScheduleParallel(state.Alive.Length, 1, handle).Complete();
             AssertClear(state, map);
         }
 
-        [TestCase(0)]
+        [TestCase(1)]
+        [TestCase(2)]
         [TestCase(3)]
-        [TestCase(22)]
-        [TestCase(100)]
-        public void SerialRoundsPropagateFallbacksWithoutExceedingCap(int cap)
+        [TestCase(4)]
+        public void LevelOneCommitsCorrectedPositionWithStartHeading(int passes)
         {
-            using var ownedState = new UnitState(25);
-            UnitState state = ownedState;
-            using var pipeline = new MovementPipeline(25, Settings(cap));
-            for (int i = 0; i < 24; i++)
-            {
-                Place(state, i, new float2(i * .5f, 0));
-                pipeline.Start[i] = Pose(state, i);
-                MovementPose next = pipeline.Start[i];
-                if (i != 23) next.Position.x += .125f;
-                pipeline.Corrected[i] = next;
-            }
-            // This outsider's current disc cannot touch a restored queue member.
-            // A swept-envelope closure used to stall it unnecessarily.
-            Place(state, 24, new float2(12.4f, 0));
-            pipeline.Start[24] = Pose(state, 24);
-            MovementPose outsider = pipeline.Start[24]; outsider.Position.x += .125f;
-            pipeline.Corrected[24] = outsider;
-            using var map = new NativeArray<byte>(0, Allocator.Persistent);
-            // Exact binary positions make only the blocked pair fail initially. Each
-            // fallback then blocks the next member, independently of overlap steering.
-            var handle = new BucketUnitsJob { Positions = state.Positions, Alive = state.Alive, Buckets = pipeline.Grid.Buckets }
-                .ScheduleParallel(25, 1, default);
-            handle = new BuildSpatialGridJob { Positions = state.Positions, Units = state.Movement, Alive = state.Alive, Grid = pipeline.Grid }
-                .Schedule(handle);
-            var data = new MoveCheckData { Start = pipeline.Start, Poses = pipeline.Corrected, Sizes = state.Sizes,
-                Alive = state.Alive, Walkable = map, Grid = pipeline.Grid, StepBound = pipeline.Settings.StepBound };
-            handle = new InitialMoveCheckJob { Data = data, Choices = pipeline.Choices }.ScheduleParallel(25, 1, handle);
-            new SerialMoveCheckJob { Data = data, Choices = pipeline.Choices, Levels = pipeline.Levels,
-                Affected = pipeline.Affected, Changed = pipeline.Changed, Marks = pipeline.Marks,
-                Metrics = pipeline.Metrics, Timings = pipeline.EmptyTimings, MaxSerialFallbacks = cap }.Schedule(handle).Complete();
-            Assert.That(pipeline.Metrics[0], Is.EqualTo(2));
-            Assert.That(pipeline.Metrics[1], Is.EqualTo(math.min(22, cap)));
-            Assert.That(pipeline.Metrics[2], Is.EqualTo(math.min(22, cap)));
-            Assert.That(pipeline.Metrics[3], Is.EqualTo(cap < 22 ? 24 : 0));
-            for (int i = 0; i < 24; i++)
-                Assert.That(pipeline.Corrected[i], Is.EqualTo(pipeline.Start[i]));
-            Assert.That(pipeline.Corrected[24], Is.EqualTo(outsider));
+            using var state = new UnitState(2);
+            using var pipeline = new MovementPipeline(2, Settings(passes));
+            Place(state, 0, 0);
+            Place(state, 1, new float2(.7f, 0));
+            pipeline.Start[0] = Pose(state, 0); pipeline.Start[1] = Pose(state, 1);
+            pipeline.Corrected[0] = new MovementPose { Position = new float3(.125f, 0, 0), Heading = math.PI / 4 };
+            pipeline.Corrected[1] = pipeline.Start[1];
+            pipeline.Velocities[0] = new float2(3.75f, 0);
+            CheckCandidates(state, pipeline);
+            Assert.That(pipeline.Levels[0], Is.EqualTo(1));
+            Assert.That(state.Positions[0].x, Is.EqualTo(.125f));
+            Assert.That(state.Movement[0].Heading, Is.Zero);
+            Assert.That(state.Movement[0].Velocity, Is.EqualTo(new float2(3.75f, 0)));
         }
 
-        [Test]
-        public void ResultsAreBitIdenticalWithZeroOneAndAllWorkersAndDifferentBatchSizes()
+        [TestCase(0)]
+        [TestCase(5)]
+        public void InvalidPassCountCannotStartMatch(int passes)
+        {
+            Assert.Throws<ArgumentException>(() => new UnitSimulation(Settings(passes)));
+        }
+
+        [TestCase(1)]
+        [TestCase(2)]
+        public void ResultsAreBitIdenticalWithZeroOneAndAllWorkersAndDifferentBatchSizes(int passes)
         {
             int original = JobsUtility.JobWorkerCount;
             float3[] expected = null;
@@ -183,7 +208,7 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
                     JobsUtility.JobWorkerCount = workers;
                     using var ownedState = new UnitState(64);
                     UnitState state = ownedState;
-                    using var pipeline = new MovementPipeline(64, Settings(8));
+                    using var pipeline = new MovementPipeline(64, Settings(passes));
                     for (int i = 0; i < 64; i++) Place(state, i, new float2((i % 8) * .51f, (i / 8) * .51f));
                     for (int tick = 0; tick < 90; tick++)
                     {
@@ -247,8 +272,8 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
                 .ScheduleParallel(2, 1, default);
             handle = new BuildSpatialGridJob { Positions = state.Positions, Units = state.Movement, Alive = state.Alive, Grid = pipeline.Grid }.Schedule(handle);
             measurement.Record(state, pipeline, handle).Complete();
-            Assert.That(measurement.Metric(0, 8), Is.EqualTo(1));
-            Assert.That(measurement.Metric(0, 9), Is.EqualTo(2));
+            Assert.That(measurement.Metric(0, 6), Is.EqualTo(1));
+            Assert.That(measurement.Metric(0, 7), Is.EqualTo(2));
         }
 
         [Test]

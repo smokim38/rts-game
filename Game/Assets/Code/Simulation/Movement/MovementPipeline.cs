@@ -12,9 +12,8 @@ namespace Northwatch.Simulation.Movement
         internal SpatialGrid Grid;
         internal NativeArray<MovementPose> Start, Integrated, Corrected;
         internal NativeArray<float2> Velocities;
-        internal NativeArray<byte> Choices, Levels;
-        internal NativeArray<int> Affected, Changed, Marks, Metrics;
-        internal NativeArray<long> EmptyTimings;
+        internal NativeArray<byte> LevelsA, LevelsB;
+        internal NativeArray<byte> Levels => Settings.MoveCheckPasses % 2 == 0 ? LevelsA : LevelsB;
         private NativeArray<byte> emptyMap;
         private NativeArray<byte> walkable;
 
@@ -30,13 +29,8 @@ namespace Northwatch.Simulation.Movement
             Integrated = new NativeArray<MovementPose>(capacity, Allocator.Persistent);
             Corrected = new NativeArray<MovementPose>(capacity, Allocator.Persistent);
             Velocities = new NativeArray<float2>(capacity, Allocator.Persistent);
-            Choices = new NativeArray<byte>(capacity, Allocator.Persistent);
-            Levels = new NativeArray<byte>(capacity, Allocator.Persistent);
-            Affected = new NativeArray<int>(capacity, Allocator.Persistent);
-            Changed = new NativeArray<int>(capacity, Allocator.Persistent);
-            Marks = new NativeArray<int>(capacity, Allocator.Persistent);
-            Metrics = new NativeArray<int>(4, Allocator.Persistent);
-            EmptyTimings = new NativeArray<long>(0, Allocator.Persistent);
+            LevelsA = new NativeArray<byte>(capacity, Allocator.Persistent);
+            LevelsB = new NativeArray<byte>(capacity, Allocator.Persistent);
             emptyMap = new NativeArray<byte>(0, Allocator.Persistent);
             walkable = staticWalkable.IsCreated ? staticWalkable : emptyMap;
         }
@@ -52,7 +46,8 @@ namespace Northwatch.Simulation.Movement
             handle = new IntegrateMovementJob
             {
                 Positions = state.Positions, Sizes = state.Sizes, Alive = state.Alive, Walkable = walkable,
-                Units = state.Movement, Start = Start, Integrated = Integrated, Velocities = Velocities, Settings = Settings
+                Units = state.Movement, Start = Start, Integrated = Integrated, Velocities = Velocities,
+                Levels = LevelsA, Settings = Settings
             }.ScheduleParallel(state.Alive.Length, batchSize, handle);
             handle = MovementTimestampJob.Stamp(timestamps, timestampOffset + 2, handle);
             handle = new OverlapMovementJob
@@ -66,28 +61,25 @@ namespace Northwatch.Simulation.Movement
                 Start = Start, Poses = Corrected, Sizes = state.Sizes, Alive = state.Alive,
                 Walkable = walkable, Grid = Grid, StepBound = Settings.StepBound
             };
-            handle = new InitialMoveCheckJob { Data = check, Choices = Choices }.ScheduleParallel(state.Alive.Length, batchSize, handle);
-            handle = MovementTimestampJob.Stamp(timestamps, timestampOffset + 4, handle);
-            handle = new SerialMoveCheckJob
+            for (int pass = 0; pass < Settings.MoveCheckPasses; pass++)
             {
-                Data = check, Levels = Levels, Choices = Choices, Affected = Affected,
-                Changed = Changed, Marks = Marks, Metrics = Metrics, MaxSerialFallbacks = Settings.MaxSerialFallbacks,
-                Timings = timestamps.IsCreated ? timestamps : EmptyTimings, TimingOffset = timestampOffset
-            }.Schedule(handle);
-            handle = MovementTimestampJob.Stamp(timestamps, timestampOffset + 5, handle);
+                check.Levels = pass % 2 == 0 ? LevelsA : LevelsB;
+                handle = new MoveCheckPassJob { Data = check, NextLevels = pass % 2 == 0 ? LevelsB : LevelsA }
+                    .ScheduleParallel(state.Alive.Length, batchSize, handle);
+            }
+            handle = MovementTimestampJob.Stamp(timestamps, timestampOffset + 4, handle);
             handle = new CommitMovementJob
             {
                 Start = Start, Poses = Corrected, Velocities = Velocities, Alive = state.Alive,
                 Levels = Levels, Positions = state.Positions, Units = state.Movement
             }.ScheduleParallel(state.Alive.Length, batchSize, handle);
-            return MovementTimestampJob.Stamp(timestamps, timestampOffset + 6, handle);
+            return MovementTimestampJob.Stamp(timestamps, timestampOffset + 5, handle);
         }
 
         public void Dispose()
         {
             Grid.Dispose(); Start.Dispose(); Integrated.Dispose(); Corrected.Dispose(); Velocities.Dispose();
-            Choices.Dispose(); Levels.Dispose(); Affected.Dispose(); Changed.Dispose(); Marks.Dispose(); Metrics.Dispose();
-            emptyMap.Dispose(); EmptyTimings.Dispose();
+            LevelsA.Dispose(); LevelsB.Dispose(); emptyMap.Dispose();
         }
     }
 }

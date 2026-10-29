@@ -8,7 +8,7 @@ namespace Northwatch.Simulation.Movement
         public const float TickDuration = 1f / 30f;
         public float SmallSpeed, LargeSpeed, Acceleration, Deceleration, TurnSpeed;
         public float SlotSpacing;
-        public int MaxSerialFallbacks;
+        public int MoveCheckPasses;
 
         public void Validate()
         {
@@ -16,8 +16,8 @@ namespace Northwatch.Simulation.Movement
                 !math.isfinite(TurnSpeed) || !math.isfinite(SlotSpacing) ||
                 SmallSpeed <= 0 || SmallSpeed > 30 * .25f || LargeSpeed <= 0 || LargeSpeed > 30 * .5f ||
                 Acceleration <= 0 || Deceleration < 2 * math.max(SmallSpeed, LargeSpeed) || TurnSpeed <= 0 ||
-                SlotSpacing < 1.05f || SlotSpacing > 1.3f || MaxSerialFallbacks < 0)
-                throw new ArgumentException("Movement settings violate ADR 0008 rule 6; match cannot start.");
+                SlotSpacing < 1.05f || SlotSpacing > 1.3f || MoveCheckPasses < 1 || MoveCheckPasses > 4)
+                throw new ArgumentException("Movement settings violate ADR 0008 rule 6 or ADR 0012 rule 15; match cannot start.");
         }
 
         internal float Speed(UnitSize size) => size == UnitSize.Small ? SmallSpeed : LargeSpeed;

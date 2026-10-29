@@ -54,6 +54,9 @@ namespace Northwatch.Presentation
 
         internal void BeginFrame()
         {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            using var allocations = Diagnostics.MovementCoreProfile.TraceAllocations(false);
+#endif
             using (SimulationMarker.Auto())
             {
                 using (SimulationWaitMarker.Auto()) simulation.CompleteFrame();
@@ -63,12 +66,18 @@ namespace Northwatch.Presentation
 
         private void LateUpdate()
         {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            using (Diagnostics.MovementCoreProfile.TraceAllocations(true))
+#endif
             using (DrawingMarker.Auto())
             {
                 Draw(simulation.DrawCount(Side.First) - simulation.SelectedCount, 0, ref firstParameters);
                 Draw(simulation.DrawCount(Side.Second), UnitSimulation.Capacity, ref secondParameters);
                 Draw(simulation.SelectedCount, UnitSimulation.Capacity * 2, ref selectedParameters);
             }
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            using (Diagnostics.MovementCoreProfile.TraceAllocations(false))
+#endif
             using (SimulationMarker.Auto())
             {
                 // Completing next frame adds one frame to S2.1's bound: about 83 ms
