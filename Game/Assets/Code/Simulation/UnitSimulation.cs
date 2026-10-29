@@ -30,19 +30,21 @@ namespace Northwatch.Simulation
             matrices = new NativeArray<Matrix4x4>(Capacity * 3, Allocator.Persistent);
             selected = new NativeArray<uint>(Capacity, Allocator.Persistent);
             groups = new NativeArray<uint>(Capacity * 9, Allocator.Persistent);
-            selectionSummary = new NativeArray<float4>(1, Allocator.Persistent);
+            selectionSummary = new NativeArray<float4>(2, Allocator.Persistent);
             selectionRequests = new NativeArray<SelectionRequest>(16, Allocator.Persistent);
         }
 
         public int SelectedCount { get { RequireComplete(); return (int)selectionSummary[0].w; } }
         public Vector3 SelectedCentre { get { RequireComplete(); return selectionSummary[0].xyz; } }
+        public int MoveMarkerVersion { get { RequireComplete(); return (int)selectionSummary[1].w; } }
+        public Vector3 MoveMarkerPosition { get { RequireComplete(); return selectionSummary[1].xyz; } }
 
         public bool IsSelected(UnitHandle handle) => IsAlive(handle) && selected[handle.Slot] == handle.Generation;
 
         public bool QueueSelection(SelectionRequest request)
         {
             RequireComplete();
-            if (request.Kind < 1 || request.Kind > 4 || selectionRequestCount == selectionRequests.Length) return false;
+            if (request.Kind < 1 || request.Kind > 6 || selectionRequestCount == selectionRequests.Length) return false;
             selectionRequests[selectionRequestCount++] = request;
             return true;
         }

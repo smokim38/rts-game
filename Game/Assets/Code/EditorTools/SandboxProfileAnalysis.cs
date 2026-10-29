@@ -11,15 +11,23 @@ namespace Northwatch.EditorTools
     public static class SandboxProfileAnalysis
     {
         public static void AnalyzeSelection()
+            => AnalyzeCaptures(new[] { "Logs/selection-before.raw", "Logs/sandbox-2000.raw", "Logs/sandbox-2000-selection.raw" },
+                "Logs/102-profile-summary.txt");
+
+        public static void AnalyzeControls()
+            => AnalyzeCaptures(new[] { "Logs/135-before.raw", "Logs/135-after-box.raw", "Logs/135-after-double.raw" },
+                "Logs/135-profile-summary.txt");
+
+        private static void AnalyzeCaptures(string[] captures, string summaryPath)
         {
             var output = new StringBuilder();
             bool allocated = false;
-            foreach (string path in new[] { "Logs/selection-before.raw", "Logs/sandbox-2000.raw", "Logs/sandbox-2000-selection.raw" })
+            foreach (string path in captures)
             {
                 if (!ProfilerDriver.LoadProfile(path, false)) throw new InvalidOperationException("Could not load " + path);
                 foreach (string scope in new[] { "Northwatch.Simulation", "Northwatch.Drawing", "Northwatch.SelectionInput", "Northwatch.SandboxOverlay", "PlayerLoop" })
                 {
-                    if (path.Contains("before") && scope == "Northwatch.SelectionInput") continue;
+                    if (path == "Logs/selection-before.raw" && scope == "Northwatch.SelectionInput") continue;
                     int samples = 0;
                     long bytes = 0;
                     double total = 0, maximum = 0;
@@ -44,7 +52,7 @@ namespace Northwatch.EditorTools
                     allocated |= bytes != 0;
                 }
             }
-            File.WriteAllText("Logs/102-profile-summary.txt", output.ToString());
+            File.WriteAllText(summaryPath, output.ToString());
             Debug.Log(output.ToString());
             if (allocated) throw new InvalidOperationException("Selection capture contains managed allocation.");
         }

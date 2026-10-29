@@ -12,7 +12,7 @@ namespace Northwatch.Simulation
         [ReadOnly] internal NativeArray<SelectionRequest> Requests;
         internal int RequestCount;
         internal NativeArray<uint> Selected, Groups;
-        [WriteOnly] internal NativeArray<float4> Summary;
+        internal NativeArray<float4> Summary;
 
         public void Execute()
         {
@@ -38,7 +38,8 @@ namespace Northwatch.Simulation
         {
             int picked = -1;
             float nearest = float.PositiveInfinity;
-            if (request.Kind == 2)
+            bool click = request.Kind == 2 || request.Kind == 6;
+            if (click)
                 for (int slot = 0; slot < Selected.Length; slot++)
                 {
                     if (State.Alive[slot] == 0) continue;
@@ -55,9 +56,28 @@ namespace Northwatch.Simulation
                     if (exit < distance || distance >= nearest) continue;
                     nearest = distance; picked = slot;
                 }
+            bool own = picked >= 0 && State.Sides[picked] == Side.First;
+            if (request.Kind == 6 && (!own || !request.SelectUnit))
+            {
+                if (own) return;
+                if (request.MoveGround)
+                {
+                    bool anySelected = false;
+                    for (int slot = 0; slot < Selected.Length; slot++) anySelected |= Selected[slot] != 0;
+                    if (anySelected && math.abs(request.Direction.y) > 1e-7f)
+                    {
+                        float distance = -request.Origin.y / request.Direction.y;
+                        float3 ground = request.Origin + request.Direction * distance;
+                        if (distance >= 0 && math.abs(ground.x) <= UnitSimulation.MapHalfWidth &&
+                            math.abs(ground.z) <= UnitSimulation.MapHalfWidth)
+                            Summary[1] = new float4(ground, Summary[1].w + 1);
+                    }
+                }
+                if (!request.ClearGround) return;
+            }
             for (int slot = 0; slot < Selected.Length; slot++)
             {
-                if (request.Kind >= 3)
+                if (request.Kind == 3 || request.Kind == 4)
                 {
                     int index = request.GroupIndex * Selected.Length + slot;
                     if (request.Kind == 3) Groups[index] = Selected[slot];
@@ -67,18 +87,19 @@ namespace Northwatch.Simulation
                 bool hit = false;
                 if (State.Alive[slot] != 0 && State.Sides[slot] == Side.First)
                 {
-                    if (request.Kind == 2) hit = slot == picked;
-                    else
+                    if (click && !request.SameType) hit = slot == picked;
+                    else if (request.Kind == 1 || (click && own && request.SameType && State.Sizes[slot] == State.Sizes[picked]))
                     {
                         float height = State.Sizes[slot] == UnitSize.Small ? 0.25f : 0.5f;
                         float4 clip = math.mul(request.Projection, new float4(State.Positions[slot] + new float3(0, height, 0), 1));
                         float2 point = clip.xy / clip.w * 0.5f + 0.5f;
+                        float4 bounds = request.SameType ? new float4(0, 0, 1, 1) : request.Bounds;
                         hit = clip.w > 0 && math.abs(clip.z) <= clip.w &&
-                            math.all(point >= request.Bounds.xy) && math.all(point <= request.Bounds.zw);
+                            math.all(point >= bounds.xy) && math.all(point <= bounds.zw);
                     }
                 }
                 if (!request.Additive) Selected[slot] = 0;
-                if (hit) Selected[slot] = request.Kind == 2 && request.Additive && Selected[slot] != 0
+                if (hit) Selected[slot] = click && !request.SameType && request.Additive && Selected[slot] != 0
                     ? 0 : State.Generations[slot];
             }
         }

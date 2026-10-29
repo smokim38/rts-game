@@ -5,6 +5,7 @@ using UnityEngine.InputSystem;
 
 namespace Northwatch.Presentation.Cameras
 {
+    [DefaultExecutionOrder(200)]
     public sealed class CameraController : MonoBehaviour
     {
         [SerializeField] private Camera view;
@@ -19,6 +20,7 @@ namespace Northwatch.Presentation.Cameras
         private Transform rig;
         private Quaternion angle;
         private Vector3 centre, offset;
+        public bool SuppressEdgePan { get; set; }
         private static readonly ProfilerMarker Marker = new ProfilerMarker("Northwatch.Camera");
 
         public void Configure(Camera camera, InputActionAsset input, float speed, float edgePixels,
@@ -54,13 +56,21 @@ namespace Northwatch.Presentation.Cameras
             rig.position = centre + offset;
         }
 
+        public void DragPan(Vector2 from, Vector2 to)
+        {
+            var ground = new Plane(Vector3.up, 0f);
+            Ray a = view.ScreenPointToRay(from), b = view.ScreenPointToRay(to);
+            if (!ground.Raycast(a, out float first) || !ground.Raycast(b, out float second)) return;
+            CentreOn(centre + a.GetPoint(first) - b.GetPoint(second));
+        }
+
         public void Advance(float seconds, bool focused)
         {
             using (Marker.Auto())
             {
                 if (!focused) return;
                 Vector2 input = pan.ReadValue<Vector2>();
-                if (point.controls.Count != 0)
+                if (!SuppressEdgePan && point.controls.Count != 0)
                     input += CameraMotion.EdgePan(point.ReadValue<Vector2>(), view.pixelRect, edgeDistance);
                 view.orthographicSize = CameraMotion.Zoom(view.orthographicSize, zoom.ReadValue<float>(),
                     zoomSensitivity, nearestZoom, farthestZoom);

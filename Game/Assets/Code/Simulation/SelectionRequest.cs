@@ -7,6 +7,7 @@ namespace Northwatch.Simulation
     {
         internal byte Kind;
         internal bool Additive;
+        internal bool SelectUnit, MoveGround, ClearGround, SameType;
         internal int GroupIndex;
         internal float4x4 Projection;
         internal float4 Bounds;
@@ -19,6 +20,14 @@ namespace Northwatch.Simulation
 
         public static SelectionRequest Click(Ray ray, bool additive = false)
             => new SelectionRequest { Kind = 2, Origin = ray.origin, Direction = ray.direction, Additive = additive };
+
+        public static SelectionRequest Clear() => new SelectionRequest { Kind = 5 };
+
+        public static SelectionRequest PointerClick(Ray ray, Matrix4x4 worldToClip, bool selectUnit,
+            bool moveGround, bool clearGround, bool additive, bool sameType)
+            => new SelectionRequest { Kind = 6, Origin = ray.origin, Direction = ray.direction,
+                Projection = worldToClip, SelectUnit = selectUnit, MoveGround = moveGround,
+                ClearGround = clearGround, Additive = additive, SameType = sameType };
 
         public static SelectionRequest Group(int number, bool save)
         {
