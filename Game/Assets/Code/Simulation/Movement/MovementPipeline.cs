@@ -42,7 +42,7 @@ namespace Northwatch.Simulation.Movement
         }
 
         internal JobHandle Schedule(UnitState state, JobHandle dependency, int batchSize = 64,
-            NativeArray<long> timestamps = default, int timestampOffset = 0)
+            NativeArray<long> timestamps = default, int timestampOffset = 0, ulong tick = 0)
         {
             var handle = MovementTimestampJob.Stamp(timestamps, timestampOffset, dependency);
             handle = new BucketUnitsJob { Positions = state.Positions, Alive = state.Alive, Buckets = Grid.Buckets }
@@ -53,7 +53,7 @@ namespace Northwatch.Simulation.Movement
             {
                 Positions = state.Positions, Sizes = state.Sizes, Alive = state.Alive, Units = state.Movement,
                 Planned = planned, Grid = Grid,
-                Settings = Settings, Fields = new FlowFieldReader { Directions = emptyMap.AsReadOnly(),
+                Settings = Settings, Tick = tick, Fields = new FlowFieldReader { Directions = emptyMap.AsReadOnly(),
                     Classes = emptyMap.AsReadOnly(), Distances = emptyDistances.AsReadOnly() }
             }.ScheduleParallel(state.Alive.Length, batchSize, handle);
             handle = new IntegrateMovementJob

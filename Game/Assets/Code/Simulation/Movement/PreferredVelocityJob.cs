@@ -18,6 +18,7 @@ namespace Northwatch.Simulation.Movement
         [ReadOnly] internal SpatialGrid Grid;
         internal FlowFieldReader Fields;
         internal MovementParameters Settings;
+        internal ulong Tick;
 
         public void Execute(int i)
         {
@@ -26,17 +27,27 @@ namespace Northwatch.Simulation.Movement
             if (!unit.HasMoveOrder) { Planned[i] = unit; return; }
             float2 delta = unit.Goal - Positions[i].xz;
             float distance = math.length(delta);
-            bool arrived = distance <= .05f && math.lengthsq(unit.Velocity) < .01f;
+            if (distance <= unit.BestGoalDistance - .1f)
+            {
+                unit.BestGoalDistance = distance;
+                unit.LastProgressTick = Tick;
+            }
+            byte arrivalRule = distance <= .05f && math.lengthsq(unit.Velocity) < .01f ? (byte)1 : (byte)0;
             // Without formation slots these are the ADR 0008 overflow arrivals:
             // stop on the route beside an already arrived member of this order.
             var query = new SpatialQuery(Grid, Positions[i].xz, Footprint.Radius(Sizes[i]) + Footprint.LargeRadius + .1f);
-            while (!arrived && query.Next(out int other))
+            while (arrivalRule == 0 && query.Next(out int other))
                 if (other != i && Units[other].OrderVersion == unit.OrderVersion &&
                     Units[other].Mode == MovementMode.Idle &&
                     math.distance(Positions[i].xz, Positions[other].xz) <= Footprint.Radius(Sizes[i]) + Footprint.Radius(Sizes[other]) + .1f)
-                    arrived = true;
-            if (arrived)
+                    arrivalRule = 2;
+            // Interim goal-disc radius until ADR 0008 Issue 4 (groups and arrival).
+            // A held-up unit further out must retain its order, however long it waits.
+            if (arrivalRule == 0 && distance <= Footprint.Radius(Sizes[i]) + .1f && Tick - unit.LastProgressTick >= 30)
+                arrivalRule = 3;
+            if (arrivalRule != 0)
             {
+                unit.ArrivalRule = arrivalRule;
                 unit.Mode = MovementMode.Idle; unit.HasMoveOrder = false; unit.Home = Positions[i].xz;
                 unit.Velocity = unit.PreferredVelocity = unit.NewVelocity = float2.zero;
                 Planned[i] = unit; return;

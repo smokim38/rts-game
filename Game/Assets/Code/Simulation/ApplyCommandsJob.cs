@@ -2,6 +2,7 @@ using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
 using Northwatch.Simulation.Movement;
+using Unity.Mathematics;
 
 namespace Northwatch.Simulation
 {
@@ -11,6 +12,7 @@ namespace Northwatch.Simulation
         internal NativeArray<UnitCommand> Commands;
         internal NativeArray<int> CommandCount, QueuedMoves;
         internal UnitState State;
+        internal ulong Tick;
 
         public void Execute()
         {
@@ -31,6 +33,9 @@ namespace Northwatch.Simulation
                     unit.Goal = command.Position.xz;
                     unit.HasMoveOrder = true;
                     unit.Mode = MovementMode.Moving;
+                    unit.BestGoalDistance = math.distance(unit.Goal, State.Positions[slot].xz);
+                    unit.LastProgressTick = Tick;
+                    unit.ArrivalRule = 0;
                     State.Movement[slot] = unit;
                     continue;
                 }

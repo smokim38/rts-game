@@ -156,12 +156,12 @@ namespace Northwatch.Simulation
                 if (Measurement != null)
                 {
                     pending = Measurement.Input(State, pending);
-                    pending = movement.Schedule(State, pending, 64, Measurement.Timestamps, Measurement.TickCount * MovementMeasurement.TimestampStride);
+                    pending = movement.Schedule(State, pending, 64, Measurement.Timestamps, Measurement.TickCount * MovementMeasurement.TimestampStride, TickCount + 1);
                     pending = Measurement.Record(State, movement, pending);
                 }
                 else
 #endif
-                if (movement != null) pending = movement.Schedule(State, pending);
+                if (movement != null) pending = movement.Schedule(State, pending, tick: TickCount + 1);
                 TickCount++;
             }
             if (ticks > 0) { queuedAdds = 0; commandBatch++; }
@@ -177,7 +177,7 @@ namespace Northwatch.Simulation
 
         private JobHandle ApplyCommands(JobHandle dependency) => new ApplyCommandsJob
         {
-            State = State, Commands = commands, CommandCount = commandCounts, QueuedMoves = queuedMoves
+            State = State, Commands = commands, CommandCount = commandCounts, QueuedMoves = queuedMoves, Tick = TickCount + 1
         }.Schedule(dependency);
 
         public void CompleteFrame()

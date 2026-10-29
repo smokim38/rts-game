@@ -1,10 +1,12 @@
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using Northwatch.Simulation.Movement;
 using Unity.Profiling;
+using Unity.Profiling.LowLevel.Unsafe;
 using UnityEngine;
 
 namespace Northwatch.Presentation.Diagnostics
@@ -152,6 +154,7 @@ namespace Northwatch.Presentation.Diagnostics
             double windowSeconds = Time.realtimeSinceStartupAsDouble - measuredAt;
             finished = true;
             driver.Simulation.CompleteFrame();
+            WriteMovementJobLabels();
             using (var writer = new StreamWriter(output + "-ticks.csv"))
             {
                 writer.WriteLine("tick,grid_ms,integration_ms,overlap_ms,move_check_ms,commit_ms,total_ms,level_1,level_2,one_tick_stalls,still_over_5s,longest_still_ticks,alive,footprint_overlaps,static_regressions,gap_crossed,first_advance_cells,second_advance_cells");
@@ -184,6 +187,22 @@ namespace Northwatch.Presentation.Diagnostics
                 "scoped_gc=" + scopedGc.Valid + "; simulation_alloc_count=" + simulationAllocations +
                 "; drawing_alloc_count=" + drawingAllocations + "; scope_capacity_reached=" + scopeCapacityReached + "\n");
             Application.Quit(invalidFrames == 0 && !scopeCapacityReached ? 0 : 1);
+        }
+
+        private void WriteMovementJobLabels()
+        {
+            // Enumerate only after the window: this evidence must not allocate in measured frames.
+            var handles = new List<ProfilerRecorderHandle>();
+            ProfilerRecorderHandle.GetAvailable(handles);
+            using var writer = new StreamWriter(output + "-job-labels.txt");
+            foreach (ProfilerRecorderHandle handle in handles)
+            {
+                string name = ProfilerRecorderHandle.GetDescription(handle).Name;
+                if (name.Contains("Northwatch.Simulation") || name.Contains("MovementJob") ||
+                    name.Contains("PreferredVelocityJob") || name.Contains("MoveCheckPassJob") ||
+                    name.Contains("SpatialGridJob") || name.Contains("BucketUnitsJob"))
+                    writer.WriteLine(name);
+            }
         }
 
         private string CounterMilliseconds(long value) => (value * 1000.0 / counterFrequency).ToString("F6", CultureInfo.InvariantCulture);
