@@ -19,6 +19,7 @@ namespace Northwatch.Presentation
         private TickClock clock;
         private RenderParams firstParameters, secondParameters, selectedParameters;
         private static readonly ProfilerMarker SimulationMarker = new ProfilerMarker("Northwatch.Simulation");
+        private static readonly ProfilerMarker SimulationWaitMarker = new ProfilerMarker("Northwatch.Simulation.Wait");
         private static readonly ProfilerMarker DrawingMarker = new ProfilerMarker("Northwatch.Drawing");
         public UnitSimulation Simulation => simulation;
         public Material SelectionMaterial => selectedSide;
@@ -55,7 +56,7 @@ namespace Northwatch.Presentation
         {
             using (SimulationMarker.Auto())
             {
-                simulation.CompleteFrame();
+                using (SimulationWaitMarker.Auto()) simulation.CompleteFrame();
                 CompletedTicks = ScheduledTicks;
             }
         }

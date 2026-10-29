@@ -15,14 +15,15 @@ namespace Northwatch.Presentation.Diagnostics
         private const int FrameCapacity = 1000000;
         private MatchDriver driver;
         private MovementMeasurement measurement;
-        private ProfilerRecorder main, gc, gcBytes;
-        private long[] mainTimes, allocations, allocationCounts;
+        private ProfilerRecorder main, wait, gc, gcBytes;
+        private long[] mainTimes, waitTimes, allocations, allocationCounts;
         private int[] scheduled, completed;
         private int frames, firstTick;
         private string output;
         private double began, measuredAt;
         private bool measuring, finished;
         private long counterFrequency;
+        private int targetFrameRate = -1;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Launch()
@@ -46,6 +47,10 @@ namespace Northwatch.Presentation.Diagnostics
             string[] args = Environment.GetCommandLineArgs();
             int index = Array.IndexOf(args, "-movement-output"), sceneIndex = Array.IndexOf(args, "-movement-scene");
             int countIndex = Array.IndexOf(args, "-movement-units");
+            int fpsIndex = Array.IndexOf(args, "-movement-fps");
+            if (fpsIndex >= 0 && (fpsIndex + 1 >= args.Length ||
+                !int.TryParse(args[fpsIndex + 1], out targetFrameRate) || (targetFrameRate != -1 && targetFrameRate != 60)))
+                throw new ArgumentException("Use -movement-fps -1|60 (default -1).");
             if (!Debug.isDebugBuild || index < 0 || index + 1 >= args.Length || sceneIndex < 0 || sceneIndex + 1 >= args.Length ||
                 countIndex < 0 || countIndex + 1 >= args.Length)
                 throw new ArgumentException("Use a development Player with -movement-output PATH -movement-scene 0|1|2|3 -movement-units N.");
@@ -59,16 +64,18 @@ namespace Northwatch.Presentation.Diagnostics
             driver.Simulation.MeasureMovement(int.Parse(args[sceneIndex + 1], CultureInfo.InvariantCulture),
                 int.Parse(args[countIndex + 1], CultureInfo.InvariantCulture));
             measurement = driver.Simulation.Measurement;
-            mainTimes = new long[FrameCapacity]; allocations = new long[FrameCapacity]; allocationCounts = new long[FrameCapacity];
+            mainTimes = new long[FrameCapacity]; waitTimes = new long[FrameCapacity];
+            allocations = new long[FrameCapacity]; allocationCounts = new long[FrameCapacity];
             scheduled = new int[FrameCapacity]; completed = new int[FrameCapacity];
             const ProfilerRecorderOptions options = ProfilerRecorderOptions.StartImmediately |
                 ProfilerRecorderOptions.WrapAroundWhenCapacityReached | ProfilerRecorderOptions.SumAllSamplesInFrame;
             main = ProfilerRecorder.StartNew(ProfilerCategory.Scripts, "Northwatch.Simulation", 1, options);
+            wait = ProfilerRecorder.StartNew(ProfilerCategory.Scripts, "Northwatch.Simulation.Wait", 1, options);
             gc = ProfilerRecorder.StartNew(ProfilerCategory.Memory, "GC.Alloc", 1, options);
             gcBytes = ProfilerRecorder.StartNew(ProfilerCategory.Memory, "GC Allocated In Frame", 1, options);
-            if (!main.Valid || !gc.Valid || !gcBytes.Valid) throw new InvalidOperationException("Required driver/GC recorders are unavailable.");
+            if (!main.Valid || !wait.Valid || !gc.Valid || !gcBytes.Valid) throw new InvalidOperationException("Required driver/wait/GC recorders are unavailable.");
             if (QueryPerformanceFrequency(out counterFrequency) == 0) throw new InvalidOperationException("Performance counter unavailable.");
-            QualitySettings.vSyncCount = 0; Application.targetFrameRate = -1; Application.runInBackground = true;
+            QualitySettings.vSyncCount = 0; Application.targetFrameRate = targetFrameRate; Application.runInBackground = true;
             Screen.SetResolution(1920, 1080, FullScreenMode.FullScreenWindow);
             began = Time.realtimeSinceStartupAsDouble;
         }
@@ -80,7 +87,9 @@ namespace Northwatch.Presentation.Diagnostics
             if (measuring)
             {
                 if (frames == FrameCapacity) throw new InvalidOperationException("Movement frame capacity exhausted.");
-                mainTimes[frames] = main.LastValue;
+                // Before BeginFrame: record the preceding frame's summed scopes and
+                // counters together. Tick frames completed at least one tick.
+                mainTimes[frames] = main.LastValue; waitTimes[frames] = wait.LastValue;
                 allocations[frames] = gcBytes.LastValue;
                 allocationCounts[frames] = gc.Count == 0 ? 0 : gc.GetSample(0).Count;
                 scheduled[frames] = driver.ScheduledTicks; completed[frames] = driver.CompletedTicks;
@@ -118,17 +127,20 @@ namespace Northwatch.Presentation.Diagnostics
             }
             using (var writer = new StreamWriter(output + "-frames.csv"))
             {
-                writer.WriteLine("frame,scheduled_ticks,completed_ticks,driver_ms,gc_alloc_count,gc_bytes");
+                writer.WriteLine("frame,scheduled_ticks,completed_ticks,driver_total_ms,driver_wait_ms,driver_work_ms,gc_alloc_count,gc_bytes");
                 for (int f = 0; f < frames; f++) writer.WriteLine(f + "," + scheduled[f] + "," + completed[f] + "," +
-                    (mainTimes[f] * .000001).ToString("F6", CultureInfo.InvariantCulture) + "," + allocationCounts[f] + "," + allocations[f]);
+                    (mainTimes[f] * .000001).ToString("F6", CultureInfo.InvariantCulture) + "," +
+                    (waitTimes[f] * .000001).ToString("F6", CultureInfo.InvariantCulture) + "," +
+                    ((mainTimes[f] - waitTimes[f]) * .000001).ToString("F6", CultureInfo.InvariantCulture) + "," +
+                    allocationCounts[f] + "," + allocations[f]);
             }
-            File.WriteAllText(output + "-info.txt", "scene=PerformanceLadder; drawing=on; vSync=0; targetFrameRate=-1; warmup_s=10; window_s=60\n" +
+            File.WriteAllText(output + "-info.txt", "scene=PerformanceLadder; drawing=on; vSync=0; targetFrameRate=" + targetFrameRate + "; warmup_s=10; window_s=60\n" +
                 "cap=" + driver.MovementSettings.Snapshot().MaxSerialFallbacks + "; cpu=" + SystemInfo.processorType + "; gpu=" + SystemInfo.graphicsDeviceName + "\n");
             Application.Quit(0);
         }
 
         private string CounterMilliseconds(long value) => (value * 1000.0 / counterFrequency).ToString("F6", CultureInfo.InvariantCulture);
-        private void OnDestroy() { main.Dispose(); gc.Dispose(); gcBytes.Dispose(); }
+        private void OnDestroy() { main.Dispose(); wait.Dispose(); gc.Dispose(); gcBytes.Dispose(); }
     }
 }
 #endif
