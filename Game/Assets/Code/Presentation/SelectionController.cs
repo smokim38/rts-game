@@ -71,7 +71,7 @@ namespace Northwatch.Presentation
             ShowOption();
             moveMarker = new GameObject("MoveMarker").AddComponent<MoveMarker>();
             moveMarker.transform.SetParent(driver.transform, false);
-            moveMarker.Initialize(driver.SelectionMaterial);
+            moveMarker.Initialize(driver.SelectionMaterial, view);
         }
 
         private void ShowOption() => help.text = HelpText(Modern);

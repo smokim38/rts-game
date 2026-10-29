@@ -11,6 +11,7 @@ namespace Northwatch.Presentation.Diagnostics
         private int frames, unitCount;
         private string output;
         private Camera captureCamera;
+        private Cameras.CameraController cameraController;
         private RenderTexture captureTarget;
         private UnityEngine.Rendering.Universal.UniversalRenderPipeline.SingleCameraRequest renderRequest;
         private DebugOverlay overlay;
@@ -66,6 +67,7 @@ namespace Northwatch.Presentation.Diagnostics
             QualitySettings.vSyncCount = 0;
             Application.targetFrameRate = -1;
             check.captureCamera = Camera.main;
+            check.cameraController = check.captureCamera.GetComponent<Cameras.CameraController>();
             check.captureTarget = new RenderTexture(1920, 1080, 24);
             if (!check.captureTarget.Create()) throw new System.InvalidOperationException("Could not create validation render target.");
             check.captureCamera.aspect = 16f / 9f;
@@ -96,7 +98,7 @@ namespace Northwatch.Presentation.Diagnostics
             if ((!Application.isBatchMode && !UnityEngine.Rendering.SplashScreen.isFinished) ||
                 Time.realtimeSinceStartupAsDouble < 10.0) return;
             frames++;
-            if (moveMarkerCheck) CheckMoveMarkerFrame();
+            if (moveMarkerCheck && frames <= 180) CheckMoveMarkerFrame();
             else if (selectionCheck) CheckSelectionFrame();
             if (!enabled) return;
             if (frames > 120) { measuredFrames++; measuredSeconds += Time.unscaledDeltaTime; }
@@ -139,7 +141,7 @@ namespace Northwatch.Presentation.Diagnostics
                 "; frame_ms=" + overlay.FrameMilliseconds.ToString("F3", System.Globalization.CultureInfo.InvariantCulture) +
                 "; measured_fps=" + (measuredFrames / measuredSeconds).ToString("F2", System.Globalization.CultureInfo.InvariantCulture) +
                 "; gpu=" + SystemInfo.graphicsDeviceName + "; cpu=" + SystemInfo.processorType);
-            if (selectionCheck && !moveMarkerCheck)
+            if (selectionCheck)
                 Debug.Log("Selection check: own_units=2000; samples=" + selectionSamples +
                     "; response_frames=1; selected_frame_average_ms=" + (selectionTotalMs / selectionSamples).ToString("F6", System.Globalization.CultureInfo.InvariantCulture) +
                     "; selected_frame_max_ms=" + selectionMaxMs.ToString("F6", System.Globalization.CultureInfo.InvariantCulture) +
@@ -198,6 +200,12 @@ namespace Northwatch.Presentation.Diagnostics
         private void CheckMoveMarkerFrame()
         {
             if (frames < 50) return;
+            if (frames == 180)
+            {
+                // The following selection measurement must fit all 2,000 cubes in its box again.
+                captureCamera.orthographicSize = 200f;
+                cameraController.CentreOn(Vector3.zero);
+            }
             if (frames < 54)
             {
                 // Use the real box gesture before giving move orders to all 2,000 cubes.
@@ -238,6 +246,7 @@ namespace Northwatch.Presentation.Diagnostics
             var image = new Texture2D(1920, 1080, TextureFormat.RGB24, false);
             image.ReadPixels(new Rect(0, 0, 1920, 1080), 0, 0); image.Apply();
             int pixels = 0;
+            int left = 1920, right = -1, bottom = 1080, top = -1;
             Vector2 sum = Vector2.zero;
             // Magenta is absent from the grey ground and the blue, red and yellow units.
             for (int y = Mathf.Max(0, (int)moveClick.y - 40); y < Mathf.Min(1080, moveClick.y + 40); y++)
@@ -246,16 +255,21 @@ namespace Northwatch.Presentation.Diagnostics
                     Color colour = image.GetPixel(x, y);
                     if (colour.r < 0.6f || colour.b < 0.6f || colour.g > 0.4f) continue;
                     pixels++; sum += new Vector2(x + 0.5f, y + 0.5f);
+                    left = Mathf.Min(left, x); right = Mathf.Max(right, x);
+                    bottom = Mathf.Min(bottom, y); top = Mathf.Max(top, y);
                 }
             string option = frames <= 100 ? "classic" : "modern";
             string zoom = frames == 60 || frames == 120 ? "far" : frames == 80 || frames == 140 ? "near" : "pan";
             System.IO.File.WriteAllBytes(output + "-" + option + "-" + zoom + ".png", image.EncodeToPNG());
             Debug.Log("Move marker: " + option + "; " + zoom + "; click=" + moveClick + "; pixels=" + pixels +
                 "; centre_error_px=" + (pixels == 0 ? -1f : Vector2.Distance(sum / pixels, moveClick)) +
+                "; diameter_px=" + (right - left + 1) + "; height_px=" + (top - bottom + 1) +
                 "; zoom=" + captureCamera.orthographicSize);
             RenderTexture.active = previous; Destroy(image);
             if (pixels == 0 || Vector2.Distance(sum / pixels, moveClick) > 8f)
                 FailSelection("Move marker pixels must be within 8 pixels of the click.");
+            else if (zoom == "far" && (right - left + 1 < 22 || right - left + 1 > 30))
+                FailSelection("The far-zoom move ring must stay about 24 pixels across throughout its pulse.");
         }
 
         private void FailSelection(string message)

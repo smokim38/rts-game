@@ -134,7 +134,7 @@ namespace Northwatch.Tests.EditMode.Presentation
             Assert.That(marker.transform.position, Is.EqualTo(point + Vector3.up * 0.02f));
             Assert.That(marker.transform.localScale.x, Is.EqualTo(1.15f).Within(0.0001f));
             marker.Show(point, 0.375);
-            Assert.That(marker.transform.localScale.x, Is.EqualTo(0.85f).Within(0.0001f));
+            Assert.That(marker.transform.localScale.x, Is.EqualTo(1f).Within(0.0001f));
             marker.Show(point, 0.625);
             Assert.That(marker.transform.localScale.x, Is.EqualTo(1.15f).Within(0.0001f));
             Material material = marker.GetComponent<MeshRenderer>().sharedMaterial;
@@ -145,6 +145,30 @@ namespace Northwatch.Tests.EditMode.Presentation
             long before = GC.GetAllocatedBytesForCurrentThread();
             for (int i = 0; i < 256; i++) selection.CompleteFrame();
             Assert.That(GC.GetAllocatedBytesForCurrentThread() - before, Is.Zero);
+        }
+
+        [TestCase(20f)]
+        [TestCase(200f)]
+        public void MarkerKeepsMinimumScreenDiameterThroughPulseZoomAndPan(float zoom)
+        {
+            MoveMarker marker = driver.transform.Find("MoveMarker").GetComponent<MoveMarker>();
+            view.orthographicSize = zoom;
+            var point = new Vector3(30, 0, -20);
+            for (int pan = 0; pan < 2; pan++)
+            {
+                if (pan == 1) camera.DragPan(ground, ground + Vector2.right * 100);
+                for (int sample = 0; sample <= 32; sample++)
+                {
+                    marker.Show(point, sample / 64.0);
+                    Vector3 horizontal = view.transform.right * (marker.transform.localScale.x * 0.5f);
+                    float pixels = Vector3.Distance(view.WorldToScreenPoint(point + horizontal), view.WorldToScreenPoint(point - horizontal));
+                    Assert.That(pixels, Is.GreaterThanOrEqualTo(24f * Screen.height / 1080f - 0.01f));
+                    Assert.That(marker.transform.position.x, Is.EqualTo(point.x));
+                    Assert.That(marker.transform.position.z, Is.EqualTo(point.z));
+                    if (zoom == 20f) Assert.That(marker.transform.localScale.x, Is.InRange(1f, 1.15f));
+                    else Assert.That(pixels, Is.LessThanOrEqualTo(27.6f * Screen.height / 1080f + 0.01f));
+                }
+            }
         }
 
         [TestCase(false, 1)]

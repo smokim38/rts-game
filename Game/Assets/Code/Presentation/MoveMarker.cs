@@ -10,11 +10,13 @@ namespace Northwatch.Presentation
         private Material material;
         private MeshRenderer drawing;
         private Transform ring;
+        private Camera view;
         private static readonly ProfilerMarker Marker = new ProfilerMarker("Northwatch.MoveMarker");
 
-        public void Initialize(Material source)
+        public void Initialize(Material source, Camera camera)
         {
             ring = transform;
+            view = camera;
             const int segments = 48;
             var vertices = new Vector3[segments * 2];
             var triangles = new int[segments * 6];
@@ -46,7 +48,10 @@ namespace Northwatch.Presentation
             {
                 // Lift just above the plane to avoid depth fighting; the order's X/Z stay exact.
                 ring.position = point + Vector3.up * 0.02f;
-                float scale = 1f + 0.15f * Mathf.Sin((float)(seconds % 0.5) * (Mathf.PI * 4f));
+                // A world-space cell becomes only a few pixels at far zoom. Preserve a 24 px floor at 1080p,
+                // including the smallest pulse, without changing the order's ground position.
+                float diameter = Mathf.Max(1f, 48f * view.orthographicSize * Screen.height / (1080f * view.pixelHeight));
+                float scale = diameter * (1f + 0.075f * (1f + Mathf.Sin((float)(seconds % 0.5) * (Mathf.PI * 4f))));
                 ring.localScale = Vector3.one * scale;
                 drawing.enabled = true;
             }
