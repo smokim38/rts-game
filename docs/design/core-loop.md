@@ -4,7 +4,7 @@
 
 ## Overview
 
-A match is one human player against 1 to 7 AI opponents on a skirmish map, as a free-for-all or in teams. Teams set in setup are only the starting alliances: any side, human or AI, can make and break alliances during the match. Each side starts with a small base. You gather one resource, **Supply**, with harvesting vehicles. You spend it on buildings, then on an army, and you fight until only one side, or one group of allies, is left, or until you are out yourself. There is no time limit and no target match length: a match runs as long as that takes (see [Match pace](#match-pace)).
+A match is one human player against 1 to 7 AI opponents on a skirmish map, as a free-for-all or in teams. Teams set in setup are only the starting alliances: any side, human or AI, can make and break alliances during the match. Each side starts with a small base. You gather one resource, **Supply**, with harvesting vehicles. You spend it on buildings, then on an army, and you fight until only one side, or one group of allies, is left, or until you are out yourself (then you can leave, or watch the rest as a spectator). There is no time limit and no target match length: a match runs as long as that takes (see [Match pace](#match-pace)).
 
 The first release has **two factions**. They play by the same rules and economy, and differ in their units. The AI opponent plays by exactly the same rules as the player. It sees only what its own and its allies' units see, gets no free resources, and gives the same orders a player can give.
 
@@ -198,7 +198,7 @@ Building categories that both factions share:
 - **Retreat:** a group that is clearly losing pulls back towards its rally point. The group decides this together, not each unit on its own. A direct player order (hold position, attack this) always overrides retreat.
 - **Formation:** a group fighting on attack-move stays together instead of stringing out behind its fastest units.
 
-**Vision and fog of war:** each unit and building sees a set radius. A side sees only what its units see. Ground it has explored shows the buildings last seen there, and unexplored ground is hidden. The AI uses exactly the same fog (P2: no information it shouldn't have).
+**Vision and fog of war:** each unit and building sees a set radius. A side sees only what its units see. Ground it has explored shows the buildings last seen there, and unexplored ground is hidden. The AI uses exactly the same fog (P2: no information it shouldn't have). The one exception is a knocked-out player who spectates: they have no side and see the whole map (see [Spectating after defeat](#spectating-after-defeat)).
 
 **Per-unit costs (P4):**
 
@@ -219,16 +219,32 @@ Fields near the start run out, so sides must claim and hold new fields with Depo
 
 - **A side is out** when it has **no buildings and no Field Truck** left. Its other units are removed from the map at that moment. Units alone can't keep a side alive, so nobody has to hunt down the last stray unit (P1).
 - **The match ends** at the first of these:
-  - **The player is out** (or surrenders). The match ends for the player at that moment with the defeat screen.
+  - **The player is out** (or surrenders) **and chooses to leave.** The defeat screen shows at once and offers two choices: leave the match, or spectate the rest of it (see [Spectating after defeat](#spectating-after-defeat)). Leaving ends the match at that moment.
+  - **The spectating player leaves.** A player who chose to spectate can leave at any time, and that ends the match at that moment.
   - **No two sides still in the match are enemies:** either one side is left, or every side left is allied with every other side left. Because alliances change during the match, this is checked whenever a side goes out or an alliance starts or ends. An alliance in its 10-second breaking warning already counts as enemies for this check.
 - **Victory:** the player wins if they are still in the match when it ends. Every side still in the match, AI allies included, shares the win.
-- **Defeat:** the player loses as soon as they are out, even if AI allies are still playing, and even if the player's last enemies go out at the same moment and an AI ally is left. The match stops there: the remaining AI sides are not played on, and the player can't stay to watch them. There is no spectating (owner, Issue #145: a player who loses ends the game rather than sitting and spectating).
+- **Defeat:** the player loses as soon as they are out, even if AI allies are still playing, and even if the player's last enemies go out at the same moment and an AI ally is left. The result is fixed at that moment: spectating never changes it, even if an AI ally of the player goes on to win.
 - **Draw:** if every side still in the match is knocked out at the same moment, the match is a draw.
-- **Surrender:** the player can quit at any time. It counts as a loss and ends the match the same way as being out.
+- **Surrender:** the player can quit at any time. It counts as a loss, and gives the same defeat screen and the same choice (leave or spectate) as being out.
 - **No time limit.** The match runs until it ends by the rules above. Nothing is added to end a long match, and a match where no side can finish another is not treated as a problem (see [Match pace](#match-pace)). The end screen shows match time, units built and lost, and Supply gathered.
 - **Matches with no human player** exist only as an AI test tool, not as a mode in the player's setup screen. They end only when no two sides left are enemies (see [AI-against-AI test matches](#ai-against-ai-test-matches)).
 
 **Pillars:** P1. **Per-unit cost:** none. The check counts buildings and Field Trucks per side and reads the 8 by 8 alliance table.
+
+### Spectating after defeat
+
+A player who is out may watch the rest of a match against AI (owner, Issue #145: "if a player is defeated they have the option to spectate", with "full view of the map with no fog of war"). This replaces the earlier rule of no spectating.
+
+- **The choice.** The defeat screen shows the end-screen numbers so far and two choices: **Leave match** and **Spectate**. The match is paused while the defeat screen waits, so nothing is missed and nothing changes before the player chooses.
+- **Only while the match goes on.** If the match is already over at the moment the player goes out (no two sides left are enemies, for example the player and their last enemies go out together and only an AI ally is left, or it is a draw), the defeat or draw screen offers only Leave match.
+- **What the spectator sees:** the whole map with no fog of war. Every cell is shown as if in sight, and every unit and building of every side is shown as it is now, wherever it is. Nothing is hidden and nothing is shown as last seen. The camera can go anywhere on the map.
+- **No orders.** The spectator can't give any order: no move, attack, build, production, rally point or alliance action. Clicks and order hotkeys do nothing, and the command bar, production queues and alliance panel are not shown. The spectator has no side, so the AI sides play exactly as if the player had left: their fog, alliances and choices don't change, and nothing the spectator sees reaches any AI.
+- **How it ends.** The match runs on under the normal rules until no two sides left are enemies (one side, or one group of allies), then shows the end screen: Defeat for the player, which side or sides won, and the end-screen numbers for every side. The spectator can leave at any time; leaving stops the match at once and shows the defeat end screen with the numbers up to that moment.
+- **A spectated match that never ends** is the same AI flaw as an AI-against-AI test match that never ends (see [AI-against-AI test matches](#ai-against-ai-test-matches)). Nothing is added to end it for the spectator; they can leave whenever they like.
+- **Setup doesn't change.** Every match still starts with the human as a side. Spectating is only what a player can do after being knocked out, so it doesn't make AI-only matches a setup mode.
+- **Multiplayer is decided later.** This covers matches against AI, which is all the first release has. Whether and how a knocked-out player can spectate an online match is left to the online multiplayer question in [vision.md](vision.md#open-questions) (open question 5).
+
+**Pillars:** P1 (one clear choice, and a clear view of how the match ends); P2 (the player can watch the AI sides fight and choose their alliances to the end). **Per-unit cost (P4):** none beyond drawing. The spectator view reads no side's fog and adds no vision work: it simply shows every cell. The knocked-out player's side has no units left, so its own vision work stops. Each AI side keeps its own fog as before. With no fog, every unit inside the camera view is drawn, which is never more than the 2,000-unit pool the performance target already covers.
 
 ## Match pace
 
@@ -240,7 +256,7 @@ That doesn't make matches slow. Pace comes from the rules, not from a clock:
 - **The AI keeps up pressure:** it scouts, attacks and picks its fights (see [The AI opponent](#the-ai-opponent)).
 - **Changing alliances** can reopen a match that has settled into a standoff.
 
-**Stalled matches are not a design problem** (owner, Issue #145). A match where no side can finish another (for example, every field empty and every army spent) simply goes on until a side goes out or the player surrenders. The design adds no fix for it: no late field regrowth, no clock, no sudden death. A human player who is losing ends the match by being knocked out or by surrendering (see [Win and loss](#win-and-loss)). Between AI sides, a match that never ends is a flaw in the AI, fixed in the AI and never by changing these rules (see [AI-against-AI test matches](#ai-against-ai-test-matches)).
+**Stalled matches are not a design problem** (owner, Issue #145). A match where no side can finish another (for example, every field empty and every army spent) simply goes on until a side goes out or the player surrenders. The design adds no fix for it: no late field regrowth, no clock, no sudden death. A human player who is losing ends the match by being knocked out or by surrendering and then leaving, and a spectator can leave at any time (see [Win and loss](#win-and-loss)). Between AI sides, including a match a knocked-out player is spectating, a match that never ends is a flaw in the AI, fixed in the AI and never by changing these rules (see [AI-against-AI test matches](#ai-against-ai-test-matches)).
 
 **Pillars:** P1 (a fast pace without a clock); P4 (long matches are where big battles are normal play).
 
@@ -407,9 +423,14 @@ Suggested build order. Each system is one or more later Issues.
 2. A side with no buildings and no Field Truck is out at once, and its remaining units are removed.
 3. The player sees the victory screen when they are still in and no two sides left in the match are enemies, and the defeat screen as soon as they are out. When every side left is knocked out at the same moment, the match is a draw.
 4. In a match of the player and AI A allied against AI B, knocking out B ends the match with a win for the player and A. If A is in its 10-second breaking warning with the player when B goes out, the match doesn't end, and the player and A become enemies when the warning ends.
-5. In a match of the player and AI A allied against AIs B and C, when the player goes out while A, B and C are still in, the defeat screen shows within 1 s and the match stops: the AI sides take no further actions, and the end screen offers no way to keep watching. The same happens when the player surrenders. If the player goes out at the same moment as B and C, with A left, it is still a defeat.
+5. In a match of the player and AI A allied against AIs B and C, when the player goes out while A, B and C are still in, the defeat screen shows within 1 s and offers exactly two choices, Leave match and Spectate. While it waits, the match is paused: no AI side takes any action and the match clock doesn't move. The same happens when the player surrenders. If the player goes out at the same moment as B and C, with A left, it is still a defeat, and only Leave match is offered.
 6. A match has no time limit: a match of the player against a do-nothing test AI, left with no orders for 2 hours of match time, is still running, with no end screen, no time warning, and fields that have not regrown. Knocking out the AI afterwards still ends it with the victory screen.
 7. The end screen shows match time, units built, units lost and Supply gathered for each side.
+8. **Leave.** In S11.5's match, choosing Leave match ends the match at once: the AI sides take no further actions and the defeat end screen shows. The same holds for a spectator choosing to leave: within 1 s the match stops, and the end screen shows Defeat with the numbers up to that moment.
+9. **Spectator view has no fog.** In S11.5's match, after choosing Spectate, every cell of the map is shown as in sight, with no hidden or last-seen ground. Every unit and building of A, B and C appears wherever it is, including ones no remaining side can see, and an enemy building destroyed out of every side's sight disappears from the view within 0.25 s. The camera can be moved to every corner of the map.
+10. **Spectator gives no orders.** While spectating, clicking on or near any unit or building of any side, and pressing every order hotkey, changes nothing in the match. The command bar, production queues and alliance panel are not shown. Match logs show no order from the human after the moment they went out, and each AI side's knowledge of enemy units still matches its own fog (S7.4).
+11. **Spectated match ends by the normal rule.** In S11.5's match with the player spectating, the match runs on until no two sides left are enemies, then the end screen shows Defeat for the player and names the side or sides that won. If A wins, the player's result is still Defeat.
+12. **Spectating at scale.** Spectating a match with 2,000 units spread over the map holds the performance target with the camera at any position.
 
 ### S12. AI commander, first version
 
@@ -451,5 +472,5 @@ Tested with the player and up to 3 AI sides (S11's setup).
 14. **Offer, accept and break timings.** Defaults: an offer stays open 30 s; a refused or expired offer can't be repeated to the same side for 60 s, nor can a new offer follow a break between the same two sides within 60 s; a break needs no consent, ends shared vision at once, and makes the two sides enemies after a 10 s warning; every side is told of every alliance made or broken, but only the two sides see an offer. *Recommendation:* keep these and tune in playtests. A break with no warning at all would allow surprise attacks between armies standing together, which is hard to read (P1).
 15. **No alliance that would end the match.** Default: an offer is refused if it would leave no two sides as enemies, so a match ends only when sides are knocked out. Without this rule, the last two sides could ally and both win. *Recommendation:* keep it; it follows the owner's "until victory when all other teams are destroyed".
 16. **How the AI chooses allies.** Default for the first build: an AI accepts an offer from a side that shares an enemy it rates as stronger than either of them, offers alliances on the same grounds, and breaks an alliance when that common enemy is out or when the ally is weak, near and its own army is far stronger. Difficulty changes how well it judges strength, not the rules. It treats the human like any other side. *Recommendation:* start with these few rules, read the logs from AI-against-AI matches, and add more only if alliances look random or never change.
-17. **Matches that stall.** *Decided (owner, Issue #145):* not a design problem, and no design fix (no late regrowth, no clock). A player who is out leaves the match with no spectating, and an AI-only test match that never ends is a flaw in the AI. See [Match pace](#match-pace), [Win and loss](#win-and-loss) and [AI-against-AI test matches](#ai-against-ai-test-matches).
+17. **Matches that stall.** *Decided (owner, Issue #145):* not a design problem, and no design fix (no late regrowth, no clock). A player who is out can leave or spectate (owner, Issue #145, replacing the earlier "no spectating"), and a match between AI sides that never ends, whether a test match or one being spectated, is a flaw in the AI. Spectating in online multiplayer is left to vision.md open question 5. See [Match pace](#match-pace), [Win and loss](#win-and-loss) and [AI-against-AI test matches](#ai-against-ai-test-matches).
 18. **Locking alliances in setup.** Should setup offer a "fixed alliances" option, for players who want a plain team match with no betrayal? *Recommendation:* not in the first release; changeable alliances are what the owner asked for. Revisit after playtests.
