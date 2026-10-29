@@ -28,6 +28,8 @@ namespace Northwatch.Simulation
             MovementParameters settings = movement.Settings;
             movement.Dispose();
             movement = new MovementPipeline(Capacity, settings, Measurement.Walkable);
+            if (scene == 4 && !QueueBlock(Side.First, UnitSize.Small, Vector3.zero, count))
+                throw new InvalidOperationException("Could not queue the measured open-map block.");
         }
 #endif
         private NativeArray<uint> selected, groups;
@@ -177,7 +179,8 @@ namespace Northwatch.Simulation
 
         private JobHandle ApplyCommands(JobHandle dependency) => new ApplyCommandsJob
         {
-            State = State, Commands = commands, CommandCount = commandCounts, QueuedMoves = queuedMoves, Tick = TickCount + 1
+            State = State, Commands = commands, CommandCount = commandCounts, QueuedMoves = queuedMoves, Tick = TickCount + 1,
+            SlotSpacing = movement == null ? MovementParameters.DefaultSlotSpacing : movement.Settings.SlotSpacing
         }.Schedule(dependency);
 
         public void CompleteFrame()

@@ -6,6 +6,7 @@ namespace Northwatch.Simulation.Movement
     public struct MovementParameters
     {
         public const float TickDuration = 1f / 30f;
+        public const float DefaultSlotSpacing = 1.25f;
         public float SmallSpeed, LargeSpeed, Acceleration, Deceleration, TurnSpeed;
         public float SlotSpacing;
         public int MoveCheckPasses;

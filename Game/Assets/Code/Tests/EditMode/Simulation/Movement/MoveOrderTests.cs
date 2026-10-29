@@ -31,22 +31,24 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
             Frame(simulation);
         }
 
-        private static void Spawn(UnitSimulation simulation, bool lattice)
+        private static void Spawn(UnitSimulation simulation, bool lattice, bool touching = false)
         {
-            if (lattice)
+            if (lattice || touching)
                 for (int i = 0; i < 100; i++)
                     Assert.That(simulation.QueueAdd(Side.First, UnitSize.Small,
-                        new Vector3((i % 10 - 4.5f) * .625f, 0, (i / 10 - 4.5f) * .625f)), Is.True);
+                        new Vector3((i % 10 - 4.5f) * (touching ? .5f : .625f), 0,
+                            (i / 10 - 4.5f) * (touching ? .5f : .625f))), Is.True);
             else Assert.That(simulation.QueueBlock(Side.First, UnitSize.Small, Vector3.zero, 100), Is.True);
             Frame(simulation, 1);
         }
 
-        [TestCase(true, true)] [TestCase(false, true)]
-        [TestCase(true, false)] [TestCase(false, false)]
-        public void ClickQueuesSnapshotAndNextTickPlansEverySelectedUnit(bool classic, bool lattice)
+        [TestCase(true, true, false)] [TestCase(false, true, false)]
+        [TestCase(true, false, false)] [TestCase(false, false, false)]
+        [TestCase(true, false, true)] [TestCase(false, false, true)]
+        public void ClickQueuesSnapshotAndNextTickPlansEverySelectedUnit(bool classic, bool lattice, bool touching)
         {
             using var simulation = new UnitSimulation(Settings());
-            Spawn(simulation, lattice);
+            Spawn(simulation, lattice, touching);
             SelectAll(simulation); Order(simulation, new Vector3(20, 0, 0), classic);
             Assert.That(simulation.AcknowledgementCount, Is.EqualTo(100));
             Assert.That(simulation.MoveMarkerVersion, Is.EqualTo(1));
@@ -61,8 +63,8 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
                 Assert.That(math.lengthsq(simulation.State.Movement[i].PreferredVelocity), Is.GreaterThan(0));
                 if (math.lengthsq(simulation.State.Movement[i].Velocity) > 0) started++;
             }
-            TestContext.WriteLine("First tick moving=" + started + "/100; lattice=" + lattice + "; classic=" + classic);
-            if (lattice) Assert.That(started, Is.EqualTo(100), "Units with velocity on the first lattice tick");
+            TestContext.WriteLine("First tick moving=" + started + "/100; lattice=" + lattice + "; touching=" + touching + "; classic=" + classic);
+            if (!touching) Assert.That(started, Is.EqualTo(100), "Units with velocity on the first normally spaced tick");
             Frame(simulation, 0, 1);
             Assert.That(simulation.AcknowledgementCount, Is.Zero);
         }
@@ -103,16 +105,17 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
             Assert.That(simulation.AcknowledgementCount, Is.Zero);
         }
 
-        [TestCase(false)] [TestCase(true)]
-        public void HundredUnitsComeToRestWithoutAnyTickAddingFootprintOverlap(bool lattice)
+        [TestCase(false, false, 15f, 0f)] [TestCase(true, false, 15f, 0f)] [TestCase(false, true, 15f, 0f)]
+        [TestCase(false, false, 14.9999542f, -.0000152587891f)]
+        public void HundredUnitsComeToRestWithoutAnyTickAddingFootprintOverlap(bool lattice, bool touching, float goalX, float goalZ)
         {
             using var simulation = new UnitSimulation(Settings());
-            Spawn(simulation, lattice);
-            var goal = new Vector3(15, 0, 0);
+            Spawn(simulation, lattice, touching);
+            var goal = new Vector3(goalX, 0, goalZ);
             var initialDistance = new float[100]; var moved = new bool[100];
             for (int i = 0; i < 100; i++) initialDistance[i] = math.distance(simulation.State.Positions[i], (float3)goal);
             SelectAll(simulation); Order(simulation, goal);
-            int lastChange = 0, allMovedTick = 0;
+            int lastChange = 0, allMovedTick = 0, firstTickMoving = 0;
             for (int tick = 0; tick < 1200; tick++)
             {
                 Frame(simulation, 1);
@@ -123,6 +126,7 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
                     float displacement = math.distance(simulation.State.Positions[i], unit.Previous.Position);
                     moved[i] |= displacement > 1e-5f;
                     if (moved[i]) movedCount++;
+                    if (tick == 0 && math.any(unit.Velocity != 0)) firstTickMoving++;
                     if (displacement > 1e-5f || math.abs(unit.Heading - unit.Previous.Heading) > 1e-5f ||
                         math.any(unit.Velocity != 0)) lastChange = tick + 1;
                     for (int j = i + 1; j < 100; j++)
@@ -149,16 +153,19 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
                 min = math.min(min, simulation.State.Positions[i].xz - extent);
                 max = math.max(max, simulation.State.Positions[i].xz + extent);
             }
-            TestContext.WriteLine("lattice=" + lattice + "; T=" + (lastChange + 1) + "; all_moved_tick=" + allMovedTick +
+            TestContext.WriteLine("lattice=" + lattice + "; touching=" + touching + "; goal=" + goalX + "," + goalZ + "; T=" + (lastChange + 1) +
+                "; first_tick_moving=" + firstTickMoving + "; all_moved_tick=" + allMovedTick +
                 "; exact/contact/congestion=" + stopped[1] + "/" + stopped[2] + "/" + stopped[3] +
                 "; moving=" + moving + "; orders=" + orders + "; at_rest_with_order=" + restWithOrder +
                 "; S2.2_area_ratio=" + ((max.x - min.x) * (max.y - min.y) / 25) +
                 "; under_one_cell_progress=" + insufficientProgress + "; least_progress=" + leastProgress);
+            if (touching) return; // Owner ruling: touching starts are reported until movement steps 4 and 5.
+            Assert.That(firstTickMoving, Is.EqualTo(100));
             Assert.That(moving, Is.Zero, "All units must be at rest at tick 1200");
             Assert.That(lastChange + 1, Is.LessThanOrEqualTo(1140));
             Assert.That(allMovedTick, Is.GreaterThan(0));
             Assert.That(insufficientProgress, Is.Zero, "Every unit must end at least one cell closer");
-            Assert.That(simulation.MoveMarkerPosition.x, Is.EqualTo(15));
+            Assert.That(simulation.MoveMarkerPosition, Is.EqualTo(goal));
         }
 
         [Test]

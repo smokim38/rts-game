@@ -13,6 +13,7 @@ namespace Northwatch.Simulation
         internal NativeArray<int> CommandCount, QueuedMoves;
         internal UnitState State;
         internal ulong Tick;
+        internal float SlotSpacing;
 
         public void Execute()
         {
@@ -61,7 +62,8 @@ namespace Northwatch.Simulation
             State.Summary[6]++;
             State.Summary[5] = -1;
             if (command.BlockCount > State.Alive.Length - State.Summary[0]) return;
-            var block = new BlockPlacement(command.BlockCount, command.Size, command.Position);
+            var block = new BlockPlacement(command.BlockCount, command.Size, command.Position,
+                SlotSpacing > 0 ? SlotSpacing : MovementParameters.DefaultSlotSpacing);
             // One area query per spawn order, like selection; no per-unit neighbour searches.
             for (int slot = 0; slot < State.Alive.Length; slot++)
                 if (State.Alive[slot] != 0 && block.Overlaps(State.Positions[slot], State.Sizes[slot])) return;

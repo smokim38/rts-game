@@ -26,12 +26,18 @@ namespace Northwatch.EditorTools
         }
 
         public static void BuildWindows()
+            => Build(PerformanceLadderBuilder.ScenePath, "MovementCore");
+
+        public static void BuildOrderCheckWindows()
+            => Build("Assets/Scenes/Sandbox.unity", "MovementOrders");
+
+        private static void Build(string scene, string folder)
         {
-            Directory.CreateDirectory("Builds/MovementCore");
+            Directory.CreateDirectory("Builds/" + folder);
             BuildReport report = PlayerBuildHelper.BuildPlayer(new BuildPlayerOptions
             {
-                scenes = new[] { PerformanceLadderBuilder.ScenePath },
-                locationPathName = "Builds/MovementCore/MovementCore.exe",
+                scenes = new[] { scene },
+                locationPathName = "Builds/" + folder + "/" + folder + ".exe",
                 target = BuildTarget.StandaloneWindows64,
                 options = BuildOptions.Development
             });

@@ -9,6 +9,27 @@ namespace Northwatch.Tests.EditMode.Simulation
 {
     public sealed class BlockPlacementTests
     {
+        [TestCase(UnitSize.Small, 1.05f)]
+        [TestCase(UnitSize.Small, 1.3f)]
+        [TestCase(UnitSize.Large, 1.05f)]
+        [TestCase(UnitSize.Large, 1.3f)]
+        public void SpawnUsesMatchSlotSpacingAndKeepsFootprintsInsideMap(UnitSize size, float spacing)
+        {
+            var asset = ScriptableObject.CreateInstance<Northwatch.Presentation.MovementSettings>();
+            var settings = asset.Snapshot();
+            Object.DestroyImmediate(asset);
+            settings.SlotSpacing = spacing;
+            using var simulation = new UnitSimulation(settings);
+            simulation.QueueBlock(Side.First, size, new Vector3(128, 0, 128), 100);
+            Tick(simulation);
+            float width = size == UnitSize.Small ? .5f : 1;
+            Assert.That(simulation.State.Positions[1].x - simulation.State.Positions[0].x,
+                Is.EqualTo(width * spacing).Within(1e-5));
+            Assert.That(simulation.State.Positions[10].z - simulation.State.Positions[0].z,
+                Is.EqualTo(width * spacing).Within(1e-5));
+            AssertPlacement(simulation);
+        }
+
         private static void Tick(UnitSimulation simulation)
         {
             simulation.ScheduleFrame(1);
