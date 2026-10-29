@@ -68,6 +68,7 @@ A click with a modifier held (Shift, Ctrl, Alt) triggers only actions bound with
 | Save group | Ctrl+1 to 9 | Ctrl+1 to 9 | Now |
 | Select group (double-tap centres the camera) | 1 to 9 | 1 to 9 | Now |
 | Add the selection to a group | Shift+1 to 9 | Shift+1 to 9 | Now |
+| Centre on the next group marker (see [Cycle key](#cycle-key)) | Space | Space | Later: after movement Issue 2 (units arriving) |
 | Same type on screen (double-tap: whole map) | T | T | Now |
 | Combat units on screen (double-tap: whole map) | Q | Q | Now |
 | Cycle unit types in the selection | Tab | Tab | Later |
@@ -114,6 +115,82 @@ Holding Shift with an order adds it to the end of each selected unit's queue ins
 
 **Pillars:** P1, P3. **Per-unit cost:** showing the queued route. Units given the same queue share one drawn route.
 
+## Order markers
+
+A move order on ground shows a **marker** at the target point (core-loop S2.1). There are two kinds: the **plain marker** and the **numbered marker** of a control group. Both use the player's marker colour and shape. Off-screen numbered markers get **edge arrows**, and the **cycle key** jumps the camera to them.
+
+| Part | Status |
+|---|---|
+| [Marker settings](#marker-settings) (colour and shape) | Now: built with the settings panel |
+| [Plain marker](#plain-marker) | Now |
+| [Numbered markers](#numbered-markers) | Later: after movement Issue 2 (units arriving) |
+| [Cycle key](#cycle-key) | Later: after movement Issue 2 (units arriving) |
+| [Edge arrows](#edge-arrows) | Later: after movement Issue 2 (units arriving) |
+
+Until numbered markers are built, every move order shows a plain marker, including orders given to a recalled group.
+
+### Marker settings
+
+| Setting | Choices | Default | Effect |
+|---|---|---|---|
+| Marker colour | **Green**, Magenta, Cyan, White | Green | Colour of every marker, its group number and the edge arrows. Each choice stands out against the grey ground and the blue, red and yellow team colours |
+| Marker shape | **Pulsing ring**, pulsing square, none | Pulsing ring | Ring and square are both **1 cell across**, never smaller than **24 pixels** across at the farthest zoom, and pulse the same way. The square's edges run along the map's cell lines. **None** draws no marker of either kind (see [With shape "none"](#with-shape-none)) |
+
+- Both settings sit on the **Controls** page of the settings panel, apply at once (also to markers already shown) and are saved between sessions like the other settings.
+- Reset to Classic and Reset to Modern don't change them.
+- Core-loop S2.1's "shows a marker there" means this marker. With shape **none**, only the movement part of S2.1 applies.
+
+**Pillars:** P1 (the player picks a marker they can always see). **Per-unit cost:** none.
+
+### Plain marker
+
+- A move order that isn't a [numbered order](#numbered-markers) shows a plain marker at its target point.
+- **One at a time.** The next move order of any kind removes it. If that order is plain, its own plain marker replaces it.
+- **Other end.** It also goes away when none of the units of its order is left to go there: each one was destroyed, or was given Stop or Hold position. Arriving doesn't remove it; it stays after the units stop.
+- No marker appears when nothing moves (for example Classic, left-click on ground with nothing selected).
+
+**Pillars:** P1 (every order gets instant feedback). **Per-unit cost:** none per frame. A unit of the order that is destroyed or stopped updates the marker once.
+
+### Numbered markers
+
+- **Numbered order.** A move order is numbered when the selection is exactly the units of control group N: recalled with its number key, or selected any other way so it holds exactly that group's units and no others. It shows a numbered marker: the marker with the number **N** in its middle.
+- **Readable.** The number is in the marker colour, at least **16 pixels** tall at every zoom, doesn't pulse, and is drawn over units and ground.
+- **Counted units.** The marker counts the units that took the order. A unit leaves the count when it **arrives**, is **destroyed**, or is given **any other order** (a move, Stop or Hold position).
+- **End.** The marker stays until its count reaches zero: every surviving unit has arrived, or the group got a new order. It also ends at once when group N is saved again with Ctrl+N.
+- **One per group, nine at most.** A new numbered order for group N replaces group N's marker. Up to 9 numbered markers can show at once, plus the one plain marker.
+- **Two groups, one unit.** A unit counts only for the marker of its latest order. If a unit of groups 1 and 2 is sent with group 2, it leaves marker 1's count.
+- **Adding to a group** with Shift+N doesn't add the new units to an active marker N.
+- A plain move order doesn't remove numbered markers. Its units leave the count of any numbered marker they were in.
+
+**Pillars:** P1 (several groups' destinations stay readable at once); P3 (the player sees when a group has arrived). **Per-unit cost:** none per frame. One check per move order against the nine groups; one count update when a unit arrives, is destroyed or gets a new order.
+
+### Cycle key
+
+- **Space**, in Classic and Modern. In Custom it can be remapped like any key command. No other action uses Space in Classic or Modern.
+- Each press centres the camera on the next active numbered marker, in number order: the lowest first, then upward, then back to the lowest. Markers that have ended are skipped. With one active marker, each press centres on it again.
+- With no active numbered marker, Space does nothing.
+- Space moves only the camera. The selection and the zoom stay as they are. Near a map edge, the camera centres as close as the map allows (core-loop S1.1).
+- Holding Space counts as one press.
+- **With double-tap.** Double-tapping a group key still centres on that group's units, not its marker. It also sets the cycle position to that group, so the next Space goes to the next higher active marker.
+- **Existing Custom bindings.** A player who already has Custom gets Space for this action, or no binding if Space is already used (the game updates rule in [Custom](#custom)).
+
+**Pillars:** P1 (one key finds every group on the move). **Per-unit cost:** none.
+
+### Edge arrows
+
+- For each numbered marker whose centre is outside the visible map view, a small arrow shows at the screen edge, pointing toward the marker, with the group number beside it.
+- **Placement.** The arrow sits where a line from the screen centre to the marker meets the screen edge, pulled in so the arrow and its number are fully on screen, within **48 pixels** of the edge. The arrow is **24 pixels** long and its number at least **16 pixels** tall, both in the marker colour, with no pulse.
+- **No overlap.** When two arrows would overlap, the one with the higher number moves along the edge until it is clear.
+- An arrow goes away on the frame its marker's centre enters the view, or when its marker ends.
+- The plain marker never gets an arrow.
+- Arrows can't be clicked. A click on an arrow acts as a click on the map under it, and the edge pan zone still works there.
+
+**Pillars:** P1 (the player knows where every group is headed without panning). **Per-unit cost:** none. At most 9 arrows, whatever the army size.
+
+### With shape "none"
+
+No marker of either kind is drawn. Numbered markers still exist and count their units, so **edge arrows still show** (in the chosen colour) and **Space still works**. The arrow disappears when the marker's point comes into view, even though no marker is drawn there.
+
 ## Camera settings (all options)
 
 | Setting | Range | Default | Effect |
@@ -128,15 +205,15 @@ Holding Shift with an order adds it to the end of each selected unit's queue ins
 ## Settings panel
 
 - Opened from the F10 menu, in a match or from the main menu. The match stays paused while it is open.
-- One **Controls** page shows: the option picker (Classic, Modern, Custom), the full binding list, and the camera settings.
+- One **Controls** page shows: the option picker (Classic, Modern, Custom), the full binding list, the camera settings, and the [marker settings](#marker-settings).
 - For Classic and Modern the binding list is read-only. For Custom it is editable.
 - A change applies and is saved as soon as it is made. There is no Apply button.
 
 ### Saved between sessions
 
-- The chosen option, the Custom bindings and the camera settings are kept between sessions.
+- The chosen option, the Custom bindings, the camera settings and the marker settings are kept between sessions.
 - The Custom bindings are kept while Classic or Modern is active, so switching back to Custom restores them.
-- If the saved settings are missing or can't be read, the game starts with Classic and default camera settings, and shows a one-line message saying so.
+- If the saved settings are missing or can't be read, the game starts with Classic, default camera settings and the default marker (green pulsing ring), and shows a one-line message saying so.
 
 **Pillars:** P1. **Per-unit cost:** none.
 
@@ -147,7 +224,7 @@ Holding Shift with an order adds it to the end of each selected unit's queue ins
   - **Mouse buttons:** which button (left, right, middle, side buttons 4 and 5) does select and box select, move, deselect and drag pan. Double-click and Shift+click follow the select button.
   - **Modifier keys:** which of Shift, Ctrl or Alt does each modifier job: add or remove from the selection, queue an order, save a group, add to a group.
   - **Camera controls:** the four key pan directions, drag pan, and zoom in and out (the scroll wheel or any keys).
-  - **Commands:** each key command individually, including each of the nine group keys and each filter. Any key, with or without Shift, Ctrl or Alt. Double-tap follows its key.
+  - **Commands:** each key command individually, including each of the nine group keys, each filter and the marker cycle key. Any key, with or without Shift, Ctrl or Alt. Double-tap follows its key.
 - **Capture.** The player picks an action and presses the new input. Every key except F10 can be captured, including Esc. A Cancel button leaves the binding unchanged. Pressing F10 shows "F10 is reserved for the menu" and nothing changes.
 - **Conflicts.** Two actions conflict when they use the same input: the same key or button, with the same modifiers and the same gesture (press, click, double-click, drag). The exceptions are the click actions of [Mouse rules](#mouse-rules-all-options): Select may share a button with Move or with Deselect. Move and Deselect may not share one. The save-group and add-to-group modifiers must differ.
   - On a conflict, a warning names the other action and offers **Swap** (the other action takes this action's old input) or **Cancel** (nothing changes).
@@ -174,11 +251,14 @@ These aren't designed yet. They are settled together with combat (core-loop S5),
 | Groups | Nothing per frame. A destroyed unit leaves its groups once | — |
 | Smart groups (later) | One check against nine groups **per produced unit** | Nothing per frame |
 | Queued routes (later) | A drawn route for selected units with a queue | Units with the same queue share one route |
-| Options, camera, settings | None | — |
+| Order markers | None per frame. At most 10 markers (9 numbered, 1 plain) and 9 edge arrows are drawn, whatever the army size | Check C9.4 below |
+| Numbered order check (later) | Each move order compares the selection with the nine groups once, nothing per frame | Only a group with as many units as the selection needs a closer look |
+| Marker counts | One update when a unit of an order arrives, is destroyed or gets a new order, nothing per frame | Check C9.4 below |
+| Options, camera, settings, cycle key | None | — |
 
 ## Checks
 
-Each check uses the grey-box sandbox (core-loop) with its spawn tool and on-screen frame counter. "Cubes" are the sandbox test units.
+Each check uses the grey-box sandbox (core-loop) with its spawn tool and on-screen frame counter. "Cubes" are the sandbox test units. Unless a check says otherwise, the marker settings are the defaults (green pulsing ring).
 
 ### C1. Classic and Modern (Now)
 
@@ -212,6 +292,44 @@ Each check uses the grey-box sandbox (core-loop) with its spawn tool and on-scre
 4. **No limit.** Box-selecting 2,000 own units selects all 2,000. Ctrl+1, then clearing the selection with the active option's deselect input, then 1, selects all 2,000 again.
 5. **Speed.** With 2,000 own small cubes on the map: a double-tap of T (with one cube selected) and a double-tap of Q each select all 2,000 on the next frame, and that frame takes no longer than **33 ms**. Q with as many of them on screen as fit at the farthest zoom meets the same limit.
 
+### C5. Marker settings (Now, with the settings panel)
+
+1. **Defaults.** On a first start with no saved settings, a move order shows a green pulsing ring 1 cell across. The colour list offers exactly Green, Magenta, Cyan and White, and the shape list exactly pulsing ring, pulsing square and none.
+2. **Square and colour.** With Magenta and pulsing square chosen, the next move order shows a magenta pulsing square 1 cell across, its edges along the cell lines. At the farthest zoom, the ring and the square are each at least 24 pixels across.
+3. **Change at once.** Changing the colour or the shape while a marker is shown changes that marker at once, with no new order.
+4. **None.** With shape none, a move order shows no marker, and every selected unit still starts moving within 0.1 s (core-loop S2.1).
+5. **Saving.** Pick Cyan and pulsing square, quit and restart: both are kept. Reset to Classic leaves them unchanged. With the saved settings made unreadable, the game starts with a green pulsing ring, shows the message and has no errors.
+
+### C6. Plain marker (Now)
+
+1. **One at a time.** With 5 own small cubes selected, two move orders to points 10 cells apart: after the second order, only the marker at the second point shows.
+2. **Stays after arrival.** 5 cubes sent 10 cells away: 10 s after the last one stops, the marker still shows. The next move order removes it.
+3. **No units left to go.** 5 cubes sent 20 cells: Stop with 3 of them selected leaves the marker; Hold position with the other 2 selected removes it. In a second run, destroying all 5 on the way removes the marker on the frame the last one is destroyed.
+
+### C7. Numbered markers (Later: after movement Issue 2)
+
+1. **Number shown.** Group 3 holds 10 own small cubes. Pressing 3 and giving a move order shows a marker with "3" in its middle, at least 16 pixels tall at both the nearest and the farthest zoom. Box-selecting exactly those 10 and ordering also shows "3". Removing one of them with Shift+click and then ordering shows a plain marker.
+2. **Arrival and losses.** Group 3 (10 cubes) sent 30 cells: the marker shows while any unit is still on the way. With 2 of them destroyed on the way, the marker goes away on the frame the 8th surviving unit arrives. In a second run, destroying all 10 removes it.
+3. **New orders and re-saving.** While marker 3 shows: a new move with group 3 leaves exactly one marker 3, at the new point. Stop with group 3 selected removes marker 3. A plain move of 4 of the 10 leaves marker 3 showing until the other 6 arrive. Ctrl+3 with any selection removes marker 3 at once.
+4. **Shared unit.** A unit is in groups 1 and 2. Group 1 is sent east, then group 2 is sent west: the shared unit goes west, and marker 1 goes away when the other units of group 1 arrive.
+5. **Nine plus one.** Groups 1 to 9, each sent with its number key to its own point, show 9 numbered markers. A plain order then adds a 10th marker. The next plain order replaces only the plain marker, and all 9 numbered markers stay. With shape none, the same steps draw no marker.
+
+### C8. Cycle key (Later: after movement Issue 2)
+
+1. **Order and wrap.** With markers 2, 5 and 7 active and the camera elsewhere, four presses of Space centre the camera on 2, 5, 7 and 2 in turn, each within 1 cell of the screen centre (or as close as the map edge allows). The zoom and the selection don't change.
+2. **Nothing active.** With no numbered marker active, Space leaves the camera where it is, with no errors. Holding Space for 2 s with markers 2 and 5 active moves the camera once.
+3. **Ended markers skipped.** After Space centres on 5, marker 5 ends; the next Space centres on 7.
+4. **With double-tap.** With markers 2, 5 and 7 active, a double-tap of 5 centres on group 5's units, and the next Space centres on marker 7.
+5. **Binding.** No other action uses Space in Classic or Modern. In Custom, binding the cycle action to X makes X cycle and Space do nothing. Binding Stop to Space then shows a warning that names the cycle action.
+
+### C9. Edge arrows (Later: after movement Issue 2)
+
+1. **One arrow.** Marker 4 lies off screen to the right: one arrow shows at the right edge, pointing toward it, with "4" beside it, fully on screen and within 48 pixels of the edge. Panning until the marker's centre is in view removes the arrow on that frame.
+2. **Plain marker.** A plain marker off screen gets no arrow.
+3. **No overlap.** Markers 1 and 2 lie off screen in nearly the same direction: two arrows show, and they don't overlap. A click on an arrow acts on the map under it.
+4. **Scale.** 2,000 own small cubes in groups 1 to 8 (222 each) and group 9 (224). Each group is sent with its number key to its own point, all chosen so they are off screen. While the units move, 9 numbered markers are active, and before Space is pressed 9 arrows show with numbers 1 to 9 and none overlap. For 30 s, including 9 presses of Space, no frame takes longer than **33 ms** (core-loop S1.5), and the Profiler shows no memory allocated per frame by markers, arrows or marker counts.
+5. **Shape none.** With shape none and marker 6 off screen, its arrow shows in the chosen colour, and Space still centres on marker 6.
+
 ## Open questions for the owner
 
 Choices this page makes where the owner's instructions left the detail open. Each one is easy to change.
@@ -231,3 +349,16 @@ Choices this page makes where the owner's instructions left the detail open. Eac
 13. **Smart groups:** new units join a smart group when their type is already in it.
 14. **Enemy units until combat:** count as ground for clicks and are never selected.
 15. **Settings:** changes apply and save at once (no Apply button); the Reset buttons don't touch camera settings.
+16. **Marker colours:** Green (default), Magenta, Cyan, White. Recommendation: keep these, and check them again when real team colours and terrain exist; Cyan is the nearest to blue, and Green would clash if a third or fourth side gets a green team colour.
+17. **Square marker:** same size and pulse as the ring (1 cell, at least 24 pixels), edges along the cell lines. Recommendation: keep, so switching shape never changes how big a marker looks.
+18. **Marker settings and resets:** they apply at once, also to markers already shown, and Reset to Classic or Modern doesn't change them. Recommendation: keep, as with the camera settings.
+19. **Plain marker, extra end:** it also goes away when every unit of its order was destroyed or given Stop or Hold position; arriving doesn't remove it. Recommendation: keep, so no marker points where nobody is going.
+20. **Selection matching two groups:** if the selection is exactly the units of more than one group, the order uses the group recalled by its key (if unchanged), otherwise the lowest number. Recommendation: keep.
+21. **What "arrived" means:** a unit has arrived when it has stopped at the end of its move order, as movement Issue 2 decides its final spot; a unit sent where it can't reach counts as arrived when it stops at the nearest reachable point (core-loop S3.2). The marker goes on the frame the last counted unit arrives. Recommendation: keep.
+22. **Who counts:** a unit leaves a numbered marker's count when it arrives, is destroyed or gets any other order. So a unit in two groups counts only for its latest order, and units added with Shift+N don't join an active marker. Recommendation: keep.
+23. **Ctrl+N re-save:** ends group N's marker at once, because the number no longer means those units. Recommendation: keep.
+24. **Number placement:** in the middle of the marker, in the marker colour, at least 16 pixels tall, not pulsing, drawn over units. Recommendation: keep; it reads at every zoom without adding a second shape.
+25. **Cycle order:** lowest number first, then upward, wrapping, skipping ended markers; camera only, zoom and selection unchanged; holding Space counts as one press. Recommendation: keep.
+26. **Cycle and double-tap:** a double-tap of N still centres on group N's units (not its marker) and sets the cycle position to N. Recommendation: keep, so Space carries on from the group the player just looked at.
+27. **Shape "none":** edge arrows still show and Space still works. Recommendation: keep, so a player who hides markers on the ground can still find their groups. The alternative is to hide arrows too.
+28. **Edge arrows:** 24 pixels long, number at least 16 pixels tall, on the line from the screen centre to the marker, within 48 pixels of the edge, in the marker colour, never overlapping, not clickable, and none for the plain marker. Recommendation: keep; clicking an arrow to jump there could come later.
