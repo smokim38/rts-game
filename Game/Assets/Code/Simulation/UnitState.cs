@@ -26,7 +26,7 @@ namespace Northwatch.Simulation
             Alive = new NativeArray<byte>(capacity, Allocator.Persistent);
             Generations = new NativeArray<uint>(capacity, Allocator.Persistent);
             FreeSlots = new NativeArray<int>(capacity, Allocator.Persistent);
-            Summary = new NativeArray<int>(7, Allocator.Persistent);
+            Summary = new NativeArray<int>(8, Allocator.Persistent);
         }
 
         public void Dispose()

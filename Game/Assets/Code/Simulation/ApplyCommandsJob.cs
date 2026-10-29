@@ -9,12 +9,12 @@ namespace Northwatch.Simulation
     internal struct ApplyCommandsJob : IJob
     {
         internal NativeArray<UnitCommand> Commands;
-        internal int CommandCount;
+        internal NativeArray<int> CommandCount, QueuedMoves;
         internal UnitState State;
 
         public void Execute()
         {
-            for (int i = 0; i < CommandCount; i++)
+            for (int i = 0; i < CommandCount[0]; i++)
             {
                 UnitCommand command = Commands[i];
                 if (command.BlockCount > 0)
@@ -23,6 +23,17 @@ namespace Northwatch.Simulation
                     continue;
                 }
                 int slot = command.Handle.Slot;
+                if (command.Move)
+                {
+                    QueuedMoves[slot] = 0;
+                    if (State.Alive[slot] == 0 || State.Generations[slot] != command.Handle.Generation) continue;
+                    MovementUnit unit = State.Movement[slot];
+                    unit.Goal = command.Position.xz;
+                    unit.HasMoveOrder = true;
+                    unit.Mode = MovementMode.Moving;
+                    State.Movement[slot] = unit;
+                    continue;
+                }
                 if (command.Remove)
                 {
                     if (State.Alive[slot] == 0 || State.Generations[slot] != command.Handle.Generation) continue;
@@ -37,6 +48,7 @@ namespace Northwatch.Simulation
                     Commands[i] = command;
                 }
             }
+            CommandCount[0] = 0;
         }
 
         private void PlaceBlock(UnitCommand command)

@@ -8,11 +8,14 @@ namespace Northwatch.Simulation
     [BurstCompile]
     internal struct SelectionJob : IJob
     {
-        [ReadOnly] internal UnitState State;
+        internal UnitState State;
         [ReadOnly] internal NativeArray<SelectionRequest> Requests;
         internal int RequestCount;
         internal NativeArray<uint> Selected, Groups;
         internal NativeArray<float4> Summary;
+        internal NativeArray<UnitCommand> Commands;
+        internal NativeArray<int> CommandCount, QueuedMoves;
+        internal float Seconds;
 
         public void Execute()
         {
@@ -70,7 +73,22 @@ namespace Northwatch.Simulation
                         float3 ground = request.Origin + request.Direction * distance;
                         if (distance >= 0 && math.abs(ground.x) <= UnitSimulation.MapHalfWidth &&
                             math.abs(ground.z) <= UnitSimulation.MapHalfWidth)
+                        {
                             Summary[1] = new float4(ground, Summary[1].w + 1);
+                            Summary[2] = new float4(Seconds, 0, 0, 0);
+                            for (int slot = 0; slot < Selected.Length; slot++)
+                            {
+                                if (Selected[slot] == 0) continue;
+                                // Coalesce orders before a tick, retaining the selection at each click.
+                                int index = QueuedMoves[slot] - 1;
+                                if (index < 0) { index = CommandCount[0]++; QueuedMoves[slot] = index + 1; }
+                                Commands[index] = new UnitCommand { Move = true, Position = ground,
+                                    Handle = new UnitHandle(slot, State.Generations[slot]) };
+                                var unit = State.Movement[slot];
+                                unit.OrderVersion = (int)Summary[1].w;
+                                State.Movement[slot] = unit;
+                            }
+                        }
                     }
                 }
                 if (!request.ClearGround) return;

@@ -255,12 +255,12 @@ namespace Northwatch.Presentation.Diagnostics
             int pixels = 0;
             int left = 1920, right = -1, bottom = 1080, top = -1;
             Vector2 sum = Vector2.zero;
-            // Magenta is absent from the grey ground and the blue, red and yellow units.
+            // Green is absent from the grey ground and the blue, red and yellow units.
             for (int y = Mathf.Max(0, (int)moveClick.y - 40); y < Mathf.Min(1080, moveClick.y + 40); y++)
                 for (int x = Mathf.Max(0, (int)moveClick.x - 40); x < Mathf.Min(1920, moveClick.x + 40); x++)
                 {
                     Color colour = image.GetPixel(x, y);
-                    if (colour.r < 0.6f || colour.b < 0.6f || colour.g > 0.4f) continue;
+                    if (colour.g < 0.6f || colour.r > 0.4f || colour.b > 0.4f) continue;
                     pixels++; sum += new Vector2(x + 0.5f, y + 0.5f);
                     left = Mathf.Min(left, x); right = Mathf.Max(right, x);
                     bottom = Mathf.Min(bottom, y); top = Mathf.Max(top, y);

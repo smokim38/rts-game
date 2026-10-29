@@ -34,7 +34,7 @@ namespace Northwatch.Presentation
             mesh.RecalculateNormals(); mesh.RecalculateBounds(); mesh.UploadMeshData(false);
             // Reuse a shader already referenced by the scene so Player stripping cannot remove it.
             material = new Material(source) { name = "Move ring" };
-            material.SetColor("_BaseColor", Color.magenta);
+            material.SetColor("_BaseColor", Color.green);
             gameObject.AddComponent<MeshFilter>().sharedMesh = mesh;
             drawing = gameObject.AddComponent<MeshRenderer>();
             drawing.sharedMaterial = material;

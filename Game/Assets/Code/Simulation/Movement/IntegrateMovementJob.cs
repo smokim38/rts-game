@@ -33,6 +33,11 @@ namespace Northwatch.Simulation.Movement
                 unit.Velocity + delta * math.min(1, rate * MovementParameters.TickDuration / math.max(math.length(delta), 1e-20f));
             // Enforce the unit-type step bound even when a future stage supplies a larger input.
             velocity *= math.min(1, speed / math.max(math.length(velocity), 1e-20f));
+            if (unit.HasMoveOrder)
+            {
+                float remaining = math.distance(unit.Goal, pose.Position.xz);
+                velocity *= math.min(1, remaining / math.max(math.length(velocity) * MovementParameters.TickDuration, 1e-20f));
+            }
             if (unit.Mode != MovementMode.Hold && math.any(velocity != 0))
             {
                 float2 next = StaticClamp.Apply(pose.Position.xz + velocity * MovementParameters.TickDuration, Footprint.Radius(Sizes[i]), Walkable);
