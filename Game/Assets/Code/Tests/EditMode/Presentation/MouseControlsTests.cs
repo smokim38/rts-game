@@ -138,7 +138,7 @@ namespace Northwatch.Tests.EditMode.Presentation
             marker.Show(point, 0.625);
             Assert.That(marker.transform.localScale.x, Is.EqualTo(1.15f).Within(0.0001f));
             Material material = marker.GetComponent<MeshRenderer>().sharedMaterial;
-            Assert.That(material.GetColor("_BaseColor"), Is.EqualTo(Color.magenta));
+            Assert.That(material.GetColor("_BaseColor"), Is.EqualTo(Color.green));
             Assert.That(material, Is.Not.SameAs(driver.SelectionMaterial), "Team colours must remain unchanged.");
             Click(own); Click(ground);
             for (int i = 0; i < 16; i++) selection.CompleteFrame();

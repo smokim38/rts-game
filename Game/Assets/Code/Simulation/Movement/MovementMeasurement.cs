@@ -1,5 +1,7 @@
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
 using System;
+using System.Globalization;
+using System.IO;
 using Northwatch.Simulation.Spatial;
 using Unity.Burst;
 using Unity.Collections;
@@ -12,33 +14,38 @@ namespace Northwatch.Simulation.Movement
     public sealed class MovementMeasurement : IDisposable
     {
         public const int SampleCapacity = 8192;
-        public const int MetricCount = 9;
-        public const int TimestampStride = 6;
+        public const int MetricCount = 19;
+        public const int TimestampStride = 8;
         internal NativeArray<byte> Walkable;
         internal NativeArray<long> Timestamps;
         private NativeArray<int> samples, stillTicks;
         private NativeArray<int2> violations;
         private NativeArray<float2> progress;
+        private NativeArray<float3> initialPositions;
         private readonly int scene;
+        private readonly UnitState state;
         public int TickCount { get; private set; }
 
         internal MovementMeasurement(UnitState state, int scene, int count)
         {
-            if (scene < 0 || scene > 3 || count < 2 || count > state.Alive.Length)
+            if (scene < 0 || scene > 4 || count < 2 || count > state.Alive.Length)
                 throw new ArgumentOutOfRangeException(nameof(scene));
             this.scene = scene;
+            this.state = state;
             Walkable = new NativeArray<byte>(256 * 256, Allocator.Persistent);
             Timestamps = new NativeArray<long>(SampleCapacity * TimestampStride, Allocator.Persistent);
             samples = new NativeArray<int>(SampleCapacity * MetricCount, Allocator.Persistent);
             stillTicks = new NativeArray<int>(state.Alive.Length, Allocator.Persistent);
             violations = new NativeArray<int2>(state.Alive.Length, Allocator.Persistent);
             progress = new NativeArray<float2>(SampleCapacity, Allocator.Persistent);
+            initialPositions = new NativeArray<float3>(state.Alive.Length, Allocator.Persistent);
             new SetupJob { State = state, Map = Walkable, Scene = scene, Count = count }.Schedule().Complete();
         }
 
         internal JobHandle Input(UnitState state, JobHandle dependency)
         {
             if (TickCount == SampleCapacity) throw new InvalidOperationException("Movement sample capacity exhausted.");
+            if (scene == 4) return dependency; // Real commands supply the open-map order.
             return new InputJob { Positions = state.Positions, Sizes = state.Sizes, Alive = state.Alive,
                 Units = state.Movement, Scene = scene }.Schedule(state.Alive.Length, 64, dependency);
         }
@@ -50,14 +57,29 @@ namespace Northwatch.Simulation.Movement
                 StepBound = pipeline.Settings.StepBound, Violations = violations }
                 .Schedule(state.Alive.Length, 64, dependency);
             return new RecordJob { State = state, Levels = pipeline.Levels, Samples = samples, StillTicks = stillTicks,
-                Violations = violations, Progress = progress, Scene = scene, Tick = TickCount++ }.Schedule(handle);
+                Violations = violations, Progress = progress, InitialPositions = initialPositions,
+                Scene = scene, Tick = TickCount++ }.Schedule(handle);
         }
 
         public long Timestamp(int tick, int boundary) => Timestamps[tick * TimestampStride + boundary];
         public int Metric(int tick, int metric) => samples[tick * MetricCount + metric];
         public float2 Progress(int tick) => progress[tick];
 
-        public void Dispose() { Walkable.Dispose(); Timestamps.Dispose(); samples.Dispose(); stillTicks.Dispose(); violations.Dispose(); progress.Dispose(); }
+        public void WriteOrderState(TextWriter writer)
+        {
+            // Called only after the driver's final completion, outside the measured window.
+            writer.WriteLine("unit,x,z,heading,goal_x,goal_z,velocity_x,velocity_z,has_order,arrival_rule,best_distance,last_progress_tick");
+            for (int i = 0; i < state.Alive.Length; i++)
+            {
+                if (state.Alive[i] == 0) continue;
+                MovementUnit unit = state.Movement[i];
+                writer.WriteLine(string.Format(CultureInfo.InvariantCulture, "{0},{1:R},{2:R},{3:R},{4:R},{5:R},{6:R},{7:R},{8},{9},{10:R},{11}",
+                    i, state.Positions[i].x, state.Positions[i].z, unit.Heading, unit.Goal.x, unit.Goal.y,
+                    unit.Velocity.x, unit.Velocity.y, unit.HasMoveOrder, unit.ArrivalRule, unit.BestGoalDistance, unit.LastProgressTick));
+            }
+        }
+
+        public void Dispose() { Walkable.Dispose(); Timestamps.Dispose(); samples.Dispose(); stillTicks.Dispose(); violations.Dispose(); progress.Dispose(); initialPositions.Dispose(); }
 
         [BurstCompile]
         private struct SetupJob : IJob
@@ -68,12 +90,14 @@ namespace Northwatch.Simulation.Movement
             public void Execute()
             {
                 for (int i = 0; i < Map.Length; i++) Map[i] = 1;
+                if (Scene == 4) return;
                 if (Scene == 1 || Scene == 3)
                     for (int y = 0; y < 256; y++)
                         if (Scene == 3 || y < 126 || y > 128) Map[y * 256 + 128] = 0;
                 State.Summary[0] = State.Summary[1] = Count;
-                var first = new BlockPlacement(Count / 2, UnitSize.Small, new float3(-80, 0, 0));
-                var second = new BlockPlacement(Count - Count / 2, UnitSize.Large, new float3(80, 0, 0));
+                // Preserve the ADR 0012 synthetic scene for comparison with #153.
+                var first = new BlockPlacement(Count / 2, UnitSize.Small, new float3(-80, 0, 0), 1);
+                var second = new BlockPlacement(Count - Count / 2, UnitSize.Large, new float3(80, 0, 0), 1);
                 for (int i = 0; i < Count; i++)
                 {
                     bool firstSide = i < Count / 2;
@@ -147,6 +171,7 @@ namespace Northwatch.Simulation.Movement
             [ReadOnly] internal NativeArray<int2> Violations;
             internal NativeArray<int> Samples, StillTicks;
             internal NativeArray<float2> Progress;
+            internal NativeArray<float3> InitialPositions;
             internal int Tick, Scene;
             public void Execute()
             {
@@ -155,10 +180,26 @@ namespace Northwatch.Simulation.Movement
                 float2 advance = 0;
                 int2 sides = 0;
                 int2 errors = 0;
+                int moving = 0, preferred = 0, orders = 0, exact = 0, contact = 0, congestion = 0, restWithOrder = 0, underOneCell = 0;
+                int groupStall = 0, poseChanges = 0;
                 for (int i = 0; i < State.Alive.Length; i++)
                 {
                     if (State.Alive[i] == 0) continue;
                     alive++;
+                    MovementUnit unit = State.Movement[i];
+                    if (Tick == 0) InitialPositions[i] = unit.Previous.Position;
+                    bool hasVelocity = math.any(unit.Velocity != 0);
+                    if (hasVelocity) moving++;
+                    if (math.any(unit.PreferredVelocity != 0)) preferred++;
+                    if (unit.HasMoveOrder) { orders++; if (!hasVelocity) restWithOrder++; }
+                    if (unit.ArrivalRule == 1) exact++;
+                    if (unit.ArrivalRule == 2) contact++;
+                    if (unit.ArrivalRule == 3) congestion++;
+                    if (unit.ArrivalRule == 4) groupStall++;
+                    if (math.distance(State.Positions[i], unit.Previous.Position) > 1e-5f ||
+                        math.abs(unit.Heading - unit.Previous.Heading) > 1e-5f) poseChanges++;
+                    if (Scene == 4 && math.distance(InitialPositions[i].xz, unit.Goal) -
+                        math.distance(State.Positions[i].xz, unit.Goal) < 1) underOneCell++;
                     if (Levels[i] == 1) levelOne++;
                     if (Levels[i] == 2) levelTwo++;
                     bool first = State.Sides[i] == Side.First;
@@ -178,6 +219,10 @@ namespace Northwatch.Simulation.Movement
                 Samples[offset + 4] = longest; Samples[offset + 5] = alive;
                 Samples[offset + 6] = errors.x; Samples[offset + 7] = errors.y;
                 Samples[offset + 8] = crossed;
+                Samples[offset + 9] = moving; Samples[offset + 10] = preferred; Samples[offset + 11] = orders;
+                Samples[offset + 12] = exact; Samples[offset + 13] = contact; Samples[offset + 14] = congestion;
+                Samples[offset + 15] = restWithOrder; Samples[offset + 16] = underOneCell;
+                Samples[offset + 17] = groupStall; Samples[offset + 18] = poseChanges;
                 Progress[Tick] = advance / math.max(sides, 1);
             }
         }

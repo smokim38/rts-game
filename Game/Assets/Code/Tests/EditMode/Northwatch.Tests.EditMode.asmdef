@@ -1,7 +1,7 @@
 {
   "name": "Northwatch.Tests.EditMode",
   "rootNamespace": "Northwatch.Tests.EditMode",
-  "references": ["Northwatch.Simulation","Northwatch.Presentation","Northwatch.EditorTools","Unity.Collections","Unity.Mathematics","Unity.InputSystem","Unity.InputSystem.TestFramework","Unity.ugui","UnityEngine.TestRunner","UnityEditor.TestRunner"],
+  "references": ["Northwatch.Simulation","Northwatch.Presentation","Northwatch.EditorTools","Unity.Burst","Unity.Collections","Unity.Mathematics","Unity.InputSystem","Unity.InputSystem.TestFramework","Unity.ugui","UnityEngine.TestRunner","UnityEditor.TestRunner"],
   "includePlatforms": ["Editor"],
   "excludePlatforms": [],
   "allowUnsafeCode": false,

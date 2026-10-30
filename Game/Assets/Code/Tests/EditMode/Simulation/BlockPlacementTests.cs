@@ -9,6 +9,27 @@ namespace Northwatch.Tests.EditMode.Simulation
 {
     public sealed class BlockPlacementTests
     {
+        [TestCase(UnitSize.Small, 1.05f)]
+        [TestCase(UnitSize.Small, 1.3f)]
+        [TestCase(UnitSize.Large, 1.05f)]
+        [TestCase(UnitSize.Large, 1.3f)]
+        public void SpawnUsesMatchSlotSpacingAndKeepsFootprintsInsideMap(UnitSize size, float spacing)
+        {
+            var asset = ScriptableObject.CreateInstance<Northwatch.Presentation.MovementSettings>();
+            var settings = asset.Snapshot();
+            Object.DestroyImmediate(asset);
+            settings.SlotSpacing = spacing;
+            using var simulation = new UnitSimulation(settings);
+            simulation.QueueBlock(Side.First, size, new Vector3(128, 0, 128), 100);
+            Tick(simulation);
+            float width = size == UnitSize.Small ? .5f : 1;
+            Assert.That(simulation.State.Positions[1].x - simulation.State.Positions[0].x,
+                Is.EqualTo(width * spacing).Within(1e-5));
+            Assert.That(simulation.State.Positions[10].z - simulation.State.Positions[0].z,
+                Is.EqualTo(width * spacing).Within(1e-5));
+            AssertPlacement(simulation);
+        }
+
         private static void Tick(UnitSimulation simulation)
         {
             simulation.ScheduleFrame(1);
@@ -59,7 +80,9 @@ namespace Northwatch.Tests.EditMode.Simulation
             int version = simulation.PlacementVersion;
             using var commands = new NativeArray<UnitCommand>(new[] { new UnitCommand
                 { Side = Side.Second, Size = UnitSize.Large, Position = new float3(40, 0, 0), BlockCount = blockCount } }, Allocator.Persistent);
-            new ApplyCommandsJob { State = simulation.State, Commands = commands, CommandCount = 1 }.Schedule().Complete();
+            using var count = new NativeArray<int>(new[] { 1 }, Allocator.Persistent);
+            using var moves = new NativeArray<int>(UnitSimulation.Capacity, Allocator.Persistent);
+            new ApplyCommandsJob { State = simulation.State, Commands = commands, CommandCount = count, QueuedMoves = moves }.Schedule().Complete();
             Assert.That(simulation.Count, Is.EqualTo(existingCount));
             Assert.That(simulation.PlacementVersion, Is.EqualTo(version + 1));
             Assert.That(simulation.PlacementResult, Is.EqualTo(-1));

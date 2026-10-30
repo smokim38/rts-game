@@ -11,13 +11,14 @@ namespace Northwatch.Simulation.Movement
         [ReadOnly] internal NativeArray<MovementPose> Start, Poses;
         [ReadOnly] internal NativeArray<float2> Velocities;
         [ReadOnly] internal NativeArray<byte> Alive, Levels;
+        [ReadOnly] internal NativeArray<MovementUnit> Planned;
         internal NativeArray<float3> Positions;
         internal NativeArray<MovementUnit> Units;
 
         public void Execute(int i)
         {
             if (Alive[i] == 0) return;
-            MovementUnit unit = Units[i];
+            MovementUnit unit = Planned[i];
             MovementPose pose = Levels[i] == 2 ? Start[i] : Poses[i];
             if (Levels[i] == 1) pose.Heading = Start[i].Heading;
             unit.Previous = Start[i];

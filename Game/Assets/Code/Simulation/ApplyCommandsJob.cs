@@ -2,6 +2,7 @@ using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
 using Northwatch.Simulation.Movement;
+using Unity.Mathematics;
 
 namespace Northwatch.Simulation
 {
@@ -9,12 +10,14 @@ namespace Northwatch.Simulation
     internal struct ApplyCommandsJob : IJob
     {
         internal NativeArray<UnitCommand> Commands;
-        internal int CommandCount;
+        internal NativeArray<int> CommandCount, QueuedMoves;
         internal UnitState State;
+        internal ulong Tick;
+        internal float SlotSpacing;
 
         public void Execute()
         {
-            for (int i = 0; i < CommandCount; i++)
+            for (int i = 0; i < CommandCount[0]; i++)
             {
                 UnitCommand command = Commands[i];
                 if (command.BlockCount > 0)
@@ -23,6 +26,20 @@ namespace Northwatch.Simulation
                     continue;
                 }
                 int slot = command.Handle.Slot;
+                if (command.Move)
+                {
+                    QueuedMoves[slot] = 0;
+                    if (State.Alive[slot] == 0 || State.Generations[slot] != command.Handle.Generation) continue;
+                    MovementUnit unit = State.Movement[slot];
+                    unit.Goal = command.Position.xz;
+                    unit.HasMoveOrder = true;
+                    unit.Mode = MovementMode.Moving;
+                    unit.BestGoalDistance = math.distance(unit.Goal, State.Positions[slot].xz);
+                    unit.LastProgressTick = Tick;
+                    unit.ArrivalRule = 0;
+                    State.Movement[slot] = unit;
+                    continue;
+                }
                 if (command.Remove)
                 {
                     if (State.Alive[slot] == 0 || State.Generations[slot] != command.Handle.Generation) continue;
@@ -37,6 +54,7 @@ namespace Northwatch.Simulation
                     Commands[i] = command;
                 }
             }
+            CommandCount[0] = 0;
         }
 
         private void PlaceBlock(UnitCommand command)
@@ -44,7 +62,8 @@ namespace Northwatch.Simulation
             State.Summary[6]++;
             State.Summary[5] = -1;
             if (command.BlockCount > State.Alive.Length - State.Summary[0]) return;
-            var block = new BlockPlacement(command.BlockCount, command.Size, command.Position);
+            var block = new BlockPlacement(command.BlockCount, command.Size, command.Position,
+                SlotSpacing > 0 ? SlotSpacing : MovementParameters.DefaultSlotSpacing);
             // One area query per spawn order, like selection; no per-unit neighbour searches.
             for (int slot = 0; slot < State.Alive.Length; slot++)
                 if (State.Alive[slot] != 0 && block.Overlaps(State.Positions[slot], State.Sizes[slot])) return;

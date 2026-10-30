@@ -74,6 +74,7 @@ namespace Northwatch.Presentation
                 Draw(simulation.DrawCount(Side.First) - simulation.SelectedCount, 0, ref firstParameters);
                 Draw(simulation.DrawCount(Side.Second), UnitSimulation.Capacity, ref secondParameters);
                 Draw(simulation.SelectedCount, UnitSimulation.Capacity * 2, ref selectedParameters);
+                Draw(simulation.AcknowledgementCount, UnitSimulation.Capacity * 3, ref selectedParameters);
             }
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
             using (Diagnostics.MovementCoreProfile.TraceAllocations(false))
@@ -83,7 +84,7 @@ namespace Northwatch.Presentation
                 // Completing next frame adds one frame to S2.1's bound: about 83 ms
                 // at 60 fps. Selection feedback can still show on the next frame.
                 ScheduledTicks = clock.Advance(Time.unscaledDeltaTime);
-                simulation.ScheduleFrame(ScheduledTicks, clock.Interpolation);
+                simulation.ScheduleFrame(ScheduledTicks, clock.Interpolation, Time.unscaledTime);
                 JobHandle.ScheduleBatchedJobs();
             }
         }

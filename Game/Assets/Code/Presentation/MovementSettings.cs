@@ -11,7 +11,7 @@ namespace Northwatch.Presentation
         [SerializeField] private float acceleration = 16f;
         [SerializeField] private float deceleration = 16f;
         [SerializeField] private float turnSpeed = 6.2831853f;
-        [SerializeField] private float slotSpacing = 1.25f;
+        [SerializeField] private float slotSpacing = MovementParameters.DefaultSlotSpacing;
         [SerializeField] private int moveCheckPasses = 1;
 
         public MovementParameters Snapshot()

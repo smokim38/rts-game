@@ -14,6 +14,7 @@ namespace Northwatch.Simulation
         internal UnitState State;
         private MovementPipeline movement;
         private NativeArray<UnitCommand> commands;
+        private NativeArray<int> commandCounts, queuedMoves;
         private NativeArray<Matrix4x4> matrices, nextMatrices;
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
         public MovementMeasurement Measurement { get; private set; }
@@ -27,6 +28,8 @@ namespace Northwatch.Simulation
             MovementParameters settings = movement.Settings;
             movement.Dispose();
             movement = new MovementPipeline(Capacity, settings, Measurement.Walkable);
+            if (scene == 4 && !QueueBlock(Side.First, UnitSize.Small, Vector3.zero, count))
+                throw new InvalidOperationException("Could not queue the measured open-map block.");
         }
 #endif
         private NativeArray<uint> selected, groups;
@@ -34,7 +37,8 @@ namespace Northwatch.Simulation
         private NativeArray<SelectionRequest> selectionRequests;
         private int selectionRequestCount;
         private JobHandle pending;
-        private int commandCount, queuedAdds;
+        private int commandCount { get => commandCounts[0]; set => commandCounts[0] = value; }
+        private int queuedAdds;
         private ulong commandBatch;
         private bool scheduled, disposed;
         public ulong TickCount { get; private set; }
@@ -42,12 +46,14 @@ namespace Northwatch.Simulation
         public UnitSimulation()
         {
             State = new UnitState(Capacity);
-            commands = new NativeArray<UnitCommand>(Capacity * 2, Allocator.Persistent);
-            matrices = new NativeArray<Matrix4x4>(Capacity * 3, Allocator.Persistent);
-            nextMatrices = new NativeArray<Matrix4x4>(Capacity * 3, Allocator.Persistent);
+            commands = new NativeArray<UnitCommand>(Capacity * 4, Allocator.Persistent);
+            commandCounts = new NativeArray<int>(1, Allocator.Persistent);
+            queuedMoves = new NativeArray<int>(Capacity, Allocator.Persistent);
+            matrices = new NativeArray<Matrix4x4>(Capacity * 4, Allocator.Persistent);
+            nextMatrices = new NativeArray<Matrix4x4>(Capacity * 4, Allocator.Persistent);
             selected = new NativeArray<uint>(Capacity, Allocator.Persistent);
             groups = new NativeArray<uint>(Capacity * 9, Allocator.Persistent);
-            selectionSummary = new NativeArray<float4>(2, Allocator.Persistent);
+            selectionSummary = new NativeArray<float4>(3, Allocator.Persistent);
             selectionRequests = new NativeArray<SelectionRequest>(16, Allocator.Persistent);
         }
 
@@ -61,6 +67,7 @@ namespace Northwatch.Simulation
         public Vector3 SelectedCentre { get { RequireComplete(); return selectionSummary[0].xyz; } }
         public int MoveMarkerVersion { get { RequireComplete(); return (int)selectionSummary[1].w; } }
         public Vector3 MoveMarkerPosition { get { RequireComplete(); return selectionSummary[1].xyz; } }
+        public int AcknowledgementCount { get { RequireComplete(); return State.Summary[7]; } }
 
         public bool IsSelected(UnitHandle handle) => IsAlive(handle) && selected[handle.Slot] == handle.Generation;
 
@@ -82,7 +89,7 @@ namespace Northwatch.Simulation
             RequireComplete();
             if ((byte)side > 1 || (byte)size > 1 || count < 1 || count > RemainingCapacity ||
                 !math.all(math.isfinite((float3)centre)) || math.abs(centre.x) > MapHalfWidth ||
-                math.abs(centre.z) > MapHalfWidth || commandCount == commands.Length) return false;
+                math.abs(centre.z) > MapHalfWidth || commandCount >= Capacity * 2) return false;
             commands[commandCount++] = new UnitCommand
                 { Side = side, Size = size, Position = centre, BlockCount = count };
             queuedAdds += count;
@@ -98,7 +105,7 @@ namespace Northwatch.Simulation
             RequireComplete();
             requestId = 0;
             if ((byte)side > 1 || (byte)size > 1 || !math.all(math.isfinite((float3)position)) ||
-                Count + queuedAdds >= Capacity || commandCount == commands.Length) return false;
+                Count + queuedAdds >= Capacity || commandCount >= Capacity * 2) return false;
             requestId = commandBatch * (ulong)commands.Length + (uint)commandCount + 1;
             commands[commandCount++] = new UnitCommand { Side = side, Size = size, Position = position, RequestId = requestId };
             queuedAdds++;
@@ -125,50 +132,56 @@ namespace Northwatch.Simulation
 
         public bool QueueRemove(UnitHandle handle)
         {
-            if (!IsAlive(handle) || commandCount == commands.Length) return false;
+            if (!IsAlive(handle) || commandCount >= Capacity * 2) return false;
             commands[commandCount++] = new UnitCommand { Remove = true, Handle = handle };
             return true;
         }
 
-        public void ScheduleFrame(int ticks, float interpolation = 1f)
+        public void ScheduleFrame(int ticks, float interpolation = 1f, float seconds = 0)
         {
             RequireComplete();
             if (ticks < 0) throw new ArgumentOutOfRangeException(nameof(ticks));
             if (!math.isfinite(interpolation) || interpolation < 0 || interpolation > 1)
                 throw new ArgumentOutOfRangeException(nameof(interpolation));
+            if (ticks > 0) pending = ApplyCommands(pending);
+            pending = new SelectionJob
+            {
+                State = State, Requests = selectionRequests, RequestCount = selectionRequestCount,
+                Selected = selected, Groups = groups, Summary = selectionSummary,
+                Commands = commands, CommandCount = commandCounts, QueuedMoves = queuedMoves, Seconds = seconds
+            }.Schedule(pending);
+            selectionRequestCount = 0;
             for (int tick = 0; tick < ticks; tick++)
             {
-                pending = new ApplyCommandsJob
-                {
-                    State = State, Commands = commands, CommandCount = tick == 0 ? commandCount : 0
-                }.Schedule(pending);
+                pending = ApplyCommands(pending);
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
                 if (Measurement != null)
                 {
                     pending = Measurement.Input(State, pending);
-                    pending = movement.Schedule(State, pending, 64, Measurement.Timestamps, Measurement.TickCount * MovementMeasurement.TimestampStride);
+                    pending = movement.Schedule(State, pending, 64, Measurement.Timestamps, Measurement.TickCount * MovementMeasurement.TimestampStride, TickCount + 1);
                     pending = Measurement.Record(State, movement, pending);
                 }
                 else
 #endif
-                if (movement != null) pending = movement.Schedule(State, pending);
+                if (movement != null) pending = movement.Schedule(State, pending, tick: TickCount + 1);
                 TickCount++;
             }
-            if (ticks > 0) { commandCount = 0; queuedAdds = 0; commandBatch++; }
-            pending = new SelectionJob
-            {
-                State = State, Requests = selectionRequests, RequestCount = selectionRequestCount,
-                Selected = selected, Groups = groups, Summary = selectionSummary
-            }.Schedule(pending);
-            selectionRequestCount = 0;
+            if (ticks > 0) { queuedAdds = 0; commandBatch++; }
             pending = new FillDrawDataJob
             {
                 Positions = State.Positions, Sides = State.Sides, Sizes = State.Sizes,
                 Movement = State.Movement, Interpolation = interpolation,
-                Alive = State.Alive, Selected = selected, Summary = State.Summary, Matrices = nextMatrices
+                Alive = State.Alive, Selected = selected, Summary = State.Summary, Matrices = nextMatrices,
+                Orders = selectionSummary, Seconds = seconds
             }.Schedule(pending);
             scheduled = true;
         }
+
+        private JobHandle ApplyCommands(JobHandle dependency) => new ApplyCommandsJob
+        {
+            State = State, Commands = commands, CommandCount = commandCounts, QueuedMoves = queuedMoves, Tick = TickCount + 1,
+            SlotSpacing = movement == null ? MovementParameters.DefaultSlotSpacing : movement.Settings.SlotSpacing
+        }.Schedule(dependency);
 
         public void CompleteFrame()
         {
@@ -207,6 +220,7 @@ namespace Northwatch.Simulation
             Measurement?.Dispose();
 #endif
             commands.Dispose();
+            commandCounts.Dispose(); queuedMoves.Dispose();
             matrices.Dispose();
             nextMatrices.Dispose();
             selected.Dispose(); groups.Dispose(); selectionSummary.Dispose(); selectionRequests.Dispose();

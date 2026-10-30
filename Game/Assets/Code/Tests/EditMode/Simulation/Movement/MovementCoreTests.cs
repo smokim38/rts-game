@@ -178,7 +178,9 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
         private static void CheckCandidates(UnitState state, MovementPipeline pipeline)
         {
             using var map = new NativeArray<byte>(0, Allocator.Persistent);
-            for (int i = 0; i < state.Alive.Length; i++) pipeline.LevelsA[i] = 2;
+            var planned = pipeline.Planned;
+            for (int i = 0; i < state.Alive.Length; i++)
+            { pipeline.LevelsA[i] = 2; planned[i] = state.Movement[i]; }
             var handle = new BucketUnitsJob { Positions = state.Positions, Alive = state.Alive, Buckets = pipeline.Grid.Buckets }
                 .ScheduleParallel(state.Alive.Length, 1, default);
             handle = new BuildSpatialGridJob { Positions = state.Positions, Units = state.Movement, Alive = state.Alive, Grid = pipeline.Grid }.Schedule(handle);
@@ -191,7 +193,7 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
                     .ScheduleParallel(state.Alive.Length, 1, handle);
             }
             new CommitMovementJob { Start = pipeline.Start, Poses = pipeline.Corrected, Velocities = pipeline.Velocities,
-                Alive = state.Alive, Levels = pipeline.Levels, Positions = state.Positions, Units = state.Movement }
+                Alive = state.Alive, Levels = pipeline.Levels, Positions = state.Positions, Units = state.Movement, Planned = pipeline.Planned }
                 .ScheduleParallel(state.Alive.Length, 1, handle).Complete();
             AssertClear(state, map);
         }
