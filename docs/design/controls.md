@@ -142,20 +142,25 @@ Until numbered markers are built, every move order shows a plain marker, includi
 
 **Pillars:** P1 (the player picks a marker they can always see). **Per-unit cost:** none.
 
+### Counted units
+
+- Every marker, plain or numbered, counts the units that took its order. A unit leaves the count when it **arrives**, is **destroyed**, or is given **any other order** (a move, Stop or Hold position).
+- "Arrives" means the same for both kinds of marker (see [open question 21](#open-questions-for-the-owner)).
+
 ### Plain marker
 
 - A move order that isn't a [numbered order](#numbered-markers) shows a plain marker at its target point.
 - **One at a time.** The next move order of any kind removes it. If that order is plain, its own plain marker replaces it.
-- **Other end.** It also goes away when none of the units of its order is left to go there: each one was destroyed, or was given Stop or Hold position. Arriving doesn't remove it; it stays after the units stop.
+- **Other end.** It also goes away when its [count](#counted-units) reaches zero: none of the units of its order is still going there, because each one arrived, was destroyed, or was given Stop or Hold position.
 - No marker appears when nothing moves (for example Classic, left-click on ground with nothing selected).
 
-**Pillars:** P1 (every order gets instant feedback). **Per-unit cost:** none per frame. A unit of the order that is destroyed or stopped updates the marker once.
+**Pillars:** P1 (every order gets instant feedback). **Per-unit cost:** none per frame. A unit of the order that arrives, is destroyed or is stopped updates the marker once.
 
 ### Numbered markers
 
 - **Numbered order.** A move order is numbered when the selection is exactly the units of control group N: recalled with its number key, or selected any other way so it holds exactly that group's units and no others. It shows a numbered marker: the marker with the number **N** in its middle.
 - **Readable.** The number is in the marker colour, at least **16 pixels** tall at every zoom, doesn't pulse, and is drawn over units and ground.
-- **Counted units.** The marker counts the units that took the order. A unit leaves the count when it **arrives**, is **destroyed**, or is given **any other order** (a move, Stop or Hold position).
+- **Counted units.** The marker counts the units that took the order, as in [Counted units](#counted-units).
 - **End.** The marker stays until its count reaches zero: every surviving unit has arrived, or the group got a new order. It also ends at once when group N is saved again with Ctrl+N.
 - **One per group, nine at most.** A new numbered order for group N replaces group N's marker. Up to 9 numbered markers can show at once, plus the one plain marker.
 - **Two groups, one unit.** A unit counts only for the marker of its latest order. If a unit of groups 1 and 2 is sent with group 2, it leaves marker 1's count.
@@ -303,7 +308,7 @@ Each check uses the grey-box sandbox (core-loop) with its spawn tool and on-scre
 ### C6. Plain marker (Now)
 
 1. **One at a time.** With 5 own small cubes selected, two move orders to points 10 cells apart: after the second order, only the marker at the second point shows.
-2. **Stays after arrival.** 5 cubes sent 10 cells away: 10 s after the last one stops, the marker still shows. The next move order removes it.
+2. **Goes on arrival.** 5 cubes sent 20 cells away: the marker shows while any of them is still on the way, and goes away on the frame the last one arrives.
 3. **No units left to go.** 5 cubes sent 20 cells: Stop with 3 of them selected leaves the marker; Hold position with the other 2 selected removes it. In a second run, destroying all 5 on the way removes the marker on the frame the last one is destroyed.
 
 ### C7. Numbered markers (Later: after movement Issue 2)
@@ -352,9 +357,9 @@ Choices this page makes where the owner's instructions left the detail open. Eac
 16. **Marker colours:** Green (default), Magenta, Cyan, White. Recommendation: keep these, and check them again when real team colours and terrain exist; Cyan is the nearest to blue, and Green would clash if a third or fourth side gets a green team colour.
 17. **Square marker:** same size and pulse as the ring (1 cell, at least 24 pixels), edges along the cell lines. Recommendation: keep, so switching shape never changes how big a marker looks.
 18. **Marker settings and resets:** they apply at once, also to markers already shown, and Reset to Classic or Modern doesn't change them. Recommendation: keep, as with the camera settings.
-19. **Plain marker, extra end:** it also goes away when every unit of its order was destroyed or given Stop or Hold position; arriving doesn't remove it. Recommendation: keep, so no marker points where nobody is going.
+19. **Plain marker, extra end:** *settled by the owner (Issue #155):* it also goes away when none of the units of its order is still going there: each one arrived, was destroyed or was given Stop or Hold position, the same as numbered markers.
 20. **Selection matching two groups:** if the selection is exactly the units of more than one group, the order uses the group recalled by its key (if unchanged), otherwise the lowest number. Recommendation: keep.
-21. **What "arrived" means:** a unit has arrived when it has stopped at the end of its move order, as movement Issue 2 decides its final spot; a unit sent where it can't reach counts as arrived when it stops at the nearest reachable point (core-loop S3.2). The marker goes on the frame the last counted unit arrives. Recommendation: keep.
+21. **What "arrived" means** (plain and numbered markers alike): a unit has arrived when it has stopped at the end of its move order, as movement Issue 2 decides its final spot; a unit sent where it can't reach counts as arrived when it stops at the nearest reachable point (core-loop S3.2). The marker goes on the frame the last counted unit arrives. Recommendation: keep.
 22. **Who counts:** a unit leaves a numbered marker's count when it arrives, is destroyed or gets any other order. So a unit in two groups counts only for its latest order, and units added with Shift+N don't join an active marker. Recommendation: keep.
 23. **Ctrl+N re-save:** ends group N's marker at once, because the number no longer means those units. Recommendation: keep.
 24. **Number placement:** in the middle of the marker, in the marker colour, at least 16 pixels tall, not pulsing, drawn over units. Recommendation: keep; it reads at every zoom without adding a second shape.
