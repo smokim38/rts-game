@@ -27,7 +27,9 @@ namespace Northwatch.Presentation.Diagnostics
         private int frames, firstTick, invalidFrames;
         private string output;
         private double began, measuredAt;
-        private bool measuring, finished;
+        private bool measuring, finished, capture;
+        private string[] capturePaths;
+        private int capturePart;
         private long counterFrequency;
         private int targetFrameRate = -1;
         private static MovementCoreProfile allocationProfile;
@@ -90,6 +92,7 @@ namespace Northwatch.Presentation.Diagnostics
         private void Initialize()
         {
             string[] args = Environment.GetCommandLineArgs();
+            capture = Array.IndexOf(args, "-movement-capture") >= 0;
             int index = Array.IndexOf(args, "-movement-output"), sceneIndex = Array.IndexOf(args, "-movement-scene");
             int countIndex = Array.IndexOf(args, "-movement-units");
             int fpsIndex = Array.IndexOf(args, "-movement-fps");
@@ -104,6 +107,8 @@ namespace Northwatch.Presentation.Diagnostics
             if (!output.StartsWith(Path.Combine(project, "Logs") + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
                 throw new ArgumentException("Movement output must be under this project's Logs folder.");
             Directory.CreateDirectory(Path.GetDirectoryName(output));
+            if (capture)
+                capturePaths = new[] { output + "-0.raw", output + "-1.raw", output + "-2.raw", output + "-3.raw" };
             driver = FindFirstObjectByType<MatchDriver>();
             if (driver == null || driver.MovementSettings == null) throw new InvalidOperationException("The match has no driver or movement settings.");
             scene = int.Parse(args[sceneIndex + 1], CultureInfo.InvariantCulture);
@@ -191,14 +196,34 @@ namespace Northwatch.Presentation.Diagnostics
                 allocationCounts[frames] = gc.Count == 0 ? 0 : gc.GetSample(0).Count;
                 scheduled[frames] = driver.ScheduledTicks; completed[frames] = driver.CompletedTicks;
                 frames++;
+                // Diagnostic captures use 60 fps and short chunks so the Editor's
+                // 2,000-frame loader can inspect allocation sites across the window.
+                if (capture && now - measuredAt >= (capturePart + 1) * 20 && capturePart < capturePaths.Length - 1)
+                {
+                    UnityEngine.Profiling.Profiler.enabled = false;
+                    UnityEngine.Profiling.Profiler.enableBinaryLog = false;
+                    capturePart++;
+                    BeginCapture();
+                }
                 if (now - measuredAt >= 60) { Finish(); return; }
             }
             else if (now - began >= 10)
             {
                 driver.Simulation.CompleteFrame();
                 firstTick = measurement.TickCount;
+                if (capture)
+                {
+                    BeginCapture();
+                }
                 measuring = true; measuredAt = now;
             }
+        }
+
+        private void BeginCapture()
+        {
+            UnityEngine.Profiling.Profiler.logFile = capturePaths[capturePart];
+            UnityEngine.Profiling.Profiler.enableBinaryLog = true;
+            UnityEngine.Profiling.Profiler.enabled = true;
         }
 
         private void LateUpdate()
@@ -243,17 +268,22 @@ namespace Northwatch.Presentation.Diagnostics
         {
             double windowSeconds = Time.realtimeSinceStartupAsDouble - measuredAt;
             finished = true;
+            if (capture)
+            {
+                UnityEngine.Profiling.Profiler.enabled = false;
+                UnityEngine.Profiling.Profiler.enableBinaryLog = false;
+            }
             driver.Simulation.CompleteFrame();
             WriteMovementJobLabels();
             using (var writer = new StreamWriter(output + "-ticks.csv"))
             {
-                writer.WriteLine("tick,grid_ms,integration_ms,overlap_ms,move_check_ms,commit_ms,total_ms,level_1,level_2,one_tick_stalls,still_over_5s,longest_still_ticks,alive,footprint_overlaps,static_regressions,gap_crossed,moving,preferred_nonzero,orders,exact,contact,congestion,rest_with_order,under_one_cell_progress,first_advance_cells,second_advance_cells");
+                writer.WriteLine("tick,grid_ms,order_progress_ms,preferred_ms,integration_ms,overlap_ms,move_check_ms,commit_ms,total_ms,level_1,level_2,one_tick_stalls,still_over_5s,longest_still_ticks,alive,footprint_overlaps,static_regressions,gap_crossed,moving,preferred_nonzero,orders,exact,contact,congestion,rest_with_order,under_one_cell_progress,group_stall,pose_changes,first_advance_cells,second_advance_cells");
                 // Negative ticks retain warm-up validation, without including it in timings.
                 for (int t = 0; t < measurement.TickCount; t++)
                 {
                     writer.Write(t - firstTick);
-                    for (int b = 0; b < 5; b++) writer.Write("," + CounterMilliseconds(measurement.Timestamp(t, b + 1) - measurement.Timestamp(t, b)));
-                    writer.Write("," + CounterMilliseconds(measurement.Timestamp(t, 5) - measurement.Timestamp(t, 0)));
+                    for (int b = 0; b < MovementMeasurement.TimestampStride - 1; b++) writer.Write("," + CounterMilliseconds(measurement.Timestamp(t, b + 1) - measurement.Timestamp(t, b)));
+                    writer.Write("," + CounterMilliseconds(measurement.Timestamp(t, MovementMeasurement.TimestampStride - 1) - measurement.Timestamp(t, 0)));
                     for (int m = 0; m < MovementMeasurement.MetricCount; m++) writer.Write("," + measurement.Metric(t, m));
                     var progress = measurement.Progress(t);
                     writer.Write("," + progress.x.ToString("R", CultureInfo.InvariantCulture));
@@ -281,21 +311,32 @@ namespace Northwatch.Presentation.Diagnostics
             {
                 using (var writer = new StreamWriter(output + "-orders.csv")) measurement.WriteOrderState(writer);
                 int tick = measurement.TickCount - 1;
+                int lastChangingTick = firstOrderTick;
+                for (int t = Math.Max(0, firstOrderTick); t <= tick; t++)
+                {
+                    orderPassed &= measurement.Metric(t, 6) == 0 && measurement.Metric(t, 7) == 0;
+                    if (measurement.Metric(t, 9) != 0 || measurement.Metric(t, 18) != 0) lastChangingTick = t;
+                }
+                int stableTick = lastChangingTick - firstOrderTick + 2;
                 orderPassed = controls.Modern == modern && acknowledgementFrame == 1 && firstOrderTick >= 0 &&
                     firstDrawTime >= releaseTime && firstDrawTime - releaseTime <= .1 &&
-                    measurement.Metric(firstOrderTick, 10) == unitCount && measurement.Metric(firstOrderTick, 11) == unitCount;
+                    measurement.Metric(firstOrderTick, 10) == unitCount && measurement.Metric(firstOrderTick, 11) == unitCount && orderPassed;
                 if (unitCount == 100)
                 {
                     orderPassed &= allDrawTime >= releaseTime && allDrawTime - releaseTime <= .1 &&
-                        measurement.Metric(firstOrderTick, 9) == unitCount && measurement.Metric(tick, 16) == 0;
+                        measurement.Metric(firstOrderTick, 9) == unitCount && measurement.Metric(tick, 16) == 0 && stableTick <= 1140;
                     for (int t = tick - 59; t <= tick; t++)
-                        orderPassed &= measurement.Metric(t, 9) == 0 && measurement.Metric(t, 11) == 0 && measurement.Metric(t, 2) == unitCount;
+                        orderPassed &= measurement.Metric(t, 9) == 0 && measurement.Metric(t, 11) == 0 &&
+                            measurement.Metric(t, 18) == 0 && measurement.Metric(t, 2) == unitCount;
                 }
                 File.WriteAllText(output + "-order.txt", "option=" + (modern ? "Modern" : "Classic") + "; units=" + unitCount +
                     "; response_ms=" + ((firstDrawTime - releaseTime) * 1000).ToString("F6", CultureInfo.InvariantCulture) +
                     "; all_drawn_ms=" + ((allDrawTime - releaseTime) * 1000).ToString("F6", CultureInfo.InvariantCulture) +
                     "; acknowledgement_frames=" + acknowledgementFrame + "; first_order_tick=" + firstOrderTick +
                     "; first_tick_moving=" + (firstOrderTick < 0 ? 0 : measurement.Metric(firstOrderTick, 9)) +
+                    "; T=" + stableTick + "; exact/contact/congestion/group_stall=" + measurement.Metric(tick, 12) + "/" +
+                    measurement.Metric(tick, 13) + "/" + measurement.Metric(tick, 14) + "/" + measurement.Metric(tick, 17) +
+                    "; at_rest_with_order=" + measurement.Metric(tick, 15) +
                     "; marker_version=" + driver.Simulation.MoveMarkerVersion + "; marker=" + driver.Simulation.MoveMarkerPosition +
                     "; pass=" + orderPassed + "\n");
             }
@@ -312,6 +353,7 @@ namespace Northwatch.Presentation.Diagnostics
             {
                 string name = ProfilerRecorderHandle.GetDescription(handle).Name;
                 if (name.Contains("Northwatch.Simulation") || name.Contains("MovementJob") ||
+                    name.Contains("OrderProgressJob") ||
                     name.Contains("PreferredVelocityJob") || name.Contains("MoveCheckPassJob") ||
                     name.Contains("SpatialGridJob") || name.Contains("BucketUnitsJob"))
                     writer.WriteLine(name);

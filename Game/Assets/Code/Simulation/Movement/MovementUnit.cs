@@ -12,7 +12,7 @@ namespace Northwatch.Simulation.Movement
         internal int OrderVersion;
         internal float BestGoalDistance;
         internal ulong LastProgressTick;
-        // 1: exact arrival, 2: contact with an idle order member, 3: goal congestion.
+        // 1: exact arrival, 2: idle order contact, 3: goal congestion, 4: group stall.
         internal byte ArrivalRule;
         internal MovementMode Mode;
         internal float StalledTime, HomeBlockedTime, ProgressTime;

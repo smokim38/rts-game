@@ -107,6 +107,14 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
 
         [TestCase(false, false, 15f, 0f)] [TestCase(true, false, 15f, 0f)] [TestCase(false, true, 15f, 0f)]
         [TestCase(false, false, 14.9999542f, -.0000152587891f)]
+        [TestCase(false, false, 15.04f, 0f)] [TestCase(true, false, 15.04f, 0f)]
+        [TestCase(false, false, 14.96f, 0f)] [TestCase(true, false, 14.96f, 0f)]
+        [TestCase(false, false, 15f, .04f)] [TestCase(true, false, 15f, .04f)]
+        [TestCase(false, false, 15f, -.04f)] [TestCase(true, false, 15f, -.04f)]
+        [TestCase(false, false, 15.03f, .03f)] [TestCase(true, false, 15.03f, .03f)]
+        [TestCase(false, false, 14.97f, .03f)] [TestCase(true, false, 14.97f, .03f)]
+        [TestCase(false, false, 15.03f, -.03f)] [TestCase(true, false, 15.03f, -.03f)]
+        [TestCase(false, false, 14.97f, -.03f)] [TestCase(true, false, 14.97f, -.03f)]
         public void HundredUnitsComeToRestWithoutAnyTickAddingFootprintOverlap(bool lattice, bool touching, float goalX, float goalZ)
         {
             using var simulation = new UnitSimulation(Settings());
@@ -136,7 +144,7 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
                 }
                 if (movedCount == 100 && allMovedTick == 0) allMovedTick = tick + 1;
             }
-            int[] stopped = new int[4]; int orders = 0, insufficientProgress = 0, moving = 0, restWithOrder = 0;
+            int[] stopped = new int[5]; int orders = 0, insufficientProgress = 0, moving = 0, restWithOrder = 0;
             float leastProgress = float.PositiveInfinity;
             float2 min = new float2(float.PositiveInfinity), max = new float2(float.NegativeInfinity);
             for (int i = 0; i < 100; i++)
@@ -155,17 +163,83 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
             }
             TestContext.WriteLine("lattice=" + lattice + "; touching=" + touching + "; goal=" + goalX + "," + goalZ + "; T=" + (lastChange + 1) +
                 "; first_tick_moving=" + firstTickMoving + "; all_moved_tick=" + allMovedTick +
-                "; exact/contact/congestion=" + stopped[1] + "/" + stopped[2] + "/" + stopped[3] +
+                "; exact/contact/congestion/group_stall=" + stopped[1] + "/" + stopped[2] + "/" + stopped[3] + "/" + stopped[4] +
                 "; moving=" + moving + "; orders=" + orders + "; at_rest_with_order=" + restWithOrder +
                 "; S2.2_area_ratio=" + ((max.x - min.x) * (max.y - min.y) / 25) +
                 "; under_one_cell_progress=" + insufficientProgress + "; least_progress=" + leastProgress);
             if (touching) return; // Owner ruling: touching starts are reported until movement steps 4 and 5.
             Assert.That(firstTickMoving, Is.EqualTo(100));
             Assert.That(moving, Is.Zero, "All units must be at rest at tick 1200");
+            Assert.That(orders, Is.Zero);
             Assert.That(lastChange + 1, Is.LessThanOrEqualTo(1140));
             Assert.That(allMovedTick, Is.GreaterThan(0));
             Assert.That(insufficientProgress, Is.Zero, "Every unit must end at least one cell closer");
             Assert.That(simulation.MoveMarkerPosition, Is.EqualTo(goal));
+        }
+
+        [Test]
+        public void BlockedKnotSettlesBy181TicksAndRemainsStill()
+        {
+            using var ownedState = new UnitState(5);
+            var state = ownedState;
+            using var pipeline = new MovementPipeline(5, Settings());
+            for (int i = 0; i < 5; i++)
+            {
+                float3 position = i == 0 ? float3.zero :
+                    new float3(i < 3 ? (i == 1 ? -.5f : .5f) : 0, 0, i >= 3 ? (i == 3 ? -.5f : .5f) : 0);
+                state.Positions[i] = position; state.Alive[i] = 1;
+                state.Movement[i] = new MovementUnit { Mode = i == 0 ? MovementMode.Moving : MovementMode.Hold,
+                    HasMoveOrder = i == 0, OrderVersion = i == 0 ? 1 : 0,
+                    Goal = new float2(15, 0), BestGoalDistance = 15, LastProgressTick = 1,
+                    Previous = new MovementPose { Position = position } };
+            }
+            for (ulong tick = 1; tick <= 241; tick++)
+            {
+                pipeline.Schedule(state, default, tick: tick).Complete();
+                if (tick < 181) Assert.That(state.Movement[0].HasMoveOrder, Is.True);
+                else
+                {
+                    Assert.That(state.Movement[0].ArrivalRule, Is.EqualTo(4));
+                    Assert.That(state.Movement[0].HasMoveOrder, Is.False);
+                    Assert.That(math.lengthsq(state.Movement[0].Velocity), Is.Zero);
+                    Assert.That(math.lengthsq(state.Positions[0]), Is.LessThan(1e-10f));
+                    Assert.That(state.Movement[0].Heading, Is.Zero);
+                }
+            }
+        }
+
+        [Test]
+        public void ProgressOnThisTickKeepsOnlyItsOwnOrderAlive()
+        {
+            using var ownedState = new UnitState(4);
+            var state = ownedState;
+            using var pipeline = new MovementPipeline(4, Settings());
+            for (int i = 0; i < 4; i++)
+            {
+                state.Positions[i] = new float3(0, 0, i * 10); state.Alive[i] = 1;
+                state.Movement[i] = new MovementUnit { Mode = MovementMode.Moving, HasMoveOrder = true,
+                    OrderVersion = i < 2 ? 1 : 2, Goal = new float2(15, i * 10),
+                    BestGoalDistance = i == 0 || i == 3 ? 15.2f : 15, LastProgressTick = 1 };
+            }
+            state.Alive[3] = 0; // A dead member cannot reset the other order's timer.
+            pipeline.Schedule(state, default, tick: 181).Complete();
+            Assert.That(state.Movement[0].HasMoveOrder, Is.True);
+            Assert.That(state.Movement[0].LastProgressTick, Is.EqualTo(181));
+            Assert.That(state.Movement[1].HasMoveOrder, Is.True);
+            Assert.That(math.lengthsq(state.Movement[1].PreferredVelocity), Is.GreaterThan(0));
+            Assert.That(state.Movement[2].HasMoveOrder, Is.False);
+            Assert.That(state.Movement[2].ArrivalRule, Is.EqualTo(4));
+            // Replacing every order must reclaim the full table without stale progress.
+            for (int i = 0; i < 4; i++)
+            {
+                state.Alive[i] = 1;
+                var unit = state.Movement[i]; unit.OrderVersion = 100 + i;
+                unit.HasMoveOrder = true; unit.Mode = MovementMode.Moving;
+                unit.BestGoalDistance = 15; unit.LastProgressTick = 182; unit.ArrivalRule = 0;
+                state.Movement[i] = unit;
+            }
+            pipeline.Schedule(state, default, tick: 182).Complete();
+            for (int i = 0; i < 4; i++) Assert.That(state.Movement[i].HasMoveOrder, Is.True);
         }
 
         [Test]

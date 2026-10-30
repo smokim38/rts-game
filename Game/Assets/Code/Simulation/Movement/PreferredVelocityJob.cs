@@ -14,6 +14,7 @@ namespace Northwatch.Simulation.Movement
         [ReadOnly] internal NativeArray<UnitSize> Sizes;
         [ReadOnly] internal NativeArray<byte> Alive;
         [ReadOnly] internal NativeArray<MovementUnit> Units;
+        [ReadOnly] internal NativeParallelHashMap<int, ulong> LatestProgress;
         [WriteOnly] internal NativeArray<MovementUnit> Planned;
         [ReadOnly] internal SpatialGrid Grid;
         internal FlowFieldReader Fields;
@@ -42,9 +43,11 @@ namespace Northwatch.Simulation.Movement
                     math.distance(Positions[i].xz, Positions[other].xz) <= Footprint.Radius(Sizes[i]) + Footprint.Radius(Sizes[other]) + .1f)
                     arrivalRule = 2;
             // Interim goal-disc radius until ADR 0008 Issue 4 (groups and arrival).
-            // A held-up unit further out must retain its order, however long it waits.
+            // Further out, only the order-wide six-second stall can end the order.
             if (arrivalRule == 0 && distance <= Footprint.Radius(Sizes[i]) + .1f && Tick - unit.LastProgressTick >= 30)
                 arrivalRule = 3;
+            if (arrivalRule == 0 && LatestProgress.TryGetValue(unit.OrderVersion, out ulong latest) && Tick - latest >= 180)
+                arrivalRule = 4;
             if (arrivalRule != 0)
             {
                 unit.ArrivalRule = arrivalRule;

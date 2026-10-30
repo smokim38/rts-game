@@ -14,8 +14,8 @@ namespace Northwatch.Simulation.Movement
     public sealed class MovementMeasurement : IDisposable
     {
         public const int SampleCapacity = 8192;
-        public const int MetricCount = 17;
-        public const int TimestampStride = 6;
+        public const int MetricCount = 19;
+        public const int TimestampStride = 8;
         internal NativeArray<byte> Walkable;
         internal NativeArray<long> Timestamps;
         private NativeArray<int> samples, stillTicks;
@@ -181,6 +181,7 @@ namespace Northwatch.Simulation.Movement
                 int2 sides = 0;
                 int2 errors = 0;
                 int moving = 0, preferred = 0, orders = 0, exact = 0, contact = 0, congestion = 0, restWithOrder = 0, underOneCell = 0;
+                int groupStall = 0, poseChanges = 0;
                 for (int i = 0; i < State.Alive.Length; i++)
                 {
                     if (State.Alive[i] == 0) continue;
@@ -194,6 +195,9 @@ namespace Northwatch.Simulation.Movement
                     if (unit.ArrivalRule == 1) exact++;
                     if (unit.ArrivalRule == 2) contact++;
                     if (unit.ArrivalRule == 3) congestion++;
+                    if (unit.ArrivalRule == 4) groupStall++;
+                    if (math.distance(State.Positions[i], unit.Previous.Position) > 1e-5f ||
+                        math.abs(unit.Heading - unit.Previous.Heading) > 1e-5f) poseChanges++;
                     if (Scene == 4 && math.distance(InitialPositions[i].xz, unit.Goal) -
                         math.distance(State.Positions[i].xz, unit.Goal) < 1) underOneCell++;
                     if (Levels[i] == 1) levelOne++;
@@ -218,6 +222,7 @@ namespace Northwatch.Simulation.Movement
                 Samples[offset + 9] = moving; Samples[offset + 10] = preferred; Samples[offset + 11] = orders;
                 Samples[offset + 12] = exact; Samples[offset + 13] = contact; Samples[offset + 14] = congestion;
                 Samples[offset + 15] = restWithOrder; Samples[offset + 16] = underOneCell;
+                Samples[offset + 17] = groupStall; Samples[offset + 18] = poseChanges;
                 Progress[Tick] = advance / math.max(sides, 1);
             }
         }
