@@ -72,7 +72,7 @@ namespace Northwatch.Simulation.Movement
                 LatestProgress = latestProgress, Tick = tick,
                 HasFields = Fields != null, UnitFields = Fields == null ? Grid.Buckets : Fields.UnitFields,
                 Fields = Fields == null ? new FlowFieldReader { Directions = emptyMap.AsReadOnly(),
-                    Classes = emptyMap.AsReadOnly(), Distances = emptyDistances.AsReadOnly() } : Fields.Reader
+                    Classes = emptyMap.AsReadOnly(), Distances = emptyDistances.AsReadOnly(), Goals = Grid.Buckets.AsReadOnly() } : Fields.Reader
             }.Schedule(handle);
             handle = MovementTimestampJob.Stamp(timestamps, timestampOffset + 2, handle);
             handle = new PreferredVelocityJob
@@ -81,9 +81,8 @@ namespace Northwatch.Simulation.Movement
                 Planned = planned, Grid = Grid, LatestProgress = latestProgress,
                 Settings = Settings, Tick = tick, UnitFields = Fields == null ? Grid.Buckets : Fields.UnitFields,
                 HasFields = Fields != null,
-                Passable = Fields == null ? emptyMap : fieldMaps.Passable,
                 Fields = Fields == null ? new FlowFieldReader { Directions = emptyMap.AsReadOnly(),
-                    Classes = emptyMap.AsReadOnly(), Distances = emptyDistances.AsReadOnly() } : Fields.Reader
+                    Classes = emptyMap.AsReadOnly(), Distances = emptyDistances.AsReadOnly(), Goals = Grid.Buckets.AsReadOnly() } : Fields.Reader
             }.ScheduleParallel(state.Alive.Length, batchSize, handle);
             handle = MovementTimestampJob.Stamp(timestamps, timestampOffset + 3, handle);
             handle = new IntegrateMovementJob

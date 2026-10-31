@@ -32,9 +32,10 @@ namespace Northwatch.Simulation.FlowFields
             internal NativeArray<ushort> Distances;
             internal NativeArray<Build> Assignment;
             internal NativeArray<long> Timestamps;
+            internal NativeArray<int4> SightIntervalsA, SightIntervalsB;
             internal JobHandle Handle;
             internal ulong Due;
-            internal Scratch(int cells)
+            internal Scratch(int cells, int extent)
             {
                 Costs = new NativeArray<int>(cells, Allocator.Persistent);
                 Heap = new NativeArray<int>(cells, Allocator.Persistent);
@@ -42,12 +43,15 @@ namespace Northwatch.Simulation.FlowFields
                 Directions = new NativeArray<byte>(cells, Allocator.Persistent);
                 Distances = new NativeArray<ushort>(cells, Allocator.Persistent);
                 Assignment = new NativeArray<Build>(1, Allocator.Persistent);
-                Timestamps = new NativeArray<long>(2, Allocator.Persistent);
+                Timestamps = new NativeArray<long>(3, Allocator.Persistent);
+                SightIntervalsA = new NativeArray<int4>(extent + 2, Allocator.Persistent);
+                SightIntervalsB = new NativeArray<int4>(extent + 2, Allocator.Persistent);
             }
             public void Dispose()
             {
                 Handle.Complete(); Costs.Dispose(); Heap.Dispose(); Positions.Dispose();
                 Directions.Dispose(); Distances.Dispose(); Assignment.Dispose(); Timestamps.Dispose();
+                SightIntervalsA.Dispose(); SightIntervalsB.Dispose();
             }
         }
 
@@ -55,19 +59,20 @@ namespace Northwatch.Simulation.FlowFields
         internal readonly float2 Origin;
         internal readonly NativeArray<byte> Directions, Classes;
         internal readonly NativeArray<ushort> Distances;
-        internal readonly NativeArray<int> UnitFields;
+        internal readonly NativeArray<int> UnitFields, Goals;
         internal readonly NativeArray<Entry> Entries;
         internal readonly NativeArray<Request> Requests;
         internal readonly NativeArray<Build> Builds;
-        // Per slot: build start/end, publish start/end, publishes, missed deadlines, replacements.
+        // Per slot: build start/end, publish start/end, publishes, missed deadlines, replacements, sight start.
+        internal const int MetricStride = 8;
         internal readonly NativeArray<long> Metrics;
         private NativeParallelHashMap<long, int> orders;
         private readonly Scratch[] scratch;
         private readonly MovementParameters settings;
         internal long PoolBytes => 3L * Width * Height * Entries.Length;
-        internal long ScratchBytes => 15L * Width * Height * scratch.Length;
+        internal long ScratchBytes => (15L * Width * Height + 32L * (math.max(Width, Height) + 2) + 24 + 12) * scratch.Length;
         internal FlowFieldReader Reader => new FlowFieldReader { Width = Width, Height = Height, Origin = Origin,
-            Directions = Directions.AsReadOnly(), Distances = Distances.AsReadOnly(), Classes = Classes.AsReadOnly() };
+            Directions = Directions.AsReadOnly(), Distances = Distances.AsReadOnly(), Classes = Classes.AsReadOnly(), Goals = Goals.AsReadOnly() };
 
         internal FlowFieldPool(int width, int height, float2 origin, int units, MovementParameters parameters)
         {
@@ -76,16 +81,17 @@ namespace Northwatch.Simulation.FlowFields
             Directions = new NativeArray<byte>(checked(cells * capacity), Allocator.Persistent);
             Distances = new NativeArray<ushort>(cells * capacity, Allocator.Persistent);
             Classes = new NativeArray<byte>(capacity, Allocator.Persistent);
+            Goals = new NativeArray<int>(capacity, Allocator.Persistent);
             Entries = new NativeArray<Entry>(capacity, Allocator.Persistent);
             Requests = new NativeArray<Request>(units, Allocator.Persistent);
             UnitFields = new NativeArray<int>(units, Allocator.Persistent);
             orders = new NativeParallelHashMap<long, int>(units, Allocator.Persistent);
             Builds = new NativeArray<Build>(parameters.BuildSlots, Allocator.Persistent);
-            Metrics = new NativeArray<long>(parameters.BuildSlots * 7, Allocator.Persistent);
+            Metrics = new NativeArray<long>(parameters.BuildSlots * MetricStride, Allocator.Persistent);
             scratch = new Scratch[parameters.BuildSlots];
             for (int i = 0; i < scratch.Length; i++)
             {
-                scratch[i] = new Scratch(cells); Builds[i] = new Build { Field = -1 };
+                scratch[i] = new Scratch(cells, math.max(width, height)); Builds[i] = new Build { Field = -1 };
             }
         }
 
@@ -96,7 +102,7 @@ namespace Northwatch.Simulation.FlowFields
                 Scratch s = scratch[i];
                 if (s.Due == 0 || s.Due > tick) continue;
                 dependency = new PublishFieldsJob { Slot = i, Cells = Width * Height, Tick = tick,
-                    Builds = Builds, Entries = Entries, Directions = Directions, Distances = Distances, Classes = Classes,
+                    Builds = Builds, Entries = Entries, Directions = Directions, Distances = Distances, Classes = Classes, Goals = Goals,
                     BuiltDirections = s.Directions, BuiltDistances = s.Distances, BuildTimestamps = s.Timestamps,
                     Metrics = Metrics, DueTime = System.Diagnostics.Stopwatch.GetTimestamp() }
                     .Schedule(JobHandle.CombineDependencies(dependency, s.Handle));
@@ -126,7 +132,8 @@ namespace Northwatch.Simulation.FlowFields
                 assignments = JobHandle.CombineDependencies(assignments, assigned);
                 s.Handle = new BuildFlowFieldJob { Width = Width, Height = Height,
                     Passable = passable, Builds = s.Assignment, Costs = s.Costs, Heap = s.Heap, HeapPositions = s.Positions,
-                    Directions = s.Directions, Distances = s.Distances, Timestamps = s.Timestamps }.Schedule(assigned);
+                    Directions = s.Directions, Distances = s.Distances, Timestamps = s.Timestamps,
+                    SightIntervalsA = s.SightIntervalsA, SightIntervalsB = s.SightIntervalsB }.Schedule(assigned);
                 s.Due = tick + (ulong)settings.BuildLatencyTicks;
             }
             JobHandle.ScheduleBatchedJobs();
@@ -137,6 +144,7 @@ namespace Northwatch.Simulation.FlowFields
         {
             foreach (Scratch s in scratch) s.Dispose();
             Directions.Dispose(); Distances.Dispose(); Classes.Dispose(); Entries.Dispose(); Requests.Dispose();
+            Goals.Dispose();
             UnitFields.Dispose(); Builds.Dispose(); orders.Dispose(); Metrics.Dispose();
         }
     }

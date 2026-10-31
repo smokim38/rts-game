@@ -11,6 +11,7 @@ namespace Northwatch.Tests.EditMode.Simulation.FlowFields
     {
         private NativeArray<byte> directions, classes;
         private NativeArray<ushort> distances;
+        private NativeArray<int> goals;
         private FlowFieldReader reader;
 
         [SetUp]
@@ -19,13 +20,14 @@ namespace Northwatch.Tests.EditMode.Simulation.FlowFields
             directions = new NativeArray<byte>(4, Allocator.Persistent);
             distances = new NativeArray<ushort>(4, Allocator.Persistent);
             classes = new NativeArray<byte>(1, Allocator.Persistent);
+            goals = new NativeArray<int>(1, Allocator.Persistent);
             for (int i = 0; i < 4; i++) distances[i] = 10;
             reader = new FlowFieldReader { Directions = directions.AsReadOnly(), Distances = distances.AsReadOnly(),
-                Classes = classes.AsReadOnly(), Width = 2, Height = 2, Origin = new float2(-3, 7) };
+                Classes = classes.AsReadOnly(), Goals = goals.AsReadOnly(), Width = 2, Height = 2, Origin = new float2(-3, 7) };
         }
 
         [TearDown]
-        public void TearDown() { directions.Dispose(); distances.Dispose(); classes.Dispose(); }
+        public void TearDown() { directions.Dispose(); distances.Dispose(); classes.Dispose(); goals.Dispose(); }
 
         private FlowSample Sample(float2 local, FlowSampleStatus expected = FlowSampleStatus.Ready)
         {
@@ -99,9 +101,11 @@ namespace Northwatch.Tests.EditMode.Simulation.FlowFields
             classes[0] = 1; distances[0] = 25;
             Assert.That(Sample(new float2(1)).Distance, Is.EqualTo(2.5f));
             using var twoClasses = new NativeArray<byte>(2, Allocator.Persistent);
+            using var twoGoals = new NativeArray<int>(2, Allocator.Persistent);
             using var twoDirections = new NativeArray<byte>(new byte[] { 0, 0, 0, 0, 2, 0, 0, 0 }, Allocator.Persistent);
             using var twoDistances = new NativeArray<ushort>(new ushort[] { 0, 0, 0, 0, 50, 0, 0, 0 }, Allocator.Persistent);
             reader.Classes = twoClasses.AsReadOnly(); reader.Directions = twoDirections.AsReadOnly();
+            reader.Goals = twoGoals.AsReadOnly();
             reader.Distances = twoDistances.AsReadOnly();
             Assert.That(reader.Sample(1, reader.Origin + .5f, out var sample), Is.EqualTo(FlowSampleStatus.Ready));
             Assert.That(sample.Distance, Is.EqualTo(5));
@@ -113,7 +117,33 @@ namespace Northwatch.Tests.EditMode.Simulation.FlowFields
         {
             Assert.That(reader.Sample(FlowFieldReader.NoField, 0, out var sample), Is.EqualTo(FlowSampleStatus.Unavailable));
             Assert.That(math.lengthsq(sample.Direction), Is.Zero);
+            Assert.That(sample.InSight, Is.False);
             Assert.That(default(FlowFieldReader).Sample(0, 0, out _), Is.EqualTo(FlowSampleStatus.Unavailable));
+        }
+
+        [Test]
+        public void SightUsesBearingAndGoalAndRequiresEveryPositiveWeightValue()
+        {
+            goals[0] = 3;
+            for (int i = 0; i < 4; i++) directions[i] = 8;
+            var sample = Sample(new float2(1));
+            Assert.That(sample.InSight, Is.True);
+            Assert.That(sample.Goal, Is.EqualTo(reader.Origin + 1.5f));
+            Assert.That(math.distance(sample.Direction, math.normalize(new float2(1))), Is.LessThan(1e-5));
+            directions[0] = 4;
+            sample = Sample(new float2(1));
+            Assert.That(sample.InSight, Is.False);
+            var expected = math.normalize(3 * math.normalize(new float2(1)) + new float2(-1, 0));
+            Assert.That(math.distance(sample.Direction, expected), Is.LessThan(1e-5));
+            directions[0] = 8; distances[0] = ushort.MaxValue;
+            Assert.That(Sample(new float2(1)).InSight, Is.False);
+            distances[3] = 0;
+            sample = Sample(new float2(1.5f));
+            Assert.That(sample.InSight, Is.True);
+            Assert.That(sample.Direction, Is.EqualTo(float2.zero));
+            Assert.That(sample.Distance, Is.Zero);
+            for (int i = 0; i < 4; i++) distances[i] = ushort.MaxValue;
+            Assert.That(Sample(new float2(1), FlowSampleStatus.Unreachable).InSight, Is.False);
         }
 
         [Test]

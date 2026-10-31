@@ -243,5 +243,113 @@ namespace Northwatch.Tests.EditMode.Simulation.FlowFields
             float shortest = math.length(new float2(9.5f, 40.5f)) + 1 + math.length(new float2(9.5f, 40.5f));
             Assert.That(route, Is.LessThanOrEqualTo(shortest * 1.25f));
         }
+
+        [Test]
+        public void OpenBlockPublishedSamplesAndPreferredVelocitiesEqualDirectSeekEveryTick()
+        {
+            using var maps = new StaticMaps(256, 256);
+            using var boxes = new NativeArray<StaticBox>(0, Allocator.TempJob);
+            maps.ScheduleBuild(boxes).Complete();
+            using var state = new UnitState(100);
+            using var pipeline = new MovementPipeline(100, Settings(), maps.Walkable, maps);
+            var goal = new float2(15, 0);
+            for (int i = 0; i < 100; i++)
+                Order(state, i, 1, goal, new float2(i % 10 - 4.5f, i / 10 - 4.5f) * .625f);
+            int checkedSamples = 0;
+            for (int tick = 0; tick < 1200; tick++)
+            {
+                pipeline.Schedule(state, default, tick: (ulong)tick).Complete();
+                if (tick == 0) continue;
+                for (int i = 0; i < 100; i++)
+                {
+                    var planned = pipeline.Planned[i];
+                    if (!planned.HasMoveOrder) continue;
+                    float2 position = state.Movement[i].Previous.Position.xz;
+                    Assert.That(pipeline.Fields.Reader.Sample(pipeline.Fields.UnitFields[i], position, out var sample), Is.EqualTo(FlowSampleStatus.Ready));
+                    Assert.That(sample.InSight, Is.True);
+                    float2 delta = goal - position;
+                    float distance = math.length(delta);
+                    float speed = math.min(4, math.sqrt(2 * 16 * distance));
+                    speed = math.min(speed, distance / MovementParameters.TickDuration);
+                    float2 expected = math.normalizesafe(delta) * speed;
+                    Assert.That(math.all(math.asuint(planned.PreferredVelocity) == math.asuint(expected)), Is.True,
+                        "Direct-seek bits differ at tick/unit " + tick + "/" + i);
+                    checkedSamples++;
+                }
+            }
+            Assert.That(checkedSamples, Is.GreaterThan(100));
+        }
+
+        [Test]
+        public void OffCentreGoalStartsInShadowAndEndsWithoutGroupStall()
+        {
+            // Translate the review's 64-cell example into the production map.
+            using var boxes = new NativeArray<StaticBox>(new[] {
+                new StaticBox { Min = new int2(135, 135), MaxExclusive = new int2(137, 139) } }, Allocator.TempJob);
+            using var maps = new StaticMaps(64, 64);
+            using var localBoxes = new NativeArray<StaticBox>(new[] {
+                new StaticBox { Min = new int2(7, 7), MaxExclusive = new int2(9, 11) } }, Allocator.TempJob);
+            maps.ScheduleBuild(localBoxes).Complete();
+            using var state = new UnitState(1);
+            using var pool = new FlowFieldPool(64, 64, 0, 1, Settings(2));
+            float2 goal = new float2(12.01f, 9.99f), start = new float2(.5f);
+            Order(state, 0, 1, goal, start);
+            Tick(pool, maps, state, 0).Complete(); Tick(pool, maps, state, 1).Complete();
+            Assert.That(pool.Reader.Sample(pool.UnitFields[0], start, out var sample), Is.EqualTo(FlowSampleStatus.Ready));
+            Assert.That(sample.InSight, Is.False);
+            using var simulation = new UnitSimulation(Settings(), boxes);
+            simulation.QueueAdd(Side.First, UnitSize.Small, new Vector3(.5f, 0, .5f));
+            simulation.ScheduleFrame(1); simulation.CompleteFrame();
+            Order(simulation.State, 0, 1, goal, start);
+            simulation.ScheduleFrame(1); simulation.CompleteFrame();
+            simulation.ScheduleFrame(1); simulation.CompleteFrame();
+            Assert.That(math.distance(math.normalizesafe(simulation.State.Movement[0].PreferredVelocity), sample.Direction), Is.LessThan(1e-5));
+            for (int tick = 0; tick < 1200 && simulation.State.Movement[0].HasMoveOrder; tick++)
+            { simulation.ScheduleFrame(1); simulation.CompleteFrame(); }
+            Assert.That(simulation.State.Movement[0].HasMoveOrder, Is.False);
+            Assert.That(simulation.State.Movement[0].ArrivalRule, Is.Not.EqualTo(4));
+            Assert.That(math.distance(simulation.State.Positions[0].xz, goal), Is.LessThan(.05f));
+        }
+
+        [Test]
+        public void BlockBehindBoxNeverAddsOverlapOrStaticPenetrationAndReportsArrival()
+        {
+            using var boxes = new NativeArray<StaticBox>(new[] {
+                new StaticBox { Min = new int2(135, 124), MaxExclusive = new int2(137, 132) } }, Allocator.TempJob);
+            using var simulation = new UnitSimulation(Settings(), boxes);
+            for (int i = 0; i < 100; i++) simulation.QueueAdd(Side.First, UnitSize.Small,
+                new Vector3((i % 10 - 4.5f) * .625f, 0, (i / 10 - 4.5f) * .625f));
+            simulation.ScheduleFrame(1); simulation.CompleteFrame();
+            var state = simulation.State;
+            var starts = new float[100];
+            for (int i = 0; i < 100; i++)
+            {
+                starts[i] = math.distance(state.Positions[i].xz, new float2(15, 0));
+                Order(state, i, 1, new float2(15, 0), state.Positions[i].xz);
+            }
+            int lastChange = 0;
+            for (int tick = 0; tick < 1200; tick++)
+            {
+                simulation.ScheduleFrame(1); simulation.CompleteFrame();
+                for (int i = 0; i < 100; i++)
+                {
+                    Assert.That(StaticClamp.IsClear(state.Positions[i].xz, Footprint.Radius(UnitSize.Small), simulation.StaticMaps.Walkable), Is.True);
+                    if (math.distance(state.Positions[i], state.Movement[i].Previous.Position) > 1e-5f ||
+                        math.abs(state.Movement[i].Heading - state.Movement[i].Previous.Heading) > 1e-5f) lastChange = tick;
+                    for (int j = i + 1; j < 100; j++)
+                        if (Footprint.Overlap(new MovementPose { Position = state.Positions[i], Heading = state.Movement[i].Heading }, UnitSize.Small,
+                            new MovementPose { Position = state.Positions[j], Heading = state.Movement[j].Heading }, UnitSize.Small) > 0)
+                            Assert.Fail("New overlap at tick/pair " + tick + "/" + i + "/" + j);
+                }
+            }
+            int stalls = 0;
+            for (int i = 0; i < 100; i++)
+            {
+                if (state.Movement[i].ArrivalRule == 4) stalls++;
+                TestContext.WriteLine("unit=" + i + "; progress=" + (starts[i] - math.distance(state.Positions[i].xz, new float2(15, 0))) +
+                    "; arrival=" + state.Movement[i].ArrivalRule + "; last_progress_tick=" + state.Movement[i].LastProgressTick);
+            }
+            TestContext.WriteLine("Behind box: group_stalls=" + stalls + "; last_change_tick=" + lastChange);
+        }
     }
 }

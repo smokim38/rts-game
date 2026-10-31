@@ -28,8 +28,11 @@ namespace Northwatch.Simulation.Movement
                 MovementUnit unit = Units[i];
                 if (Alive[i] == 0 || !unit.HasMoveOrder) continue;
                 int field = HasFields ? UnitFields[i] : -1;
-                float distance = Fields.Sample(field, Positions[i].xz, out var sample) == FlowSampleStatus.Ready
-                    ? sample.Distance : math.distance(unit.Goal, Positions[i].xz);
+                FlowSampleStatus status = Fields.Sample(field, Positions[i].xz, out var sample);
+                float2 target = status == FlowSampleStatus.Ready && sample.InSight
+                    ? math.clamp(unit.Goal, sample.Goal - .5f, sample.Goal + .5f) : unit.Goal;
+                float distance = status == FlowSampleStatus.Ready && !sample.InSight
+                    ? sample.Distance : math.distance(target, Positions[i].xz);
                 ulong progress = HasFields && field != unit.ProgressField || distance <= unit.BestGoalDistance - .1f
                     ? Tick : unit.LastProgressTick;
                 if (LatestProgress.TryGetValue(unit.OrderVersion, out ulong latest))
