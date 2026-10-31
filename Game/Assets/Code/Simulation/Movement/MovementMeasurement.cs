@@ -28,7 +28,7 @@ namespace Northwatch.Simulation.Movement
 
         internal MovementMeasurement(UnitState state, int scene, int count)
         {
-            if (scene < 0 || scene > 4 || count < 2 || count > state.Alive.Length)
+            if (scene < 0 || scene > 5 || count < 2 || count > state.Alive.Length)
                 throw new ArgumentOutOfRangeException(nameof(scene));
             this.scene = scene;
             this.state = state;
@@ -45,7 +45,7 @@ namespace Northwatch.Simulation.Movement
         internal JobHandle Input(UnitState state, JobHandle dependency)
         {
             if (TickCount == SampleCapacity) throw new InvalidOperationException("Movement sample capacity exhausted.");
-            if (scene == 4) return dependency; // Real commands supply the open-map order.
+            if (scene >= 4) return dependency; // Real commands supply the sandbox order.
             return new InputJob { Positions = state.Positions, Sizes = state.Sizes, Alive = state.Alive,
                 Units = state.Movement, Scene = scene }.Schedule(state.Alive.Length, 64, dependency);
         }
@@ -90,7 +90,7 @@ namespace Northwatch.Simulation.Movement
             public void Execute()
             {
                 for (int i = 0; i < Map.Length; i++) Map[i] = 1;
-                if (Scene == 4) return;
+                if (Scene >= 4) return;
                 if (Scene == 1 || Scene == 3)
                     for (int y = 0; y < 256; y++)
                         if (Scene == 3 || y < 126 || y > 128) Map[y * 256 + 128] = 0;
@@ -148,7 +148,7 @@ namespace Northwatch.Simulation.Movement
                 {
                     var pose = new MovementPose { Position = State.Positions[i], Heading = State.Movement[i].Heading };
                     float radius = Footprint.Radius(State.Sizes[i]);
-                    if (!StaticClamp.NoWorse(pose.Position.xz, State.Movement[i].Previous.Position.xz, radius, Map)) errors.y++;
+                    if (!StaticClamp.IsClear(pose.Position.xz, radius, Map)) errors.y++;
                     // The grid contains start-of-tick poses. The other unit may have
                     // moved by StepBound since then; do not miss a pair across a bucket.
                     var query = new SpatialQuery(Grid, pose.Position.xz, radius + Footprint.LargeRadius + StepBound);

@@ -1,5 +1,6 @@
 using System;
 using Northwatch.Simulation.Movement;
+using Northwatch.Simulation.FlowFields;
 using Unity.Collections;
 using Unity.Jobs;
 using Unity.Mathematics;
@@ -13,6 +14,10 @@ namespace Northwatch.Simulation
         public const float MapHalfWidth = 128f;
         internal UnitState State;
         private MovementPipeline movement;
+        internal StaticMaps StaticMaps { get; private set; }
+        public double StaticMapBuildMilliseconds { get; private set; }
+        public long StaticMapBytes => StaticMaps?.MapBytes ?? 0;
+        public long StaticMapScratchBytes => StaticMaps?.ScratchBytes ?? 0;
         private NativeArray<UnitCommand> commands;
         private NativeArray<int> commandCounts, queuedMoves;
         private NativeArray<Matrix4x4> matrices, nextMatrices;
@@ -25,14 +30,20 @@ namespace Northwatch.Simulation
             if (movement == null || Measurement != null || TickCount != 0)
                 throw new InvalidOperationException("Enable movement measurement once, before the first frame.");
             Measurement = new MovementMeasurement(State, scene, count);
+            if (scene == 5)
+            {
+                if (StaticMaps == null) throw new InvalidOperationException("Obstacle measurement requires the sandbox layout.");
+                Measurement.Walkable.CopyFrom(StaticMaps.Walkable);
+            }
             MovementParameters settings = movement.Settings;
             movement.Dispose();
             movement = new MovementPipeline(Capacity, settings, Measurement.Walkable);
-            if (scene == 4 && !QueueBlock(Side.First, UnitSize.Small, Vector3.zero, count))
+            if ((scene == 4 || scene == 5) && !QueueBlock(Side.First, UnitSize.Small, Vector3.zero, count))
                 throw new InvalidOperationException("Could not queue the measured open-map block.");
         }
 #endif
         private NativeArray<uint> selected, groups;
+        private NativeArray<byte> emptyWalkable;
         private NativeArray<float4> selectionSummary;
         private NativeArray<SelectionRequest> selectionRequests;
         private int selectionRequestCount;
@@ -46,6 +57,7 @@ namespace Northwatch.Simulation
         public UnitSimulation()
         {
             State = new UnitState(Capacity);
+            emptyWalkable = new NativeArray<byte>(0, Allocator.Persistent);
             commands = new NativeArray<UnitCommand>(Capacity * 4, Allocator.Persistent);
             commandCounts = new NativeArray<int>(1, Allocator.Persistent);
             queuedMoves = new NativeArray<int>(Capacity, Allocator.Persistent);
@@ -60,6 +72,21 @@ namespace Northwatch.Simulation
         public UnitSimulation(MovementParameters settings) : this()
         {
             try { movement = new MovementPipeline(Capacity, settings); }
+            catch { Dispose(); throw; }
+        }
+
+        public UnitSimulation(MovementParameters settings, NativeArray<StaticBox> boxes) : this()
+        {
+            try
+            {
+                settings.Validate();
+                StaticMaps = new StaticMaps(StaticClamp.MapWidth, StaticClamp.MapWidth);
+                long began = System.Diagnostics.Stopwatch.GetTimestamp();
+                StaticMaps.ScheduleBuild(boxes).Complete();
+                StaticMapBuildMilliseconds = (System.Diagnostics.Stopwatch.GetTimestamp() - began) *
+                    1000.0 / System.Diagnostics.Stopwatch.Frequency;
+                movement = new MovementPipeline(Capacity, settings, StaticMaps.Walkable);
+            }
             catch { Dispose(); throw; }
         }
 
@@ -181,7 +208,8 @@ namespace Northwatch.Simulation
         private JobHandle ApplyCommands(JobHandle dependency) => new ApplyCommandsJob
         {
             State = State, Commands = commands, CommandCount = commandCounts, QueuedMoves = queuedMoves, Tick = TickCount + 1,
-            SlotSpacing = movement == null ? MovementParameters.DefaultSlotSpacing : movement.Settings.SlotSpacing
+            SlotSpacing = movement == null ? MovementParameters.DefaultSlotSpacing : movement.Settings.SlotSpacing,
+            Walkable = StaticMaps == null ? emptyWalkable : StaticMaps.Walkable
         }.Schedule(dependency);
 
         public void CompleteFrame()
@@ -217,10 +245,12 @@ namespace Northwatch.Simulation
             CompleteFrame();
             State.Dispose();
             movement?.Dispose();
+            StaticMaps?.Dispose();
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
             Measurement?.Dispose();
 #endif
             commands.Dispose();
+            emptyWalkable.Dispose();
             commandCounts.Dispose(); queuedMoves.Dispose();
             matrices.Dispose();
             nextMatrices.Dispose();

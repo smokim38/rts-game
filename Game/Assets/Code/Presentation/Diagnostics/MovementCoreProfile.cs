@@ -119,7 +119,7 @@ namespace Northwatch.Presentation.Diagnostics
             unitCount = int.Parse(args[countIndex + 1], CultureInfo.InvariantCulture);
             driver.Simulation.MeasureMovement(scene, unitCount);
             measurement = driver.Simulation.Measurement;
-            if (scene == 4)
+            if (scene >= 4)
             {
                 controls = FindFirstObjectByType<SelectionController>();
                 orderCamera = Camera.main;
@@ -167,7 +167,7 @@ namespace Northwatch.Presentation.Diagnostics
         {
             if (finished) return;
             double now = Time.realtimeSinceStartupAsDouble;
-            if (scene == 4)
+            if (scene >= 4)
             {
                 if (orderPhase == 0 && now - began >= 1)
                 {
@@ -180,7 +180,7 @@ namespace Northwatch.Presentation.Diagnostics
                 }
                 else if (measuring && orderPhase == 2)
                 {
-                    orderPoint = orderCamera.WorldToScreenPoint(new Vector3(unitCount == 5 ? 20 : unitCount == 100 ? 15 : 60, 0, 0));
+                    orderPoint = orderCamera.WorldToScreenPoint(new Vector3(scene == 5 ? 40 : unitCount == 5 ? 20 : unitCount == 100 ? 15 : 60, 0, 0));
                     InputSystem.QueueStateEvent(mouse, new MouseState { position = orderPoint, buttons = modern ? (ushort)2 : (ushort)1 });
                     orderPhase = 3;
                 }
@@ -192,7 +192,8 @@ namespace Northwatch.Presentation.Diagnostics
             }
             if (measuring)
             {
-                if (!Application.isFocused || Screen.width != 1920 || Screen.height != 1080) invalidFrames++;
+                if (!Application.isFocused || Screen.width != 1920 || Screen.height != 1080 ||
+                    Screen.fullScreenMode != FullScreenMode.FullScreenWindow) invalidFrames++;
                 if (frames == FrameCapacity) throw new InvalidOperationException("Movement frame capacity exhausted.");
                 // Before BeginFrame: record the preceding frame's summed scopes and
                 // counters together, preserving the S, C and U frame sets (ADR 0012).
@@ -233,7 +234,7 @@ namespace Northwatch.Presentation.Diagnostics
 
         private void LateUpdate()
         {
-            if (finished || scene != 4) return;
+            if (finished || scene < 4) return;
             // After the normal sync point, before MatchDriver draws; never add a sync here.
             if (!selectionQueued && Time.realtimeSinceStartupAsDouble - began >= 1)
             {
@@ -328,7 +329,7 @@ namespace Northwatch.Presentation.Diagnostics
                 "scoped_gc=" + scopedGc.Valid + "; simulation_alloc_count=" + simulationAllocations +
                 "; drawing_alloc_count=" + drawingAllocations + "; scope_capacity_reached=" + scopeCapacityReached + "\n");
             bool orderPassed = true;
-            if (scene == 4)
+            if (scene >= 4)
             {
                 using (var writer = new StreamWriter(output + "-orders.csv")) measurement.WriteOrderState(writer);
                 int tick = measurement.TickCount - 1;
@@ -343,7 +344,7 @@ namespace Northwatch.Presentation.Diagnostics
                     firstDrawTime >= releaseTime && firstDrawTime - releaseTime <= .1 &&
                     measurement.Metric(firstOrderTick, 10) == unitCount && measurement.Metric(firstOrderTick, 11) == unitCount && orderPassed;
                 orderPassed &= markerTravelFrames > 0 && markerMismatches == 0;
-                if (unitCount <= 100)
+                if (unitCount <= 100 && scene == 4)
                 {
                     orderPassed &= markerSettledFrames > 0 && markerHiddenFrame == lastOrderStoppedFrame;
                     orderPassed &= allDrawTime >= releaseTime && allDrawTime - releaseTime <= .1 &&
@@ -365,6 +366,19 @@ namespace Northwatch.Presentation.Diagnostics
                     "; marker_mismatches=" + markerMismatches + "; last_order_stopped_frame=" + lastOrderStoppedFrame +
                     "; marker_hidden_frame=" + markerHiddenFrame +
                     "; pass=" + orderPassed + "\n");
+            }
+            if (scene == 5)
+            {
+                using var writer = new StreamWriter(output + "-static-maps.txt");
+                writer.WriteLine("sandbox=256x256; map_ms=" + driver.Simulation.StaticMapBuildMilliseconds.ToString("R", CultureInfo.InvariantCulture) +
+                    "; map_MiB=" + (driver.Simulation.StaticMapBytes / 1048576.0).ToString("R", CultureInfo.InvariantCulture) +
+                    "; scratch_MiB=" + (driver.Simulation.StaticMapScratchBytes / 1048576.0).ToString("R", CultureInfo.InvariantCulture));
+                int last = measurement.TickCount - 1;
+                bool stopped = true;
+                for (int t = last - 59; t <= last; t++)
+                    stopped &= measurement.Metric(t, 9) == 0 && measurement.Metric(t, 18) == 0;
+                orderPassed &= stopped;
+                writer.WriteLine("stopped_at_wall=" + stopped + "; pass=" + orderPassed);
             }
             Application.Quit(invalidFrames == 0 && !scopeCapacityReached && orderPassed ? 0 : 1);
         }

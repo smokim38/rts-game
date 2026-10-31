@@ -14,6 +14,7 @@ namespace Northwatch.Simulation
         internal UnitState State;
         internal ulong Tick;
         internal float SlotSpacing;
+        [ReadOnly] internal NativeArray<byte> Walkable;
 
         public void Execute()
         {
@@ -68,6 +69,8 @@ namespace Northwatch.Simulation
             for (int slot = 0; slot < State.Alive.Length; slot++)
                 if (State.Alive[slot] != 0 && block.Overlaps(State.Positions[slot], State.Sizes[slot])) return;
             for (int index = 0; index < command.BlockCount; index++)
+                if (!StaticClamp.IsClear(block.Position(index).xz, Footprint.Radius(command.Size), Walkable)) return;
+            for (int index = 0; index < command.BlockCount; index++)
             {
                 command.Position = block.Position(index);
                 AddUnit(ref command);
@@ -77,6 +80,7 @@ namespace Northwatch.Simulation
 
         private void AddUnit(ref UnitCommand command)
         {
+            if (!StaticClamp.IsClear(command.Position.xz, Footprint.Radius(command.Size), Walkable)) return;
             int slot = State.Summary[2] > 0 ? State.FreeSlots[--State.Summary[2]] : State.Summary[1]++;
             if (State.Generations[slot] == 0) State.Generations[slot] = 1;
             State.Positions[slot] = command.Position;

@@ -23,6 +23,7 @@ namespace Northwatch.EditorTools
         private const string OverlayPath = "Assets/Prefabs/DebugOverlay.prefab";
         private const string InputPath = "Assets/Settings/InputSystem_Actions.inputactions";
         public const string MovementSettingsPath = "Assets/Data/MovementSettings.asset";
+        public const string ObstaclesPath = "Assets/Data/SandboxObstacles.asset";
 
         public static void BuildMovement()
         {
@@ -46,7 +47,8 @@ namespace Northwatch.EditorTools
         {
             string[] paths = { ScenePath, DriverPath, CameraPath, "Assets/Materials/FirstSide.mat",
                 "Assets/Materials/SecondSide.mat", "Assets/Materials/SelectedSide.mat",
-                "ProjectSettings/EditorBuildSettings.asset", OverlayPath, InputPath };
+                "ProjectSettings/EditorBuildSettings.asset", OverlayPath, InputPath,
+                ObstaclesPath, "Assets/Materials/Obstacle.mat" };
             var before = new byte[paths.Length][];
             for (int i = 0; i < paths.Length; i++)
                 if (File.Exists(paths[i])) before[i] = File.ReadAllBytes(paths[i]);
@@ -104,6 +106,7 @@ namespace Northwatch.EditorTools
             Scene scene = File.Exists(ScenePath) ? EditorSceneManager.OpenScene(ScenePath) :
                 EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
             EnsureInstance(scene, "MatchDriver", DriverPath);
+            BuildObstacles(Root(scene, "MatchDriver"));
             EnsureInstance(scene, "CameraRig", CameraPath);
             EnsureInstance(scene, "DebugOverlay", OverlayPath);
             Root(scene, "DebugOverlay").GetComponent<DebugOverlay>().Bind(
@@ -194,6 +197,53 @@ namespace Northwatch.EditorTools
                 File.WriteAllBytes(CameraPath, before);
                 AssetDatabase.ImportAsset(CameraPath, ImportAssetOptions.ForceSynchronousImport);
             }
+        }
+
+        private static void BuildObstacles(GameObject driverRoot)
+        {
+            SandboxObstacles layout = AssetDatabase.LoadAssetAtPath<SandboxObstacles>(ObstaclesPath);
+            if (layout == null)
+            {
+                layout = ScriptableObject.CreateInstance<SandboxObstacles>();
+                // Cell coordinates; the map's lowest world corner is (-128, -128).
+                layout.Configure(new[] { new RectInt(148, 88, 1, 80),
+                    new RectInt(178, 88, 1, 39), new RectInt(178, 130, 1, 38),
+                    new RectInt(203, 148, 20, 1), new RectInt(203, 167, 20, 1),
+                    new RectInt(203, 149, 1, 18), new RectInt(222, 149, 1, 18) });
+                AssetDatabase.CreateAsset(layout, ObstaclesPath);
+            }
+            AssetDatabase.SaveAssetIfDirty(layout);
+            MatchDriver driver = driverRoot.GetComponent<MatchDriver>();
+            driver.ConfigureObstacles(layout);
+            PrefabUtility.RecordPrefabInstancePropertyModifications(driver);
+            Material material = SideMaterial("Obstacle", new Color(.4f, .4f, .4f));
+            Transform parent = driverRoot.transform.Find("Obstacles");
+            if (parent == null)
+            {
+                parent = new GameObject("Obstacles").transform;
+                parent.SetParent(driverRoot.transform, false);
+            }
+            while (parent.childCount > layout.Count)
+                UnityEngine.Object.DestroyImmediate(parent.GetChild(parent.childCount - 1).gameObject);
+            for (int i = 0; i < layout.Count; i++)
+            {
+                RectInt box = layout.Box(i);
+                GameObject drawing;
+                if (i < parent.childCount) drawing = parent.GetChild(i).gameObject;
+                else
+                {
+                    drawing = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                    UnityEngine.Object.DestroyImmediate(drawing.GetComponent<Collider>());
+                    drawing.transform.SetParent(parent, false);
+                }
+                drawing.name = "Box" + i;
+                drawing.transform.localPosition = new Vector3(box.center.x - UnitSimulation.MapHalfWidth, 1,
+                    box.center.y - UnitSimulation.MapHalfWidth);
+                drawing.transform.localRotation = Quaternion.identity;
+                drawing.transform.localScale = new Vector3(box.width, 2, box.height);
+                drawing.GetComponent<MeshRenderer>().sharedMaterial = material;
+            }
+            AssetDatabase.SaveAssetIfDirty(material);
         }
 
         private static InputActionAsset BuildSpawnActions()

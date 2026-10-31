@@ -15,6 +15,7 @@ namespace Northwatch.Presentation
         [SerializeField] private Material secondSide;
         [SerializeField] private Material selectedSide;
         [SerializeField] private MovementSettings movementSettings;
+        [SerializeField] private SandboxObstacles obstacles;
         private UnitSimulation simulation;
         private TickClock clock;
         private RenderParams firstParameters, secondParameters, selectedParameters;
@@ -36,10 +37,12 @@ namespace Northwatch.Presentation
 
         public void ConfigureSelection(Material selected) => selectedSide = selected;
         public void ConfigureMovement(MovementSettings settings) => movementSettings = settings;
+        public void ConfigureObstacles(SandboxObstacles layout) => obstacles = layout;
 
         private void OnEnable()
         {
-            try { simulation = movementSettings == null ? new UnitSimulation() : new UnitSimulation(movementSettings.Snapshot()); }
+            try { simulation = movementSettings == null ? new UnitSimulation() : obstacles == null ?
+                new UnitSimulation(movementSettings.Snapshot()) : obstacles.CreateSimulation(movementSettings.Snapshot()); }
             catch (System.ArgumentException error)
             {
                 Debug.LogError(error.Message); enabled = false; return;

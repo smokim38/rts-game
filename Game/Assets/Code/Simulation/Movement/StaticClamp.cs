@@ -8,6 +8,18 @@ namespace Northwatch.Simulation.Movement
         internal const int MapWidth = 256;
         private const float HalfMap = UnitSimulation.MapHalfWidth;
 
+        internal static bool IsClear(float2 position, float radius, NativeArray<byte> walkable)
+        {
+            if (!walkable.IsCreated || walkable.Length == 0) return true;
+            if (math.any(math.abs(position) > HalfMap - radius)) return false;
+            int2 centre = (int2)math.floor(position + HalfMap);
+            for (int y = centre.y - 1; y <= centre.y + 1; y++)
+                for (int x = centre.x - 1; x <= centre.x + 1; x++)
+                    if ((uint)x < MapWidth && (uint)y < MapWidth && walkable[y * MapWidth + x] == 0 &&
+                        Penetration(position, radius, new int2(x, y)) > 0) return false;
+            return true;
+        }
+
         internal static float Penetration(float2 position, float radius, int2 cell)
         {
             float2 lo = (float2)cell - HalfMap, hi = lo + 1;
