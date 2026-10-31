@@ -89,7 +89,7 @@ namespace Northwatch.Simulation.FlowFields
                 int metric = slot * FlowFieldPool.MetricStride;
                 if (pool.Metrics[metric + 4] == seenBuilds[slot]) continue;
                 seenBuilds[slot] = pool.Metrics[metric + 4];
-                double scale = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+                double scale = 1000.0 / MovementTimestampJob.Frequency;
                 builds[buildCount] = (pool.Metrics[metric + 1] - pool.Metrics[metric]) * scale;
                 sights[buildCount] = (pool.Metrics[metric + 1] - pool.Metrics[metric + 7]) * scale;
                 publishes[buildCount++] = (pool.Metrics[metric + 3] - pool.Metrics[metric + 2]) * scale;

@@ -104,7 +104,7 @@ namespace Northwatch.Simulation.FlowFields
                 dependency = new PublishFieldsJob { Slot = i, Cells = Width * Height, Tick = tick,
                     Builds = Builds, Entries = Entries, Directions = Directions, Distances = Distances, Classes = Classes, Goals = Goals,
                     BuiltDirections = s.Directions, BuiltDistances = s.Distances, BuildTimestamps = s.Timestamps,
-                    Metrics = Metrics, DueTime = System.Diagnostics.Stopwatch.GetTimestamp() }
+                    Metrics = Metrics, DueTime = MovementTimestampJob.Now() }
                     .Schedule(JobHandle.CombineDependencies(dependency, s.Handle));
                 s.Due = 0;
             }

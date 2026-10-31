@@ -220,6 +220,38 @@ namespace Northwatch.Tests.EditMode.Simulation.FlowFields
             }
         }
 
+        [Test]
+        public void DeadlineClockAndJobTimestampsShareAnEpoch()
+        {
+            using var timestamp = new NativeArray<long>(1, Allocator.TempJob);
+            long before = MovementTimestampJob.Now();
+            new MovementTimestampJob { Values = timestamp, Index = 0 }.Schedule().Complete();
+            long after = MovementTimestampJob.Now();
+            Assert.That(timestamp[0], Is.InRange(before, after));
+            Assert.That(MovementTimestampJob.Frequency, Is.GreaterThan(0));
+        }
+
+        [TestCase(99, 1)] [TestCase(100, 0)] [TestCase(101, 0)]
+        public void DeadlineMetricUsesBuildCompletionAndIncludesTheBoundary(long dueTime, long missed)
+        {
+            using var pool = new FlowFieldPool(1, 1, 0, 1, Settings(2));
+            using var directions = new NativeArray<byte>(1, Allocator.TempJob);
+            using var distances = new NativeArray<ushort>(1, Allocator.TempJob);
+            using var timestamps = new NativeArray<long>(3, Allocator.TempJob);
+            var buildTimes = timestamps;
+            buildTimes[0] = 90; buildTimes[1] = 100; buildTimes[2] = 95;
+            var builds = pool.Builds;
+            builds[0] = new FlowFieldPool.Build { Field = 0, Goal = 0 };
+            new PublishFieldsJob { Slot = 0, Cells = 1, Tick = 7, DueTime = dueTime,
+                Builds = pool.Builds, Entries = pool.Entries, Directions = pool.Directions,
+                Distances = pool.Distances, Classes = pool.Classes, Goals = pool.Goals,
+                BuiltDirections = directions, BuiltDistances = distances, BuildTimestamps = timestamps,
+                Metrics = pool.Metrics }.Schedule().Complete();
+            Assert.That(pool.Metrics[5], Is.EqualTo(missed));
+            Assert.That(pool.Metrics[4], Is.EqualTo(1));
+            Assert.That(pool.Entries[0].Published, Is.EqualTo(7));
+        }
+
         [TestCase(UnitSize.Small)] [TestCase(UnitSize.Large)]
         public void MovingUnitRoundsSandboxWallWithoutStaticPenetration(UnitSize size)
         {
