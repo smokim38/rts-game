@@ -19,14 +19,14 @@ namespace Northwatch.Presentation.Diagnostics
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Launch()
         {
-            if (Array.IndexOf(Environment.GetCommandLineArgs(), "-flow-field-profile") < 0) return;
+            if (Array.IndexOf(MovementCoreProfile.ProfileArguments(), "-flow-field-profile") < 0) return;
             var ladder = FindFirstObjectByType<PerformanceLadder>();
             if (ladder != null) ladder.enabled = false;
             new GameObject("FlowFieldProfile").AddComponent<FlowFieldProfile>();
         }
         private void Start()
         {
-            string[] args = Environment.GetCommandLineArgs(); int index = Array.IndexOf(args, "-flow-output");
+            string[] args = MovementCoreProfile.ProfileArguments(); int index = Array.IndexOf(args, "-flow-output");
             if (!Debug.isDebugBuild || index < 0 || index + 1 >= args.Length)
                 throw new ArgumentException("Use a development Player with -flow-field-profile -flow-output PATH.");
             string project = Path.GetFullPath(Path.Combine(Application.dataPath, "../../.."));

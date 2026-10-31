@@ -49,6 +49,22 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
         private static MovementPose Pose(UnitState state, int i) => new MovementPose
             { Position = state.Positions[i], Heading = state.Movement[i].Heading };
 
+        [Test]
+        public void WallCheckCountsOnlyLiveUnitsWithTheirWholeDiscPastTheWallBySize()
+        {
+            using var ownedState = new UnitState(4);
+            UnitState state = ownedState;
+            using var measurement = new MovementMeasurement(state, 5, 2);
+            Place(state, 0, new float2(21.25f, 0));
+            Place(state, 1, new float2(21 + Footprint.Radius(UnitSize.Large) + .001f, 0), UnitSize.Large);
+            Place(state, 2, new float2(21 + Footprint.Radius(UnitSize.Small) + .001f, 0));
+            Place(state, 3, new float2(40, 0), UnitSize.Large);
+            state.Alive[3] = 0;
+            measurement.CountPastSandboxWall(out int small, out int large);
+            Assert.That(small, Is.EqualTo(1));
+            Assert.That(large, Is.EqualTo(1));
+        }
+
         private static void AssertClear(UnitState state, NativeArray<byte> map)
         {
             for (int i = 0; i < state.Alive.Length; i++)
