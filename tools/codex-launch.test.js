@@ -676,10 +676,14 @@ test('non-allowlisted launcher requests keep their decline responses', () => {
 
 test('Computer Use approvals: only the two permitted roles, exact metadata and message, and an empty schema', () => {
   const method = 'mcpServer/elicitation/request';
-  const accept = { app: 'movementorders', answer: { action: 'accept', content: {}, _meta: { persist: 'session' } } };
   for (const role of ['gameplay-programmer', 'qa-test-engineer']) {
-    assert.deepStrictEqual(L.computerUseApproval(role, method, computerUseParams()), accept);
-    assert.deepStrictEqual(L.computerUseApproval(role, method, computerUseParams({ requestedSchema: {} })), accept);
+    for (const app of ['movementorders', 'sandbox', 'performanceladder']) {
+      const message = `Allow Codex to use ${app}?`;
+      const accept = { app, answer: { action: 'accept', content: {}, _meta: { persist: 'session' } } };
+      assert.deepStrictEqual(L.computerUseApproval(role, method, computerUseParams({ message })), accept);
+      assert.deepStrictEqual(L.computerUseApproval(role, method, computerUseParams({ message, requestedSchema: {} })), accept);
+      assert.strictEqual(L.computerUseApproval(role, method, computerUseParams({ message: `${message} Extra text` })), null);
+    }
     const deniedParams = [
       undefined, null, {},
       computerUseParams({ _meta: undefined }),
@@ -689,7 +693,7 @@ test('Computer Use approvals: only the two permitted roles, exact metadata and m
       computerUseParams({ _meta: { ...computerUseParams()._meta, codex_approval_kind: 'tool_suggestion' } }),
       computerUseParams({ _meta: { ...computerUseParams()._meta, codex_approval_kind: undefined } }),
       ...[
-        'Allow Codex to use another-app?', 'Allow Codex to use MovementOrders?',
+        'Allow Codex to use explorer?', 'Allow Codex to use MovementOrders?',
         'allow Codex to use movementorders?', 'Allow  Codex to use movementorders?',
         'Allow Codex to use movementorders ?', ' Allow Codex to use movementorders?',
         'Allow Codex to use movementorders? ', 'Allow Codex to use movementorders?\n',
@@ -707,7 +711,9 @@ test('Computer Use approvals: only the two permitted roles, exact metadata and m
     }
   }
   for (const role of ['tech-artist', 'reviewer', 'producer', undefined, null]) {
-    assert.strictEqual(L.computerUseApproval(role, method, computerUseParams()), null);
+    for (const app of ['movementorders', 'sandbox', 'performanceladder']) {
+      assert.strictEqual(L.computerUseApproval(role, method, computerUseParams({ message: `Allow Codex to use ${app}?` })), null);
+    }
   }
 });
 
@@ -726,7 +732,13 @@ test('runCodex: Computer Use responses, individual events, declined counts and s
   fs.writeFileSync(server, FAKE_SERVER);
   const withoutPersist = computerUseParams();
   delete withoutPersist._meta.persist;
-  const requests = [computerUseParams(), computerUseParams({ message: 'Allow Codex to use another-app?' }), withoutPersist, computerUseParams()];
+  const apps = ['movementorders', 'sandbox', 'performanceladder'];
+  const requests = [
+    ...apps.map((app) => computerUseParams({ message: `Allow Codex to use ${app}?` })),
+    computerUseParams({ message: 'Allow Codex to use explorer?' }),
+    computerUseParams({ message: 'Allow Codex to use sandbox? Extra text' }),
+    withoutPersist, computerUseParams(),
+  ];
   try {
     for (const role of ['gameplay-programmer', 'qa-test-engineer', 'tech-artist', 'reviewer', undefined]) {
       const events = [];
@@ -740,16 +752,18 @@ test('runCodex: Computer Use responses, individual events, declined counts and s
       const allowed = role === 'gameplay-programmer' || role === 'qa-test-engineer';
       const accept = { action: 'accept', content: {}, _meta: { persist: 'session' } };
       const decline = { action: 'decline' };
-      assert.deepStrictEqual(JSON.parse(run.finalText), allowed ? [accept, decline, decline, accept] : [decline, decline, decline, decline]);
-      assert.deepStrictEqual(run.computerUseApprovals, allowed ? ['movementorders', 'movementorders'] : []);
-      assert.deepStrictEqual(run.declined, Array(allowed ? 2 : 4).fill('mcpServer/elicitation/request'));
+      assert.deepStrictEqual(JSON.parse(run.finalText), allowed ? [accept, accept, accept, decline, decline, decline, accept] : Array(requests.length).fill(decline));
+      assert.deepStrictEqual(run.computerUseApprovals, allowed ? [...apps, 'movementorders'] : []);
+      assert.deepStrictEqual(run.declined, Array(allowed ? 3 : requests.length).fill('mcpServer/elicitation/request'));
       const approvals = events.filter((e) => e.event === 'computer-use-app-approved');
-      const event = { event: 'computer-use-app-approved', app: 'movementorders', persist: 'session' };
-      assert.deepStrictEqual(approvals, allowed ? [{ ...event, params: requests[0] }, { ...event, params: requests[3] }] : []);
-      assert.deepStrictEqual(events.filter((e) => e.event === 'request-declined').map((e) => e.params), allowed ? [requests[1], requests[2]] : requests);
-      const summary = L.summarize({ args: { role, issue: 171 }, dir, run, logFile: server });
-      assert.match(summary, new RegExp(`^Computer Use app approvals accepted: ${allowed ? 2 : 0} · apps: ${allowed ? 'movementorders' : 'none'}$`, 'm'));
-      assert.match(summary, new RegExp(`^Auto-review: none requested · requests that reached the launcher \\(declined\\): ${allowed ? 2 : 4}$`, 'm'));
+      const expectedApprovals = [0, 1, 2, 6].map((i) => ({
+        event: 'computer-use-app-approved', app: i === 6 ? 'movementorders' : apps[i], persist: 'session', params: requests[i],
+      }));
+      assert.deepStrictEqual(approvals, allowed ? expectedApprovals : []);
+      assert.deepStrictEqual(events.filter((e) => e.event === 'request-declined').map((e) => e.params), allowed ? requests.slice(3, 6) : requests);
+      const summary = L.summarize({ args: { role, issue: 174 }, dir, run, logFile: server });
+      assert.match(summary, new RegExp(`^Computer Use app approvals accepted: ${allowed ? 4 : 0} · apps: ${allowed ? apps.join(', ') : 'none'}$`, 'm'));
+      assert.match(summary, new RegExp(`^Auto-review: none requested · requests that reached the launcher \\(declined\\): ${allowed ? 3 : requests.length}$`, 'm'));
     }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
