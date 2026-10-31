@@ -28,7 +28,7 @@ namespace Northwatch.Simulation.Movement
 
         internal MovementMeasurement(UnitState state, int scene, int count)
         {
-            if (scene < 0 || scene > 5 || count < 2 || count > state.Alive.Length)
+            if (scene < 0 || scene > 6 || count < 2 || count > state.Alive.Length)
                 throw new ArgumentOutOfRangeException(nameof(scene));
             this.scene = scene;
             this.state = state;

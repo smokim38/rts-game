@@ -1,6 +1,7 @@
 using Northwatch.Presentation;
 using Northwatch.Simulation;
 using Northwatch.Simulation.Movement;
+using Northwatch.Simulation.FlowFields;
 using NUnit.Framework;
 using Unity.Collections;
 using Unity.Jobs;
@@ -40,6 +41,47 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
                             (i / 10 - 4.5f) * (touching ? .5f : .625f))), Is.True);
             else Assert.That(simulation.QueueBlock(Side.First, UnitSize.Small, Vector3.zero, 100), Is.True);
             Frame(simulation, 1);
+        }
+
+        [TestCase(1)] [TestCase(100)]
+        public void ClosedRingOrderStopsWithoutOverlapsOrFurtherRequests(int count)
+        {
+            using var boxes = new NativeArray<StaticBox>(new[] {
+                new StaticBox { Min = new int2(203, 148), MaxExclusive = new int2(223, 149) },
+                new StaticBox { Min = new int2(203, 167), MaxExclusive = new int2(223, 168) },
+                new StaticBox { Min = new int2(203, 149), MaxExclusive = new int2(204, 167) },
+                new StaticBox { Min = new int2(222, 149), MaxExclusive = new int2(223, 167) } }, Allocator.TempJob);
+            using var simulation = new UnitSimulation(Settings(), boxes);
+            Assert.That(simulation.QueueBlock(Side.First, UnitSize.Small, new Vector3(60, 0, 30), count), Is.True);
+            Frame(simulation, 1); SelectAll(simulation); Order(simulation, new Vector3(88, 0, 30));
+            Frame(simulation, 1);
+            Assert.That(simulation.GoalSearchCount, Is.EqualTo(1));
+            Assert.That(simulation.FieldRequestCount, Is.LessThanOrEqualTo(1));
+            for (int tick = 0; tick < 1200; tick++)
+            {
+                Frame(simulation, 1);
+                for (int i = 0; i < count; i++)
+                {
+                    Assert.That(simulation.State.Movement[i].Goal, Is.EqualTo(new float2(95.5f, 30.5f)));
+                    for (int j = i + 1; j < count; j++)
+                    {
+                        if (math.distancesq(simulation.State.Positions[i], simulation.State.Positions[j]) > 1) continue;
+                        var a = new MovementPose { Position = simulation.State.Positions[i], Heading = simulation.State.Movement[i].Heading };
+                        var b = new MovementPose { Position = simulation.State.Positions[j], Heading = simulation.State.Movement[j].Heading };
+                        if (Footprint.Overlap(a, UnitSize.Small, b, UnitSize.Small) > 0) Assert.Fail("Footprint overlap on tick " + tick);
+                    }
+                }
+            }
+            for (int i = 0; i < count; i++)
+            {
+                Assert.That(simulation.State.Movement[i].HasMoveOrder, Is.False);
+                Assert.That(simulation.State.Movement[i].ArrivalRule, Is.Not.EqualTo(4), "Must reach the corrected goal or its queue, rather than stall.");
+            }
+            if (count == 1) Assert.That(math.distance(simulation.State.Positions[0].xz, new float2(95.5f, 30.5f)), Is.LessThan(.05f));
+            long searches = simulation.GoalSearchCount, requests = simulation.FieldRequestCount;
+            for (int tick = 0; tick < 120; tick++) Frame(simulation, 1);
+            Assert.That(simulation.GoalSearchCount, Is.EqualTo(searches));
+            Assert.That(simulation.FieldRequestCount, Is.EqualTo(requests));
         }
 
         [TestCase(true, true, false)] [TestCase(false, true, false)]

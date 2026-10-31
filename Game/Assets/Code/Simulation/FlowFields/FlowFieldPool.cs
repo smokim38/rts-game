@@ -17,7 +17,9 @@ namespace Northwatch.Simulation.FlowFields
         internal struct Request
         {
             internal int Order, Goal, Users, Field;
-            internal byte Class, NeedsField;
+            internal long BestDistance;
+            internal ushort Region;
+            internal byte Class, NeedsField, Resolved, Corrected;
             internal ulong Queued;
         }
         internal struct Build
@@ -66,6 +68,8 @@ namespace Northwatch.Simulation.FlowFields
         // Per slot: build start/end, publish start/end, publishes, missed deadlines, replacements, sight start.
         internal const int MetricStride = 8;
         internal readonly NativeArray<long> Metrics;
+        // Searches, cells visited, field requests, last search duration (timestamp ticks).
+        internal readonly NativeArray<long> GoalMetrics;
         private NativeParallelHashMap<long, int> orders;
         private readonly Scratch[] scratch;
         private readonly MovementParameters settings;
@@ -88,6 +92,7 @@ namespace Northwatch.Simulation.FlowFields
             orders = new NativeParallelHashMap<long, int>(units, Allocator.Persistent);
             Builds = new NativeArray<Build>(parameters.BuildSlots, Allocator.Persistent);
             Metrics = new NativeArray<long>(parameters.BuildSlots * MetricStride, Allocator.Persistent);
+            GoalMetrics = new NativeArray<long>(4, Allocator.Persistent);
             scratch = new Scratch[parameters.BuildSlots];
             for (int i = 0; i < scratch.Length; i++)
             {
@@ -111,12 +116,13 @@ namespace Northwatch.Simulation.FlowFields
             return dependency;
         }
 
-        internal JobHandle RequestFields(UnitState state, NativeArray<byte> passable, ulong tick, JobHandle dependency)
+        internal JobHandle RequestFields(UnitState state, StaticMaps maps, ulong tick, JobHandle dependency)
         {
             int available = 0;
             for (int i = 0; i < scratch.Length; i++) if (scratch[i].Due == 0) available |= 1 << i;
             return new RequestFieldsJob { Positions = state.Positions, Alive = state.Alive, Sizes = state.Sizes,
-                Units = state.Movement, Passable = passable, Width = Width, Height = Height, Origin = Origin,
+                Units = state.Movement, Passable = maps.Passable, Regions = maps.Regions,
+                GoalMetrics = GoalMetrics, Width = Width, Height = Height, Origin = Origin,
                 Tick = tick, Settings = settings, Entries = Entries, Requests = Requests, Orders = orders,
                 UnitFields = UnitFields, Builds = Builds, Available = available }.Schedule(dependency);
         }
@@ -145,7 +151,7 @@ namespace Northwatch.Simulation.FlowFields
             foreach (Scratch s in scratch) s.Dispose();
             Directions.Dispose(); Distances.Dispose(); Classes.Dispose(); Entries.Dispose(); Requests.Dispose();
             Goals.Dispose();
-            UnitFields.Dispose(); Builds.Dispose(); orders.Dispose(); Metrics.Dispose();
+            UnitFields.Dispose(); Builds.Dispose(); orders.Dispose(); Metrics.Dispose(); GoalMetrics.Dispose();
         }
     }
 }

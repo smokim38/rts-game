@@ -18,6 +18,9 @@ namespace Northwatch.Presentation
         [SerializeField] private SandboxObstacles obstacles;
         private UnitSimulation simulation;
         private TickClock clock;
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        private RouteOverlay routeOverlay;
+#endif
         private RenderParams firstParameters, secondParameters, selectedParameters;
         private static readonly ProfilerMarker SimulationMarker = new ProfilerMarker("Northwatch.Simulation");
         private static readonly ProfilerMarker SimulationWaitMarker = new ProfilerMarker("Northwatch.Simulation.Wait");
@@ -70,6 +73,14 @@ namespace Northwatch.Presentation
         private void LateUpdate()
         {
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
+            if (UnityEngine.InputSystem.Keyboard.current?.f8Key.wasPressedThisFrame == true)
+            {
+                if (routeOverlay == null && movementSettings != null) routeOverlay = new RouteOverlay(cube, firstSide);
+                else { routeOverlay?.Dispose(); routeOverlay = null; }
+            }
+            routeOverlay?.Draw(simulation);
+#endif
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
             using (Diagnostics.MovementCoreProfile.TraceAllocations(true))
 #endif
             using (DrawingMarker.Auto())
@@ -102,6 +113,9 @@ namespace Northwatch.Presentation
 
         private void OnDisable()
         {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            routeOverlay?.Dispose(); routeOverlay = null;
+#endif
             simulation?.Dispose();
             simulation = null;
         }

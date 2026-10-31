@@ -24,6 +24,38 @@ namespace Northwatch.Simulation
         private NativeArray<Matrix4x4> matrices, nextMatrices;
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
         public MovementMeasurement Measurement { get; private set; }
+        public long GoalSearchCount { get { RequireComplete(); return movement?.Fields?.GoalMetrics[0] ?? 0; } }
+        public long FieldRequestCount { get { RequireComplete(); return movement?.Fields?.GoalMetrics[2] ?? 0; } }
+
+        public bool TrySelectedRoute(out int field, out byte size, out ulong published)
+        {
+            RequireComplete(); field = -1; size = 0; published = 0;
+            if (movement?.Fields == null) return false;
+            for (int i = 0; i < selected.Length; i++)
+                if (State.Alive[i] != 0 && selected[i] == State.Generations[i])
+                {
+                    size = (byte)State.Sizes[i]; field = movement.Fields.UnitFields[i];
+                    if (field >= 0 && movement.Fields.Entries[field].Valid != 0) published = movement.Fields.Entries[field].Published;
+                    else field = -1;
+                    return true;
+                }
+            return false;
+        }
+
+        public ushort RouteRegion(int cell, byte size)
+        {
+            RequireComplete();
+            return (StaticMaps ?? openFieldMaps).Regions[size * 65536 + cell];
+        }
+
+        public bool RouteDirection(int field, Vector3 point, out Vector3 direction)
+        {
+            RequireComplete(); direction = default;
+            if (movement?.Fields == null || movement.Fields.Reader.Sample(field, ((float3)point).xz, out var sample) != FlowSampleStatus.Ready)
+                return false;
+            direction = new Vector3(sample.Direction.x, 0, sample.Direction.y);
+            return sample.Distance > 0;
+        }
 
         public void MeasureMovement(int scene, int count)
         {
@@ -31,7 +63,7 @@ namespace Northwatch.Simulation
             if (movement == null || Measurement != null || TickCount != 0)
                 throw new InvalidOperationException("Enable movement measurement once, before the first frame.");
             Measurement = new MovementMeasurement(State, scene, count);
-            if (scene == 5)
+            if (scene >= 5)
             {
                 if (StaticMaps == null) throw new InvalidOperationException("Obstacle measurement requires the sandbox layout.");
                 Measurement.Walkable.CopyFrom(StaticMaps.Walkable);
@@ -40,7 +72,7 @@ namespace Northwatch.Simulation
             movement.Dispose();
             movement = new MovementPipeline(Capacity, settings, Measurement.Walkable, StaticMaps ?? openFieldMaps);
             int smallCount = scene == 5 && count == 110 ? 100 : count;
-            if ((scene == 4 || scene == 5) && !QueueBlock(Side.First, UnitSize.Small, Vector3.zero, smallCount))
+            if (scene >= 4 && !QueueBlock(Side.First, UnitSize.Small, scene == 6 ? new Vector3(60, 0, 30) : Vector3.zero, smallCount))
                 throw new InvalidOperationException("Could not queue the measured open-map block.");
             if (scene == 5 && count == 110 && !QueueBlock(Side.First, UnitSize.Large, new Vector3(-12, 0, -15), 10))
                 throw new InvalidOperationException("Could not queue the measured large cubes.");

@@ -49,6 +49,7 @@ namespace Northwatch.Presentation.Diagnostics
         private bool checkMarker, expectedMarker;
         private int markerTravelFrames, markerSettledFrames, markerMismatches;
         private int lastOrderStoppedFrame = -1, markerHiddenFrame = -1;
+        private long searchesAtRest = -1, requestsAtRest = -1;
 
         internal readonly struct AllocationScope : IDisposable
         {
@@ -139,7 +140,8 @@ namespace Northwatch.Presentation.Diagnostics
                 keyboard = Keyboard.current ?? InputSystem.AddDevice<Keyboard>();
                 gameObject.AddComponent<SelectionInputPump>();
                 initialDraw = new Vector2[unitCount];
-                orderCamera.GetComponent<Cameras.CameraController>().CentreOn(new Vector3(unitCount <= 100 ? 7.5f : 30, 0, 0));
+                orderCamera.GetComponent<Cameras.CameraController>().CentreOn(scene == 6 ? new Vector3(80, 0, 30) :
+                    new Vector3(unitCount <= 100 ? 7.5f : 30, 0, 0));
                 orderCamera.orthographicSize = unitCount <= 100 ? 25 : 70;
                 InputSystem.QueueStateEvent(mouse, new MouseState { position = new Vector2(960, 540) });
                 RenderPipelineManager.endContextRendering += RecordDrawnResponse;
@@ -189,7 +191,8 @@ namespace Northwatch.Presentation.Diagnostics
                 }
                 else if (measuring && orderPhase == 2)
                 {
-                    orderPoint = orderCamera.WorldToScreenPoint(new Vector3(scene == 5 ? 40 : unitCount == 5 ? 20 : unitCount == 100 ? 15 : 60, 0, 0));
+                    orderPoint = orderCamera.WorldToScreenPoint(scene == 6 ? new Vector3(88, 0, 30) :
+                        new Vector3(scene == 5 ? 40 : unitCount == 5 ? 20 : unitCount == 100 ? 15 : 60, 0, 0));
                     InputSystem.QueueStateEvent(mouse, new MouseState { position = orderPoint, buttons = modern ? (ushort)2 : (ushort)1 });
                     orderPhase = 3;
                 }
@@ -267,7 +270,12 @@ namespace Northwatch.Presentation.Diagnostics
                 // schedules again; inspect the renderer after SelectionController updates it.
                 checkMarker = true;
                 expectedMarker = measurement.Metric(tick, 11) > 0;
-                if (!expectedMarker && lastOrderStoppedFrame < 0) lastOrderStoppedFrame = Time.frameCount;
+                if (!expectedMarker && lastOrderStoppedFrame < 0)
+                {
+                    lastOrderStoppedFrame = Time.frameCount;
+                    searchesAtRest = driver.Simulation.GoalSearchCount;
+                    requestsAtRest = driver.Simulation.FieldRequestCount;
+                }
             }
             if (allDrawTime >= 0) return;
             int moved = 0;
@@ -390,6 +398,18 @@ namespace Northwatch.Presentation.Diagnostics
                 orderPassed &= smallPast > 0 && largePast > 0;
                 writer.WriteLine("stopped=" + stopped + "; small_past_wall=" + smallPast + "; large_past_wall=" + largePast +
                     "; all_past_wall=" + (smallPast + largePast == unitCount) + "; pass=" + orderPassed);
+            }
+            if (scene == 6)
+            {
+                int last = measurement.TickCount - 1;
+                bool stopped = lastOrderStoppedFrame >= 0;
+                for (int t = last - 59; t <= last; t++)
+                    stopped &= measurement.Metric(t, 9) == 0 && measurement.Metric(t, 11) == 0 && measurement.Metric(t, 18) == 0;
+                bool noRetries = searchesAtRest == 1 && requestsAtRest <= 1 &&
+                    driver.Simulation.GoalSearchCount == searchesAtRest && driver.Simulation.FieldRequestCount == requestsAtRest;
+                orderPassed &= stopped && noRetries && measurement.Metric(last, 17) == 0;
+                File.WriteAllText(output + "-unreachable.txt", "stopped=" + stopped + "; searches=" + driver.Simulation.GoalSearchCount +
+                    "; requests=" + driver.Simulation.FieldRequestCount + "; no_retries=" + noRetries + "; pass=" + orderPassed + "\n");
             }
             Application.Quit(invalidFrames == 0 && !scopeCapacityReached && orderPassed ? 0 : 1);
         }

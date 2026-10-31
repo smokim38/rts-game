@@ -29,7 +29,7 @@ namespace Northwatch.Tests.EditMode.Simulation.FlowFields
         private static JobHandle Tick(FlowFieldPool pool, StaticMaps maps, UnitState state, ulong tick, JobHandle dependency = default)
         {
             var handle = pool.Publish(tick, dependency);
-            handle = pool.RequestFields(state, maps.Passable, tick, handle);
+            handle = pool.RequestFields(state, maps, tick, handle);
             return pool.ScheduleBuilds(maps.Passable, tick, handle);
         }
 
@@ -187,6 +187,118 @@ namespace Northwatch.Tests.EditMode.Simulation.FlowFields
             do { cell = random.NextInt(256) * 256 + (right ? random.NextInt(144, 256) : random.NextInt(112)); } while (used[cell]);
             used[cell] = true;
             return new float2(cell % 256 - 127.5f, cell / 256 - 127.5f);
+        }
+
+        private static NativeArray<StaticBox> Ring() => new NativeArray<StaticBox>(new[]
+        {
+            new StaticBox { Min = new int2(8, 8), MaxExclusive = new int2(16, 9) },
+            new StaticBox { Min = new int2(8, 15), MaxExclusive = new int2(16, 16) },
+            new StaticBox { Min = new int2(8, 9), MaxExclusive = new int2(9, 15) },
+            new StaticBox { Min = new int2(15, 9), MaxExclusive = new int2(16, 15) }
+        }, Allocator.TempJob);
+
+        private static int Nearest(StaticMaps maps, int goal, ushort region, byte size)
+        {
+            int best = -1, distance = int.MaxValue;
+            for (int cell = 0; cell < maps.Width * maps.Height; cell++)
+            {
+                if (maps.Regions[size * maps.Width * maps.Height + cell] != region) continue;
+                int2 delta = new int2(cell % maps.Width - goal % maps.Width, cell / maps.Width - goal / maps.Width);
+                int candidate = delta.x * delta.x + delta.y * delta.y;
+                if (candidate < distance) { best = cell; distance = candidate; }
+            }
+            return best;
+        }
+
+        [TestCase(0)] [TestCase(1)]
+        public void RingGoalIsCorrectedOnceAndSharedByEveryUnitOfTheRegion(byte size)
+        {
+            using var maps = new StaticMaps(32, 32);
+            using var boxes = Ring(); maps.ScheduleBuild(boxes).Complete();
+            using var state = new UnitState(100);
+            using var pool = new FlowFieldPool(32, 32, 0, 100, Settings(2));
+            float anchor = (size + 1) * .5f;
+            for (int i = 0; i < 100; i++)
+                Order(state, i, 1, new float2(12 + anchor), new float2(2 + anchor), size);
+            Tick(pool, maps, state, 0).Complete();
+            int nearest = Nearest(maps, 12 * 32 + 12, maps.Regions[size * 1024 + 2 * 32 + 2], size);
+            float2 corrected = new float2(nearest % 32, nearest / 32) + anchor;
+            for (int i = 0; i < 100; i++) Assert.That(state.Movement[i].Goal, Is.EqualTo(corrected));
+            Assert.That(pool.GoalMetrics[0], Is.EqualTo(1));
+            Assert.That(pool.GoalMetrics[1], Is.LessThanOrEqualTo(1024));
+            Assert.That(pool.GoalMetrics[2], Is.EqualTo(1));
+            for (ulong tick = 1; tick < 20; tick++) Tick(pool, maps, state, tick).Complete();
+            var units = state.Movement;
+            for (int i = 0; i < 100; i++) { var unit = units[i]; unit.HasMoveOrder = false; units[i] = unit; }
+            for (ulong tick = 20; tick < 40; tick++) Tick(pool, maps, state, tick).Complete();
+            Assert.That(pool.GoalMetrics[0], Is.EqualTo(1));
+            Assert.That(pool.GoalMetrics[2], Is.EqualTo(1));
+            long builds = 0;
+            for (int i = 0; i < 2; i++) builds += pool.Metrics[i * FlowFieldPool.MetricStride + 4];
+            Assert.That(builds, Is.EqualTo(1));
+        }
+
+        [TestCase(0)] [TestCase(1)]
+        public void BlockedCellUsesNearestPassableAnchorAndAnOpenGoalNeedsNoSearch(byte size)
+        {
+            using var maps = new StaticMaps(32, 32);
+            using var boxes = new NativeArray<StaticBox>(new[] {
+                new StaticBox { Min = new int2(12), MaxExclusive = new int2(13) } }, Allocator.TempJob);
+            maps.ScheduleBuild(boxes).Complete();
+            using var state = new UnitState(1);
+            using var pool = new FlowFieldPool(32, 32, 0, 1, Settings(2));
+            float anchor = (size + 1) * .5f;
+            Order(state, 0, 1, new float2(12 + anchor), new float2(2 + anchor), size);
+            Tick(pool, maps, state, 0).Complete();
+            int nearest = Nearest(maps, 12 * 32 + 12, state.Movement[0].GoalRegion, size);
+            Assert.That(state.Movement[0].Goal, Is.EqualTo(new float2(nearest % 32, nearest / 32) + anchor));
+            Assert.That(pool.GoalMetrics[0], Is.EqualTo(1));
+            Order(state, 0, 2, new float2(4.25f), new float2(2 + anchor), size);
+            Tick(pool, maps, state, 1).Complete();
+            Assert.That(state.Movement[0].Goal, Is.EqualTo(new float2(4.25f)));
+            Assert.That(pool.GoalMetrics[0], Is.EqualTo(1));
+        }
+
+        [TestCase(0)] [TestCase(1)]
+        public void OneOrderSearchResolvesTwoDisconnectedRegionsToDistinctNearestGoals(byte size)
+        {
+            using var maps = new StaticMaps(32, 32);
+            using var boxes = new NativeArray<StaticBox>(new[] {
+                new StaticBox { Min = new int2(10, 0), MaxExclusive = new int2(11, 32) },
+                new StaticBox { Min = new int2(20, 0), MaxExclusive = new int2(21, 32) } }, Allocator.TempJob);
+            maps.ScheduleBuild(boxes).Complete();
+            using var state = new UnitState(2);
+            using var pool = new FlowFieldPool(32, 32, 0, 2, Settings(2));
+            float anchor = (size + 1) * .5f;
+            Order(state, 0, 1, new float2(15 + anchor, 16 + anchor), new float2(2 + anchor), size);
+            Order(state, 1, 1, new float2(15 + anchor, 16 + anchor), new float2(28 + anchor), size);
+            Tick(pool, maps, state, 0).Complete(); Tick(pool, maps, state, 1).Complete();
+            for (int i = 0; i < 2; i++)
+            {
+                int nearest = Nearest(maps, 16 * 32 + 15, state.Movement[i].GoalRegion, size);
+                Assert.That(state.Movement[i].Goal, Is.EqualTo(new float2(nearest % 32, nearest / 32) + anchor));
+            }
+            Assert.That(state.Movement[0].Goal, Is.Not.EqualTo(state.Movement[1].Goal));
+            Assert.That(pool.GoalMetrics[0], Is.EqualTo(1));
+            Assert.That(pool.UnitFields[0], Is.GreaterThanOrEqualTo(0).And.Not.EqualTo(pool.UnitFields[1]));
+        }
+
+        [TestCase(0, 0)] [TestCase(15, 15)] [TestCase(7, 8)]
+        public void RingSearchChecksLaterRingsAndNeverRevisitsAMapCell(int x, int y)
+        {
+            using var maps = new StaticMaps(16, 16);
+            // Two legal anchors in the same region: the first Chebyshev ring is farther in Euclidean distance.
+            var regions = maps.Regions; var passable = maps.Passable;
+            int2 goal = new int2(x, y), sign = math.select(1, -1, goal > 7);
+            int2 diagonal = goal + sign * 3, straight = goal + new int2(sign.x * 4, 0);
+            foreach (int2 cell in new[] { diagonal, straight })
+            { regions[cell.y * 16 + cell.x] = 1; passable[cell.y * 16 + cell.x] = 1; }
+            using var state = new UnitState(1);
+            using var pool = new FlowFieldPool(16, 16, 0, 1, Settings(2));
+            Order(state, 0, 1, (float2)goal + .5f, (float2)straight + .5f);
+            pool.RequestFields(state, maps, 0, default).Complete();
+            Assert.That(state.Movement[0].Goal, Is.EqualTo((float2)straight + .5f));
+            Assert.That(pool.GoalMetrics[1], Is.LessThanOrEqualTo(256));
         }
 
         [TestCase(1, 1)] [TestCase(3, 4)]

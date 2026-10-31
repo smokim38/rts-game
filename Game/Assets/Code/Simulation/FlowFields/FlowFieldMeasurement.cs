@@ -21,6 +21,8 @@ namespace Northwatch.Simulation.FlowFields
         private readonly bool[] seenOrders = new bool[801];
         private readonly int[] orderTicks = new int[801];
         private readonly double[] builds = new double[4096], sights = new double[4096], publishes = new double[4096], waits = new double[801];
+        private readonly double[] goalSearches = new double[200];
+        private int goalSearchCount;
         private readonly long[] seenBuilds;
         private int buildCount, waitCount, tick, stopgap;
         public bool Finished => tick == (mode == 2 ? 1830 : 202);
@@ -32,13 +34,20 @@ namespace Northwatch.Simulation.FlowFields
             usedGoals = new bool[cells]; usedStarts = new bool[cells];
             settings.ValidateFields(width, width);
             maps = new StaticMaps(width, width);
-            using var ownedBoxes = new NativeArray<StaticBox>(mode == 1 ? cells / 5 : mode == 3 ? cells / 50 : 0, Allocator.TempJob);
+            using var ownedBoxes = new NativeArray<StaticBox>(mode >= 5 ? 4 : mode == 1 ? cells / 5 : mode == 3 ? cells / 50 : 0, Allocator.TempJob);
             var boxes = ownedBoxes;
             var blocked = new bool[cells];
-            for (int i = 0; i < boxes.Length; i++)
+            for (int i = 0; i < boxes.Length && mode < 5; i++)
             {
                 int cell; do { cell = random.NextInt(cells); } while (blocked[cell]); blocked[cell] = true;
                 boxes[i] = new StaticBox { Min = new int2(cell % width, cell / width), MaxExclusive = new int2(cell % width + 1, cell / width + 1) };
+            }
+            if (mode >= 5)
+            {
+                boxes[0] = new StaticBox { Min = new int2(203, 148), MaxExclusive = new int2(223, 149) };
+                boxes[1] = new StaticBox { Min = new int2(203, 167), MaxExclusive = new int2(223, 168) };
+                boxes[2] = new StaticBox { Min = new int2(203, 149), MaxExclusive = new int2(204, 167) };
+                boxes[3] = new StaticBox { Min = new int2(222, 149), MaxExclusive = new int2(223, 167) };
             }
             maps.ScheduleBuild(boxes).Complete();
             state = new UnitState(mode == 2 ? 200 : 1);
@@ -50,6 +59,11 @@ namespace Northwatch.Simulation.FlowFields
                 do { cell = random.NextInt(cells); } while (usedStarts[cell] || maps.Passable[cell] == 0);
                 usedStarts[cell] = true;
                 state.Alive[i] = 1; state.Positions[i] = new float3(cell % width - 127.5f, 0, cell / width - 127.5f);
+                if (mode >= 5)
+                {
+                    state.Positions[i] = new float3(0, 0, 0);
+                    state.Sizes[i] = (UnitSize)(mode - 5);
+                }
                 if (mode == 2) Order(i, i + 1);
             }
         }
@@ -58,11 +72,12 @@ namespace Northwatch.Simulation.FlowFields
         {
             bool right = state.Positions[i].x < 0;
             int cell;
-            do { cell = random.NextInt(width) * width + (right ? random.NextInt(144, width) : random.NextInt(112)); }
+            do { cell = mode >= 5 ? random.NextInt(149, 166) * width + random.NextInt(204, 221) :
+                random.NextInt(width) * width + (right ? random.NextInt(144, width) : random.NextInt(112)); }
             while (usedGoals[cell] || maps.Passable[cell] == 0);
             usedGoals[cell] = true; orderTicks[order] = tick;
             state.Movement[i] = new MovementUnit { HasMoveOrder = true, Mode = MovementMode.Moving, OrderVersion = order,
-                Goal = new float2(cell % width - 127.5f, cell / width - 127.5f) };
+                Goal = new float2(cell % width - 127.5f, cell / width - 127.5f) + (byte)state.Sizes[i] * .5f };
         }
 
         public void Step()
@@ -74,9 +89,11 @@ namespace Northwatch.Simulation.FlowFields
             }
             else if (tick < 200) Order(0, tick + 1);
             var chain = pool.Publish((ulong)tick, default);
-            chain = pool.RequestFields(state, maps.Passable, (ulong)tick, chain);
+            chain = pool.RequestFields(state, maps, (ulong)tick, chain);
             chain = pool.ScheduleBuilds(maps.Passable, (ulong)tick, chain);
             chain.Complete();
+            if (pool.GoalMetrics[0] > goalSearchCount)
+                goalSearches[goalSearchCount++] = pool.GoalMetrics[3] * 1000.0 / MovementTimestampJob.Frequency;
             for (int i = 0; i < state.Alive.Length; i++)
             {
                 if (pool.UnitFields[i] < 0) { if (mode == 2) stopgap++; continue; }
@@ -99,6 +116,10 @@ namespace Northwatch.Simulation.FlowFields
 
         public void Write(TextWriter writer)
         {
+            Array.Sort(goalSearches, 0, goalSearchCount);
+            writer.WriteLine(string.Format(CultureInfo.InvariantCulture,
+                "goal_searches={0}; goal_median_ms={1:F6}; goal_p95_ms={2:F6}; goal_max_ms={3:F6}",
+                goalSearchCount, Percentile(goalSearches, goalSearchCount, .5), Percentile(goalSearches, goalSearchCount, .95), Percentile(goalSearches, goalSearchCount, 1)));
             Array.Sort(builds, 0, buildCount); Array.Sort(sights, 0, buildCount); Array.Sort(publishes, 0, buildCount); Array.Sort(waits, 0, waitCount);
             long missed = 0, replacements = 0;
             for (int slot = 0; slot < seenBuilds.Length; slot++)

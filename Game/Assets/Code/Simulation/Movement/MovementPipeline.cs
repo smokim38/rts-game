@@ -59,7 +59,7 @@ namespace Northwatch.Simulation.Movement
             if (Fields != null)
             {
                 handle = Fields.Publish(tick, handle);
-                handle = Fields.RequestFields(state, fieldMaps.Passable, tick, handle);
+                handle = Fields.RequestFields(state, fieldMaps, tick, handle);
                 handle = Fields.ScheduleBuilds(fieldMaps.Passable, tick, handle);
             }
             handle = new BucketUnitsJob { Positions = state.Positions, Alive = state.Alive, Buckets = Grid.Buckets }

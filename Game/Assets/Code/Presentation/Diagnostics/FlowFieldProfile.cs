@@ -54,7 +54,7 @@ namespace Northwatch.Presentation.Diagnostics
             using (var writer = new StreamWriter(output + "-" + mode + ".txt"))
             { measurement.Write(writer); writer.WriteLine("invalid_frames=" + invalidFrames); }
             measurement.Dispose(); measurement = null;
-            if (++mode == 5) { finished = true; Application.Quit(invalidFrames == 0 ? 0 : 1); return; }
+            if (++mode == 7) { finished = true; Application.Quit(invalidFrames == 0 ? 0 : 1); return; }
             measurement = new FlowFieldMeasurement(settings, mode);
             nextTick = Time.realtimeSinceStartupAsDouble + 1.0 / 30;
         }
