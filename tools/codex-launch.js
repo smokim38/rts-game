@@ -593,10 +593,10 @@ function computerUseApproval(role, method, params) {
   const app = COMPUTER_USE_PLAYER_APPS.find((name) => params.message === `Allow Codex to use ${name}?`);
   if (!app) return null;
   const persist = params._meta.persist;
-  if (persist !== undefined && persist !== 'session' && !(Array.isArray(persist) && persist.includes('session'))) return null;
+  if (persist !== 'session' && !(Array.isArray(persist) && persist.includes('session'))) return null;
   return {
     app,
-    answer: { action: 'accept', content: {}, ...(persist === undefined ? {} : { _meta: { persist: 'session' } }) },
+    answer: { action: 'accept', content: {}, _meta: { persist: 'session' } },
   };
 }
 
@@ -797,7 +797,7 @@ function runCodex({ role, cwd, model, effort, sandbox, developerInstructions, pr
         const answer = approval ? approval.answer : declineRequest(msg.method);
         if (approval) {
           run.computerUseApprovals.push(approval.app);
-          log({ event: 'computer-use-app-approved', app: approval.app, persist: answer._meta?.persist ?? null });
+          log({ event: 'computer-use-app-approved', app: approval.app, persist: answer._meta.persist, params: msg.params });
         } else {
           run.declined.push(msg.method);
           log({ event: 'request-declined', method: msg.method, params: msg.params });

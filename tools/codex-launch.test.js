@@ -711,21 +711,22 @@ test('Computer Use approvals: only the two permitted roles, exact metadata and m
   }
 });
 
-test('Computer Use approval persistence is session or once, never always', () => {
+test('Computer Use approval requires session persistence, never always', () => {
   const approve = (persist) => L.computerUseApproval('gameplay-programmer', 'mcpServer/elicitation/request',
     computerUseParams({ _meta: { ...computerUseParams()._meta, persist } }));
   for (const persist of ['session', ['session'], ['session', 'always'], ['always', 'session']]) {
     assert.deepStrictEqual(approve(persist).answer, { action: 'accept', content: {}, _meta: { persist: 'session' } });
   }
-  assert.deepStrictEqual(approve(undefined).answer, { action: 'accept', content: {} });
-  for (const persist of ['always', ['always'], [], null, {}, 'SESSION']) assert.strictEqual(approve(persist), null);
+  for (const persist of [undefined, 'always', ['always'], [], null, {}, 'SESSION']) assert.strictEqual(approve(persist), null);
 });
 
 test('runCodex: Computer Use responses, individual events, declined counts and summary for each role', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-computer-use-'));
   const server = path.join(dir, 'fake-app-server.js');
   fs.writeFileSync(server, FAKE_SERVER);
-  const requests = [computerUseParams(), computerUseParams({ message: 'Allow Codex to use another-app?' }), computerUseParams()];
+  const withoutPersist = computerUseParams();
+  delete withoutPersist._meta.persist;
+  const requests = [computerUseParams(), computerUseParams({ message: 'Allow Codex to use another-app?' }), withoutPersist, computerUseParams()];
   try {
     for (const role of ['gameplay-programmer', 'qa-test-engineer', 'tech-artist', 'reviewer', undefined]) {
       const events = [];
@@ -739,16 +740,16 @@ test('runCodex: Computer Use responses, individual events, declined counts and s
       const allowed = role === 'gameplay-programmer' || role === 'qa-test-engineer';
       const accept = { action: 'accept', content: {}, _meta: { persist: 'session' } };
       const decline = { action: 'decline' };
-      assert.deepStrictEqual(JSON.parse(run.finalText), allowed ? [accept, decline, accept] : [decline, decline, decline]);
+      assert.deepStrictEqual(JSON.parse(run.finalText), allowed ? [accept, decline, decline, accept] : [decline, decline, decline, decline]);
       assert.deepStrictEqual(run.computerUseApprovals, allowed ? ['movementorders', 'movementorders'] : []);
-      assert.deepStrictEqual(run.declined, Array(allowed ? 1 : 3).fill('mcpServer/elicitation/request'));
+      assert.deepStrictEqual(run.declined, Array(allowed ? 2 : 4).fill('mcpServer/elicitation/request'));
       const approvals = events.filter((e) => e.event === 'computer-use-app-approved');
       const event = { event: 'computer-use-app-approved', app: 'movementorders', persist: 'session' };
-      assert.deepStrictEqual(approvals, allowed ? [event, event] : []);
-      assert.deepStrictEqual(events.filter((e) => e.event === 'request-declined').map((e) => e.params), allowed ? [requests[1]] : requests);
+      assert.deepStrictEqual(approvals, allowed ? [{ ...event, params: requests[0] }, { ...event, params: requests[3] }] : []);
+      assert.deepStrictEqual(events.filter((e) => e.event === 'request-declined').map((e) => e.params), allowed ? [requests[1], requests[2]] : requests);
       const summary = L.summarize({ args: { role, issue: 171 }, dir, run, logFile: server });
       assert.match(summary, new RegExp(`^Computer Use app approvals accepted: ${allowed ? 2 : 0} · apps: ${allowed ? 'movementorders' : 'none'}$`, 'm'));
-      assert.match(summary, new RegExp(`^Auto-review: none requested · requests that reached the launcher \\(declined\\): ${allowed ? 1 : 3}$`, 'm'));
+      assert.match(summary, new RegExp(`^Auto-review: none requested · requests that reached the launcher \\(declined\\): ${allowed ? 2 : 4}$`, 'm'));
     }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
