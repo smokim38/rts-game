@@ -35,6 +35,12 @@ namespace Northwatch.EditorTools
         public static void BuildOrderCheckWindows()
             => Build("Assets/Scenes/Sandbox.unity", "MovementOrders");
 
+        public static void BuildStaticMapChecks()
+        {
+            BuildOrderCheckWindows();
+            BuildWindows();
+        }
+
         public static void AnalyzeCapture()
         {
             string[] args = Environment.GetCommandLineArgs();

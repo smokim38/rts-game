@@ -34,7 +34,7 @@ namespace Northwatch.Tests.EditMode.Presentation
                     .CreateDelegate(typeof(Action), overlay);
                 Canvas.ForceUpdateCanvases();
                 Vector2 first = camera.WorldToScreenPoint(new Vector3(-40, 0, 0));
-                Vector2 second = camera.WorldToScreenPoint(new Vector3(40, 0, 0));
+                Vector2 second = camera.WorldToScreenPoint(new Vector3(-40, 0, 45));
                 Click(mouse, update, first);
                 Assert.That(driver.Simulation.RemainingCapacity, Is.EqualTo(2000));
                 Press(keyboard, update, Key.F1);

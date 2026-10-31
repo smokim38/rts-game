@@ -122,6 +122,7 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
                 for (int i = 0; i < 2000; i++)
                 {
                     float2 position = state.Positions[i].xz;
+                    Assert.That(StaticClamp.IsClear(position, Footprint.Radius(state.Sizes[i]), maps.Walkable), Is.True);
                     Assert.That(StaticClamp.NoWorse(position, state.Movement[i].Previous.Position.xz,
                         Footprint.Radius(state.Sizes[i]), maps.Walkable), Is.True);
                     Assert.That(position.x + Footprint.Radius(state.Sizes[i]), Is.LessThanOrEqualTo(0));

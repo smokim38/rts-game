@@ -36,10 +36,10 @@ namespace Northwatch.Tests.EditMode.Presentation
                     .CreateDelegate(typeof(Action), overlay);
                 UnitSimulation simulation = driver.Simulation;
                 simulation.QueueAdd(Side.First, UnitSize.Small, Vector3.zero);
-                simulation.QueueAdd(Side.First, UnitSize.Small, new Vector3(20, 0, 0));
+                simulation.QueueAdd(Side.First, UnitSize.Small, new Vector3(-20, 0, 0));
                 simulation.ScheduleFrame(1); simulation.CompleteFrame();
                 Vector2 a = view.WorldToScreenPoint(new Vector3(0, 0.25f, 0));
-                Vector2 b = view.WorldToScreenPoint(new Vector3(20, 0.25f, 0));
+                Vector2 b = view.WorldToScreenPoint(new Vector3(-20, 0.25f, 0));
                 double now = 1;
                 void Step(Vector2 position, bool down = false, bool focused = true, params Key[] keys)
                 {
@@ -76,7 +76,7 @@ namespace Northwatch.Tests.EditMode.Presentation
                 Assert.That(view.transform.position, Is.Not.EqualTo(beforeRecall));
                 Ray centreRay = view.ViewportPointToRay(new Vector3(0.5f, 0.5f));
                 new Plane(Vector3.up, 0).Raycast(centreRay, out float distance);
-                Assert.That(Vector3.Distance(centreRay.GetPoint(distance), new Vector3(10, 0, 0)), Is.LessThan(0.001f));
+                Assert.That(Vector3.Distance(centreRay.GetPoint(distance), new Vector3(-10, 0, 0)), Is.LessThan(0.001f));
                 Step(a, false, true, Key.F1); Step(a);
                 Step(b, true); Step(b); Step(b, false, true, Key.Digit9);
                 Assert.That(simulation.SelectedCount, Is.EqualTo(2), "Spawn input must not change selection or recall a group.");

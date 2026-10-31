@@ -2,8 +2,8 @@ using Unity.Mathematics;
 
 namespace Northwatch.Simulation.FlowFields
 {
-    internal struct StaticBox
+    public struct StaticBox
     {
-        internal int2 Min, MaxExclusive;
+        public int2 Min, MaxExclusive;
     }
 }

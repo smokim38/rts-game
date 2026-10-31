@@ -6,6 +6,7 @@ using Northwatch.EditorTools;
 using Northwatch.Presentation;
 using Northwatch.Presentation.Diagnostics;
 using Northwatch.Simulation;
+using Northwatch.Simulation.Movement;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEditor.SceneManagement;
@@ -17,6 +18,68 @@ namespace Northwatch.Tests.EditMode.EditorTools
 {
     public sealed class SandboxSceneBuilderTests
     {
+        [Test]
+        public void LayoutLoadsWallThreeCellGapAndRingAndOnlySandboxDrawsThem()
+        {
+            var layout = AssetDatabase.LoadAssetAtPath<SandboxObstacles>(SandboxSceneBuilder.ObstaclesPath);
+            Assert.That(layout, Is.Not.Null);
+            Assert.That(layout.Count, Is.EqualTo(7));
+            var settings = AssetDatabase.LoadAssetAtPath<MovementSettings>(SandboxSceneBuilder.MovementSettingsPath);
+            using var simulation = layout.CreateSimulation(settings.Snapshot());
+            var maps = simulation.StaticMaps;
+            Assert.That(maps.Walkable[128 * 256 + 148], Is.Zero, "long wall");
+            Assert.That(maps.Walkable[126 * 256 + 178], Is.Zero);
+            Assert.That(maps.Walkable[130 * 256 + 178], Is.Zero);
+            for (int y = 127; y < 130; y++) Assert.That(maps.Walkable[y * 256 + 178], Is.EqualTo(1));
+            for (int size = 0; size < 2; size++)
+            {
+                int offset = size * 256 * 256;
+                Assert.That(maps.Regions[offset + 155 * 256 + 210], Is.Not.Zero.And.Not.EqualTo(maps.Regions[offset]));
+            }
+            Assert.That(simulation.QueueBlock(Side.First, UnitSize.Small, Vector3.zero, 2000), Is.True);
+            simulation.ScheduleFrame(1); simulation.CompleteFrame();
+            Assert.That(simulation.PlacementResult, Is.EqualTo(2000), "spawn area remains clear");
+            var scene = EditorSceneManager.OpenScene(SandboxSceneBuilder.ScenePath);
+            MatchDriver driver = scene.GetRootGameObjects().Select(root => root.GetComponent<MatchDriver>()).Single(value => value != null);
+            Assert.That(new SerializedObject(driver).FindProperty("obstacles").objectReferenceValue, Is.EqualTo(layout));
+            Transform drawings = driver.transform.Find("Obstacles");
+            Assert.That(drawings.childCount, Is.EqualTo(layout.Count));
+            for (int i = 0; i < layout.Count; i++)
+            {
+                RectInt box = layout.Box(i);
+                Transform drawing = drawings.GetChild(i);
+                Assert.That(drawing.position, Is.EqualTo(new Vector3(box.center.x - 128, 1, box.center.y - 128)));
+                Assert.That(drawing.localScale, Is.EqualTo(new Vector3(box.width, 2, box.height)));
+                Assert.That(drawing.GetComponent<Collider>(), Is.Null);
+                Assert.That(AssetDatabase.GetAssetPath(drawing.GetComponent<MeshRenderer>().sharedMaterial), Is.EqualTo("Assets/Materials/Obstacle.mat"));
+            }
+            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Prefabs/MatchDriver.prefab");
+            Assert.That(new SerializedObject(prefab.GetComponent<MatchDriver>()).FindProperty("obstacles").objectReferenceValue, Is.Null);
+            var ladder = EditorSceneManager.OpenScene(PerformanceLadderBuilder.ScenePath);
+            Assert.That(ladder.GetRootGameObjects().SelectMany(root => root.GetComponentsInChildren<Transform>()).Any(t => t.name == "Obstacles"), Is.False);
+            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+        }
+
+        [TestCase(UnitSize.Small)]
+        [TestCase(UnitSize.Large)]
+        public void PlacementRejectsBlockedDiscAndWholeBlockWithoutPartialSpawn(UnitSize size)
+        {
+            var layout = AssetDatabase.LoadAssetAtPath<SandboxObstacles>(SandboxSceneBuilder.ObstaclesPath);
+            var settings = AssetDatabase.LoadAssetAtPath<MovementSettings>(SandboxSceneBuilder.MovementSettingsPath);
+            using var simulation = layout.CreateSimulation(settings.Snapshot());
+            simulation.QueueBlock(Side.First, size, new Vector3(19, 0, 0), 100);
+            simulation.ScheduleFrame(1); simulation.CompleteFrame();
+            Assert.That(simulation.Count, Is.Zero);
+            Assert.That(simulation.PlacementResult, Is.EqualTo(-1));
+            simulation.QueueAdd(Side.First, size, new Vector3(20.5f, 0, 0));
+            simulation.ScheduleFrame(1); simulation.CompleteFrame();
+            Assert.That(simulation.Count, Is.Zero);
+            float radius = Footprint.Radius(size);
+            simulation.QueueAdd(Side.First, size, new Vector3(20 - radius * .9f, 0, 0));
+            simulation.ScheduleFrame(1); simulation.CompleteFrame();
+            Assert.That(simulation.Count, Is.Zero, "disc must fit, even if the unturned square fits");
+        }
+
         [Test]
         public void PlayerCheckOutputStaysInProjectAndRejectsRelocatedBuild()
         {
