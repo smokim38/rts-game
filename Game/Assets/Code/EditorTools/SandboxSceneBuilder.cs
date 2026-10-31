@@ -42,6 +42,15 @@ namespace Northwatch.EditorTools
             SavePrefab(driver, DriverPath);
         }
 
+        public static void BuildFlowFieldSettings()
+        {
+            MovementSettings settings = AssetDatabase.LoadAssetAtPath<MovementSettings>(MovementSettingsPath);
+            if (settings == null) throw new InvalidOperationException("Movement settings are missing.");
+            settings.Snapshot();
+            EditorUtility.SetDirty(settings);
+            AssetDatabase.SaveAssetIfDirty(settings);
+        }
+
         [MenuItem("Northwatch/Build sandbox assets")]
         public static void Build()
         {

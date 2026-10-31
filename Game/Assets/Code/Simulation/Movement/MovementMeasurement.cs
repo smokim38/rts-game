@@ -65,17 +65,28 @@ namespace Northwatch.Simulation.Movement
         public int Metric(int tick, int metric) => samples[tick * MetricCount + metric];
         public float2 Progress(int tick) => progress[tick];
 
+        public void CountPastSandboxWall(out int small, out int large)
+        {
+            small = large = 0;
+            for (int i = 0; i < state.Alive.Length; i++)
+            {
+                if (state.Alive[i] == 0 || state.Positions[i].x <= 21 + Footprint.Radius(state.Sizes[i])) continue;
+                if (state.Sizes[i] == UnitSize.Small) small++;
+                else large++;
+            }
+        }
+
         public void WriteOrderState(TextWriter writer)
         {
             // Called only after the driver's final completion, outside the measured window.
-            writer.WriteLine("unit,x,z,heading,goal_x,goal_z,velocity_x,velocity_z,has_order,arrival_rule,best_distance,last_progress_tick");
+            writer.WriteLine("unit,x,z,heading,goal_x,goal_z,velocity_x,velocity_z,has_order,arrival_rule,best_distance,last_progress_tick,size");
             for (int i = 0; i < state.Alive.Length; i++)
             {
                 if (state.Alive[i] == 0) continue;
                 MovementUnit unit = state.Movement[i];
-                writer.WriteLine(string.Format(CultureInfo.InvariantCulture, "{0},{1:R},{2:R},{3:R},{4:R},{5:R},{6:R},{7:R},{8},{9},{10:R},{11}",
+                writer.WriteLine(string.Format(CultureInfo.InvariantCulture, "{0},{1:R},{2:R},{3:R},{4:R},{5:R},{6:R},{7:R},{8},{9},{10:R},{11},{12}",
                     i, state.Positions[i].x, state.Positions[i].z, unit.Heading, unit.Goal.x, unit.Goal.y,
-                    unit.Velocity.x, unit.Velocity.y, unit.HasMoveOrder, unit.ArrivalRule, unit.BestGoalDistance, unit.LastProgressTick));
+                    unit.Velocity.x, unit.Velocity.y, unit.HasMoveOrder, unit.ArrivalRule, unit.BestGoalDistance, unit.LastProgressTick, state.Sizes[i]));
             }
         }
 

@@ -18,6 +18,8 @@ namespace Northwatch.Simulation.Movement
         [WriteOnly] internal NativeArray<MovementUnit> Planned;
         [ReadOnly] internal SpatialGrid Grid;
         internal FlowFieldReader Fields;
+        [ReadOnly] internal NativeArray<int> UnitFields;
+        internal bool HasFields;
         internal MovementParameters Settings;
         internal ulong Tick;
 
@@ -26,11 +28,17 @@ namespace Northwatch.Simulation.Movement
             if (Alive[i] == 0) return;
             MovementUnit unit = Units[i];
             if (!unit.HasMoveOrder) { Planned[i] = unit; return; }
-            float2 delta = unit.Goal - Positions[i].xz;
+            int field = HasFields ? UnitFields[i] : -1;
+            FlowSampleStatus status = Fields.Sample(field, Positions[i].xz, out FlowSample sample);
+            float2 target = status == FlowSampleStatus.Ready && sample.InSight
+                ? math.clamp(unit.Goal, sample.Goal - .5f, sample.Goal + .5f) : unit.Goal;
+            float2 delta = target - Positions[i].xz;
             float distance = math.length(delta);
-            if (distance <= unit.BestGoalDistance - .1f)
+            float remaining = status == FlowSampleStatus.Ready && !sample.InSight ? sample.Distance : distance;
+            if (HasFields && field != unit.ProgressField || remaining <= unit.BestGoalDistance - .1f)
             {
-                unit.BestGoalDistance = distance;
+                unit.ProgressField = field;
+                unit.BestGoalDistance = remaining;
                 unit.LastProgressTick = Tick;
             }
             byte arrivalRule = distance <= .05f && math.lengthsq(unit.Velocity) < .01f ? (byte)1 : (byte)0;
@@ -55,8 +63,7 @@ namespace Northwatch.Simulation.Movement
                 unit.Velocity = unit.PreferredVelocity = unit.NewVelocity = float2.zero;
                 Planned[i] = unit; return;
             }
-            FlowSampleStatus status = Fields.Sample(FlowFieldReader.NoField, Positions[i].xz, out FlowSample sample);
-            float2 direction = status == FlowSampleStatus.Ready ? sample.Direction : math.normalizesafe(delta);
+            float2 direction = status == FlowSampleStatus.Ready && !sample.InSight ? sample.Direction : math.normalizesafe(delta);
             // Reynolds arrival, bounded by the remaining step so a direct seek cannot orbit its goal.
             float speed = math.min(Settings.Speed(Sizes[i]), math.sqrt(2 * Settings.Deceleration * distance));
             speed = math.min(speed, distance / MovementParameters.TickDuration);

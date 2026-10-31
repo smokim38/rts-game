@@ -56,8 +56,11 @@ namespace Northwatch.Simulation.Movement
                     float2 lo = new float2(x, y) - HalfMap, hi = lo + 1;
                     float2 delta = position - math.clamp(position, lo, hi);
                     float length = math.length(delta);
-                    if (length >= radius) continue;
-                    if (length > 0) position += delta * ((radius - length) / length);
+                    // Curved contacts need room for float rounding. Flat contacts
+                    // stay stationary; the move check still permits no penetration.
+                    float contactRadius = radius + (delta.x != 0 && delta.y != 0 ? .0001f : 0);
+                    if (length >= contactRadius) continue;
+                    if (length > 0) position += delta * ((contactRadius - length) / length);
                     else
                     {
                         float4 exits = new float4(position - lo, hi - position);

@@ -37,6 +37,7 @@ namespace Northwatch.Simulation
                     unit.Mode = MovementMode.Moving;
                     unit.BestGoalDistance = math.distance(unit.Goal, State.Positions[slot].xz);
                     unit.LastProgressTick = Tick;
+                    unit.ProgressField = -1;
                     unit.ArrivalRule = 0;
                     State.Movement[slot] = unit;
                     continue;

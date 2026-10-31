@@ -12,12 +12,23 @@ namespace Northwatch.Simulation.Movement
         internal NativeArray<long> Values;
         internal int Index;
         [DllImport("kernel32.dll")] private static extern int QueryPerformanceCounter(out long value);
+        [DllImport("kernel32.dll")] private static extern int QueryPerformanceFrequency(out long value);
         public void Execute() => Write(Values, Index);
+
+        internal static long Now()
+        {
+            QueryPerformanceCounter(out long value); return value;
+        }
+
+        internal static long Frequency
+        {
+            get { QueryPerformanceFrequency(out long value); return value; }
+        }
 
         internal static void Write(NativeArray<long> values, int index)
         {
             if (!values.IsCreated || values.Length == 0) return;
-            QueryPerformanceCounter(out long value); values[index] = value;
+            values[index] = Now();
         }
 
         internal static JobHandle Stamp(NativeArray<long> values, int index, JobHandle dependency)
@@ -26,6 +37,7 @@ namespace Northwatch.Simulation.Movement
 #else
     internal static class MovementTimestampJob
     {
+        internal static long Now() => 0;
         internal static void Write(NativeArray<long> values, int index) { }
         internal static JobHandle Stamp(NativeArray<long> values, int index, JobHandle dependency) => dependency;
     }

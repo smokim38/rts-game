@@ -6,5 +6,7 @@ namespace Northwatch.Simulation.FlowFields
     {
         internal float2 Direction;
         internal float Distance;
+        internal bool InSight;
+        internal float2 Goal;
     }
 }

@@ -10,6 +10,18 @@ namespace Northwatch.Simulation.Movement
         public float SmallSpeed, LargeSpeed, Acceleration, Deceleration, TurnSpeed;
         public float SlotSpacing;
         public int MoveCheckPasses;
+        public int FieldCapacity, BuildSlots, BuildLatencyTicks;
+        public float MinLease, DirectSeekRange;
+
+        public void ValidateFields(int width, int height)
+        {
+            long cells = (long)width * height;
+            if (width < 1 || height < 1 || cells > 87381 || FieldCapacity < 200 ||
+                cells * FieldCapacity * 3 > 64L * 1024 * 1024 || BuildSlots < 2 || BuildSlots > 4 ||
+                BuildLatencyTicks < 1 || !math.isfinite(MinLease) || MinLease <= 0 ||
+                !math.isfinite(DirectSeekRange) || DirectSeekRange <= 0)
+                throw new ArgumentException("Flow-field settings violate ADR 0011; match cannot start.");
+        }
 
         public void Validate()
         {

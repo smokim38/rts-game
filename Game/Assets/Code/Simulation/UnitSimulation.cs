@@ -15,6 +15,7 @@ namespace Northwatch.Simulation
         internal UnitState State;
         private MovementPipeline movement;
         internal StaticMaps StaticMaps { get; private set; }
+        private StaticMaps openFieldMaps;
         public double StaticMapBuildMilliseconds { get; private set; }
         public long StaticMapBytes => StaticMaps?.MapBytes ?? 0;
         public long StaticMapScratchBytes => StaticMaps?.ScratchBytes ?? 0;
@@ -37,9 +38,12 @@ namespace Northwatch.Simulation
             }
             MovementParameters settings = movement.Settings;
             movement.Dispose();
-            movement = new MovementPipeline(Capacity, settings, Measurement.Walkable);
-            if ((scene == 4 || scene == 5) && !QueueBlock(Side.First, UnitSize.Small, Vector3.zero, count))
+            movement = new MovementPipeline(Capacity, settings, Measurement.Walkable, StaticMaps ?? openFieldMaps);
+            int smallCount = scene == 5 && count == 110 ? 100 : count;
+            if ((scene == 4 || scene == 5) && !QueueBlock(Side.First, UnitSize.Small, Vector3.zero, smallCount))
                 throw new InvalidOperationException("Could not queue the measured open-map block.");
+            if (scene == 5 && count == 110 && !QueueBlock(Side.First, UnitSize.Large, new Vector3(-12, 0, -15), 10))
+                throw new InvalidOperationException("Could not queue the measured large cubes.");
         }
 #endif
         private NativeArray<uint> selected, groups;
@@ -71,7 +75,14 @@ namespace Northwatch.Simulation
 
         public UnitSimulation(MovementParameters settings) : this()
         {
-            try { movement = new MovementPipeline(Capacity, settings); }
+            try
+            {
+                settings.Validate(); settings.ValidateFields(256, 256);
+                openFieldMaps = new StaticMaps(256, 256);
+                using var boxes = new NativeArray<StaticBox>(0, Allocator.TempJob);
+                openFieldMaps.ScheduleBuild(boxes).Complete();
+                movement = new MovementPipeline(Capacity, settings, staticMaps: openFieldMaps);
+            }
             catch { Dispose(); throw; }
         }
 
@@ -80,12 +91,13 @@ namespace Northwatch.Simulation
             try
             {
                 settings.Validate();
+                settings.ValidateFields(StaticClamp.MapWidth, StaticClamp.MapWidth);
                 StaticMaps = new StaticMaps(StaticClamp.MapWidth, StaticClamp.MapWidth);
                 long began = System.Diagnostics.Stopwatch.GetTimestamp();
                 StaticMaps.ScheduleBuild(boxes).Complete();
                 StaticMapBuildMilliseconds = (System.Diagnostics.Stopwatch.GetTimestamp() - began) *
                     1000.0 / System.Diagnostics.Stopwatch.Frequency;
-                movement = new MovementPipeline(Capacity, settings, StaticMaps.Walkable);
+                movement = new MovementPipeline(Capacity, settings, StaticMaps.Walkable, StaticMaps);
             }
             catch { Dispose(); throw; }
         }
@@ -246,6 +258,7 @@ namespace Northwatch.Simulation
             State.Dispose();
             movement?.Dispose();
             StaticMaps?.Dispose();
+            openFieldMaps?.Dispose();
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
             Measurement?.Dispose();
 #endif

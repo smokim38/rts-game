@@ -76,10 +76,19 @@ namespace Northwatch.Presentation.Diagnostics
         internal static AllocationScope TraceAllocations(bool drawing)
             => allocationProfile == null || allocationProfile.finished ? default : new AllocationScope(allocationProfile, drawing);
 
+        internal static string[] ProfileArguments()
+        {
+            string[] args = Environment.GetCommandLineArgs();
+            if (Array.IndexOf(args, "-movement-core-profile") >= 0 || Array.IndexOf(args, "-flow-field-profile") >= 0) return args;
+            // One argument per line lets desktop automation launch the normal Player.
+            string path = Path.GetFullPath(Path.Combine(Application.dataPath, "../../../Logs/movement-profile-arguments.txt"));
+            return File.Exists(path) ? File.ReadAllLines(path) : args;
+        }
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Launch()
         {
-            if (Array.IndexOf(Environment.GetCommandLineArgs(), "-movement-core-profile") < 0) return;
+            if (Array.IndexOf(ProfileArguments(), "-movement-core-profile") < 0) return;
             PerformanceLadder ladder = FindFirstObjectByType<PerformanceLadder>();
             if (ladder != null) ladder.enabled = false;
             new GameObject("MovementCoreProfile").AddComponent<MovementCoreProfile>();
@@ -95,7 +104,7 @@ namespace Northwatch.Presentation.Diagnostics
 
         private void Initialize()
         {
-            string[] args = Environment.GetCommandLineArgs();
+            string[] args = ProfileArguments();
             capture = Array.IndexOf(args, "-movement-capture") >= 0;
             int index = Array.IndexOf(args, "-movement-output"), sceneIndex = Array.IndexOf(args, "-movement-scene");
             int countIndex = Array.IndexOf(args, "-movement-units");
@@ -377,8 +386,10 @@ namespace Northwatch.Presentation.Diagnostics
                 bool stopped = true;
                 for (int t = last - 59; t <= last; t++)
                     stopped &= measurement.Metric(t, 9) == 0 && measurement.Metric(t, 18) == 0;
-                orderPassed &= stopped;
-                writer.WriteLine("stopped_at_wall=" + stopped + "; pass=" + orderPassed);
+                measurement.CountPastSandboxWall(out int smallPast, out int largePast);
+                orderPassed &= smallPast > 0 && largePast > 0;
+                writer.WriteLine("stopped=" + stopped + "; small_past_wall=" + smallPast + "; large_past_wall=" + largePast +
+                    "; all_past_wall=" + (smallPast + largePast == unitCount) + "; pass=" + orderPassed);
             }
             Application.Quit(invalidFrames == 0 && !scopeCapacityReached && orderPassed ? 0 : 1);
         }
