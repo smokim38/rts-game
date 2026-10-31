@@ -1,6 +1,7 @@
 using System;
 using Northwatch.Presentation;
 using Northwatch.Simulation;
+using Northwatch.Simulation.FlowFields;
 using Northwatch.Simulation.Movement;
 using Northwatch.Simulation.Spatial;
 using NUnit.Framework;
@@ -98,6 +99,33 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
                 Seek(state, scene == 0 ? new float2(-4, -4) : new float2(2, scene == 2 ? 2 : -3));
                 pipeline.Schedule(state, default).Complete();
                 AssertClear(state, map);
+            }
+        }
+
+        [TestCase(1)]
+        [TestCase(2)]
+        public void TwoThousandUnitsAgainstRasterizedWallStayOutOfBlockedCells(int passes)
+        {
+            using var maps = new StaticMaps(256, 256);
+            using var boxes = new NativeArray<StaticBox>(new[] { new StaticBox
+                { Min = new int2(128, 0), MaxExclusive = new int2(129, 256) } }, Allocator.TempJob);
+            maps.ScheduleBuild(boxes).Complete();
+            using var state = new UnitState(2000);
+            using var pipeline = new MovementPipeline(2000, Settings(passes), maps.Walkable);
+            for (int i = 0; i < 2000; i++)
+                Place(state, i, new float2(-.75f - i % 40 * 1.05f, -26 + i / 40 * 1.05f),
+                    i % 7 == 0 ? UnitSize.Large : UnitSize.Small);
+            for (int tick = 0; tick < 180; tick++)
+            {
+                Seek(state, new float2(10, 0));
+                pipeline.Schedule(state, default).Complete();
+                for (int i = 0; i < 2000; i++)
+                {
+                    float2 position = state.Positions[i].xz;
+                    Assert.That(StaticClamp.NoWorse(position, state.Movement[i].Previous.Position.xz,
+                        Footprint.Radius(state.Sizes[i]), maps.Walkable), Is.True);
+                    Assert.That(position.x + Footprint.Radius(state.Sizes[i]), Is.LessThanOrEqualTo(0));
+                }
             }
         }
 
