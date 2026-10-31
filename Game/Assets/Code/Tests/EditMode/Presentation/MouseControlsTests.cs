@@ -114,6 +114,41 @@ namespace Northwatch.Tests.EditMode.Presentation
         }
 
         [Test]
+        public void MarkerHidesOnFirstDrawAfterLastArrivalAndEmptySelectionCannotShowIt()
+        {
+            Click(own); Click(ground);
+            var drawing = driver.transform.Find("MoveMarker").GetComponent<MeshRenderer>();
+            Assert.That(drawing.enabled, Is.True);
+            for (int tick = 0; tick < 1200 && Simulation.MoveMarkerCount > 0; tick++)
+            {
+                Simulation.ScheduleFrame(1); Simulation.CompleteFrame(); selection.CompleteFrame();
+                Assert.That(drawing.enabled, Is.EqualTo(Simulation.State.Movement[0].HasMoveOrder));
+            }
+            Assert.That(drawing.enabled, Is.False);
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            for (int frame = 0; frame < 256; frame++) selection.CompleteFrame();
+            Assert.That(GC.GetAllocatedBytesForCurrentThread() - before, Is.Zero);
+            Step(own, 0, true, Key.Escape); Click(ground);
+            Assert.That(drawing.enabled, Is.False);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void NewOrderMidwayReusesSingleRingAtNewPoint(bool modern)
+        {
+            Switch(modern); Click(own);
+            ushort button = modern ? (ushort)2 : (ushort)1;
+            Click(ground, button);
+            Simulation.ScheduleFrame(1); Simulation.CompleteFrame(); selection.CompleteFrame();
+            var marker = driver.transform.Find("MoveMarker").GetComponent<MeshRenderer>();
+            Vector2 next = view.WorldToScreenPoint(new Vector3(20, 0, 0));
+            Click(next, button);
+            Assert.That(driver.GetComponentsInChildren<MoveMarker>().Length, Is.EqualTo(1));
+            Assert.That(marker.enabled, Is.True);
+            Assert.That(Vector3.Distance(marker.transform.position, new Vector3(20, .02f, 0)), Is.LessThan(.001f));
+            Assert.That(Simulation.MoveMarkerCount, Is.EqualTo(1));
+        }
+
+        [Test]
         public void MarkerIsAGroundRingPulsingTwicePerSecondWithoutAllocations()
         {
             MoveMarker marker = driver.transform.Find("MoveMarker").GetComponent<MoveMarker>();

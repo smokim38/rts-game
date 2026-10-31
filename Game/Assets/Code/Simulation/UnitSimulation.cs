@@ -66,6 +66,7 @@ namespace Northwatch.Simulation
         public int SelectedCount { get { RequireComplete(); return (int)selectionSummary[0].w; } }
         public Vector3 SelectedCentre { get { RequireComplete(); return selectionSummary[0].xyz; } }
         public int MoveMarkerVersion { get { RequireComplete(); return (int)selectionSummary[1].w; } }
+        public int MoveMarkerCount { get { RequireComplete(); return (int)selectionSummary[2].y; } }
         public Vector3 MoveMarkerPosition { get { RequireComplete(); return selectionSummary[1].xyz; } }
         public int AcknowledgementCount { get { RequireComplete(); return State.Summary[7]; } }
 
@@ -171,7 +172,7 @@ namespace Northwatch.Simulation
             {
                 Positions = State.Positions, Sides = State.Sides, Sizes = State.Sizes,
                 Movement = State.Movement, Interpolation = interpolation,
-                Alive = State.Alive, Selected = selected, Summary = State.Summary, Matrices = nextMatrices,
+                Alive = State.Alive, Selected = selected, QueuedMoves = queuedMoves, Summary = State.Summary, Matrices = nextMatrices,
                 Orders = selectionSummary, Seconds = seconds
             }.Schedule(pending);
             scheduled = true;
