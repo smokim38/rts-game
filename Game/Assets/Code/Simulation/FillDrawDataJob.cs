@@ -17,6 +17,7 @@ namespace Northwatch.Simulation
         [ReadOnly] internal NativeArray<UnitSize> Sizes;
         [ReadOnly] internal NativeArray<byte> Alive;
         [ReadOnly] internal NativeArray<uint> Selected;
+        [ReadOnly] internal NativeArray<int> QueuedMoves;
         internal NativeArray<float4> Orders;
         internal float Seconds;
         internal NativeArray<int> Summary;
@@ -24,7 +25,7 @@ namespace Northwatch.Simulation
 
         public void Execute()
         {
-            int first = 0, second = 0, selected = 0, acknowledgements = 0;
+            int first = 0, second = 0, selected = 0, acknowledgements = 0, markerCount = 0;
             float elapsed = Seconds - Orders[2].x;
             bool acknowledge = Orders[1].w > 0 && elapsed >= 0 && elapsed < .3f;
             float pulse = 1.2f + .1f * math.sin(elapsed * (math.PI * 2 / .3f));
@@ -34,6 +35,9 @@ namespace Northwatch.Simulation
                 if (Alive[slot] == 0) continue;
                 float width = Sizes[slot] == UnitSize.Small ? 0.5f : 1f;
                 MovementUnit unit = Movement[slot];
+                // A click gets feedback before its queued move is applied on a tick.
+                if (Orders[1].w > 0 && unit.OrderVersion == (int)Orders[1].w &&
+                    (unit.HasMoveOrder || QueuedMoves[slot] != 0)) markerCount++;
                 if (Selected[slot] != 0) selectedCentre += Positions[slot];
                 float3 position = math.lerp(unit.Previous.Position, Positions[slot], Interpolation);
                 float angle = unit.Previous.Heading + math.atan2(math.sin(unit.Heading - unit.Previous.Heading),
@@ -57,6 +61,7 @@ namespace Northwatch.Simulation
             Summary[4] = second;
             Summary[7] = acknowledgements;
             Orders[0] = new float4(selected == 0 ? float3.zero : selectedCentre / selected, selected);
+            float4 feedback = Orders[2]; feedback.y = markerCount; Orders[2] = feedback;
         }
     }
 }

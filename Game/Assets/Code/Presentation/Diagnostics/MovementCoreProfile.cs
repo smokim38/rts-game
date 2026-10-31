@@ -45,6 +45,11 @@ namespace Northwatch.Presentation.Diagnostics
         private Vector2 orderPoint;
         private Vector2[] initialDraw;
         private double releaseTime, firstDrawTime = -1, allDrawTime = -1;
+        private MeshRenderer markerDrawing;
+        private bool checkMarker, expectedMarker;
+        private int markerTravelFrames, markerSettledFrames, markerMismatches;
+        private int lastOrderStoppedFrame = -1, markerHiddenFrame = -1;
+        private MovementCheckRenderer batchRenderer;
 
         internal readonly struct AllocationScope : IDisposable
         {
@@ -111,6 +116,11 @@ namespace Northwatch.Presentation.Diagnostics
                 capturePaths = new[] { output + "-0.raw", output + "-1.raw", output + "-2.raw", output + "-3.raw" };
             driver = FindFirstObjectByType<MatchDriver>();
             if (driver == null || driver.MovementSettings == null) throw new InvalidOperationException("The match has no driver or movement settings.");
+            if (Application.isBatchMode)
+            {
+                batchRenderer = gameObject.AddComponent<MovementCheckRenderer>();
+                batchRenderer.Initialize(FindFirstObjectByType<Camera>());
+            }
             scene = int.Parse(args[sceneIndex + 1], CultureInfo.InvariantCulture);
             unitCount = int.Parse(args[countIndex + 1], CultureInfo.InvariantCulture);
             driver.Simulation.MeasureMovement(scene, unitCount);
@@ -120,13 +130,14 @@ namespace Northwatch.Presentation.Diagnostics
                 controls = FindFirstObjectByType<SelectionController>();
                 orderCamera = Camera.main;
                 if (controls == null || orderCamera == null) throw new InvalidOperationException("Open orders require the sandbox Player.");
+                markerDrawing = driver.transform.Find("MoveMarker").GetComponent<MeshRenderer>();
                 modern = Array.IndexOf(args, "-movement-modern") >= 0;
                 mouse = Mouse.current ?? InputSystem.AddDevice<Mouse>();
                 keyboard = Keyboard.current ?? InputSystem.AddDevice<Keyboard>();
                 gameObject.AddComponent<SelectionInputPump>();
                 initialDraw = new Vector2[unitCount];
-                orderCamera.GetComponent<Cameras.CameraController>().CentreOn(new Vector3(unitCount == 100 ? 7.5f : 30, 0, 0));
-                orderCamera.orthographicSize = unitCount == 100 ? 25 : 70;
+                orderCamera.GetComponent<Cameras.CameraController>().CentreOn(new Vector3(unitCount <= 100 ? 7.5f : 30, 0, 0));
+                orderCamera.orthographicSize = unitCount <= 100 ? 25 : 70;
                 InputSystem.QueueStateEvent(mouse, new MouseState { position = new Vector2(960, 540) });
                 RenderPipelineManager.endContextRendering += RecordDrawnResponse;
             }
@@ -175,7 +186,7 @@ namespace Northwatch.Presentation.Diagnostics
                 }
                 else if (measuring && orderPhase == 2)
                 {
-                    orderPoint = orderCamera.WorldToScreenPoint(new Vector3(unitCount == 100 ? 15 : 60, 0, 0));
+                    orderPoint = orderCamera.WorldToScreenPoint(new Vector3(unitCount == 5 ? 20 : unitCount == 100 ? 15 : 60, 0, 0));
                     InputSystem.QueueStateEvent(mouse, new MouseState { position = orderPoint, buttons = modern ? (ushort)2 : (ushort)1 });
                     orderPhase = 3;
                 }
@@ -246,6 +257,14 @@ namespace Northwatch.Presentation.Diagnostics
                 acknowledgementFrame = 1;
             int tick = measurement.TickCount - 1;
             if (firstOrderTick < 0 && tick >= 0 && measurement.Metric(tick, 11) != 0) firstOrderTick = tick;
+            if (firstOrderTick >= 0)
+            {
+                // Cache the completed job's independent order count before the driver
+                // schedules again; inspect the renderer after SelectionController updates it.
+                checkMarker = true;
+                expectedMarker = measurement.Metric(tick, 11) > 0;
+                if (!expectedMarker && lastOrderStoppedFrame < 0) lastOrderStoppedFrame = Time.frameCount;
+            }
             if (allDrawTime >= 0) return;
             int moved = 0;
             var drawing = driver.Simulation.DrawMatrices;
@@ -262,6 +281,14 @@ namespace Northwatch.Presentation.Diagnostics
         {
             if (drawPending && firstDrawTime < 0) firstDrawTime = Time.realtimeSinceStartupAsDouble;
             if (allDrawPending && allDrawTime < 0) allDrawTime = Time.realtimeSinceStartupAsDouble;
+            if (!checkMarker || finished) return;
+            if (markerDrawing.enabled != expectedMarker) markerMismatches++;
+            if (expectedMarker) markerTravelFrames++;
+            else
+            {
+                markerSettledFrames++;
+                if (!markerDrawing.enabled && markerHiddenFrame < 0) markerHiddenFrame = Time.frameCount;
+            }
         }
 
         private void Finish()
@@ -305,7 +332,8 @@ namespace Northwatch.Presentation.Diagnostics
                 "unfocused_or_wrong_resolution_frames=" + invalidFrames + "; measured_s=" +
                 windowSeconds.ToString("F6", CultureInfo.InvariantCulture) + "\n" +
                 "scoped_gc=" + scopedGc.Valid + "; simulation_alloc_count=" + simulationAllocations +
-                "; drawing_alloc_count=" + drawingAllocations + "; scope_capacity_reached=" + scopeCapacityReached + "\n");
+                "; drawing_alloc_count=" + drawingAllocations + "; scope_capacity_reached=" + scopeCapacityReached + "\n" +
+                "batch_rendered_frames=" + (batchRenderer == null ? -1 : batchRenderer.RenderedFrames) + "\n");
             bool orderPassed = true;
             if (scene == 4)
             {
@@ -321,8 +349,10 @@ namespace Northwatch.Presentation.Diagnostics
                 orderPassed = controls.Modern == modern && acknowledgementFrame == 1 && firstOrderTick >= 0 &&
                     firstDrawTime >= releaseTime && firstDrawTime - releaseTime <= .1 &&
                     measurement.Metric(firstOrderTick, 10) == unitCount && measurement.Metric(firstOrderTick, 11) == unitCount && orderPassed;
-                if (unitCount == 100)
+                orderPassed &= markerTravelFrames > 0 && markerMismatches == 0;
+                if (unitCount <= 100)
                 {
+                    orderPassed &= markerSettledFrames > 0 && markerHiddenFrame == lastOrderStoppedFrame;
                     orderPassed &= allDrawTime >= releaseTime && allDrawTime - releaseTime <= .1 &&
                         measurement.Metric(firstOrderTick, 9) == unitCount && measurement.Metric(tick, 16) == 0 && stableTick <= 1140;
                     for (int t = tick - 59; t <= tick; t++)
@@ -338,9 +368,13 @@ namespace Northwatch.Presentation.Diagnostics
                     measurement.Metric(tick, 13) + "/" + measurement.Metric(tick, 14) + "/" + measurement.Metric(tick, 17) +
                     "; at_rest_with_order=" + measurement.Metric(tick, 15) +
                     "; marker_version=" + driver.Simulation.MoveMarkerVersion + "; marker=" + driver.Simulation.MoveMarkerPosition +
+                    "; marker_travel_frames=" + markerTravelFrames + "; marker_settled_frames=" + markerSettledFrames +
+                    "; marker_mismatches=" + markerMismatches + "; last_order_stopped_frame=" + lastOrderStoppedFrame +
+                    "; marker_hidden_frame=" + markerHiddenFrame +
                     "; pass=" + orderPassed + "\n");
             }
-            Application.Quit(invalidFrames == 0 && !scopeCapacityReached && orderPassed ? 0 : 1);
+            Application.Quit(invalidFrames == 0 && !scopeCapacityReached && orderPassed &&
+                (batchRenderer == null || batchRenderer.RenderedFrames >= 200) ? 0 : 1);
         }
 
         private void WriteMovementJobLabels()

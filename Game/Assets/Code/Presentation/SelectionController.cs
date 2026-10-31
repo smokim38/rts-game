@@ -217,7 +217,7 @@ namespace Northwatch.Presentation
                 centreAfterFrame = false;
                 if (driver.Simulation.SelectedCount > 0) cameraController.CentreOn(driver.Simulation.SelectedCentre);
             }
-            if (driver.Simulation.MoveMarkerVersion == 0) return;
+            if (driver.Simulation.MoveMarkerCount == 0) { moveMarker.Hide(); return; }
             moveMarker.Show(driver.Simulation.MoveMarkerPosition, Time.unscaledTimeAsDouble);
         }
 

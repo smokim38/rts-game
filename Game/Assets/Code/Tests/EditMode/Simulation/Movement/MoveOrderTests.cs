@@ -70,7 +70,7 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
         }
 
         [Test]
-        public void DirectSeekReachesExactGoalWithoutOvershootAndMarkerStays()
+        public void DirectSeekReachesExactGoalWithoutOvershootAndMarkerEnds()
         {
             using var simulation = new UnitSimulation(Settings());
             simulation.QueueBlock(Side.First, UnitSize.Small, Vector3.zero, 1); Frame(simulation, 1);
@@ -78,8 +78,10 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
             for (int t = 0; t < 180; t++) Frame(simulation, 1);
             Assert.That(math.distance(simulation.State.Positions[0], (float3)goal), Is.LessThan(1e-5));
             Assert.That(math.lengthsq(simulation.State.Movement[0].Velocity), Is.LessThan(1e-10));
+            Assert.That(simulation.MoveMarkerCount, Is.Zero);
             for (int t = 0; t < 300; t++) Frame(simulation, 1);
             Assert.That(simulation.MoveMarkerVersion, Is.EqualTo(1));
+            Assert.That(simulation.MoveMarkerCount, Is.Zero);
             Assert.That(simulation.MoveMarkerPosition, Is.EqualTo(goal));
         }
 
@@ -102,7 +104,70 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
             using var simulation = new UnitSimulation(Settings());
             Order(simulation, new Vector3(10, 0, 0)); Frame(simulation, 1);
             Assert.That(simulation.MoveMarkerVersion, Is.Zero);
+            Assert.That(simulation.MoveMarkerCount, Is.Zero);
             Assert.That(simulation.AcknowledgementCount, Is.Zero);
+        }
+
+        [TestCase(1)] [TestCase(2)] [TestCase(3)] [TestCase(4)]
+        public void LastHolderEndingByAnyArrivalRuleClearsCountOnNextDraw(byte rule)
+        {
+            using var simulation = new UnitSimulation(Settings());
+            simulation.QueueAdd(Side.First, UnitSize.Small, Vector3.zero);
+            simulation.QueueAdd(Side.First, UnitSize.Small, new Vector3(-5, 0, 0)); Frame(simulation, 1);
+            SelectAll(simulation); Order(simulation, new Vector3(20, 0, 0));
+            Assert.That(simulation.MoveMarkerCount, Is.EqualTo(2), "Pending recipients count before a tick.");
+            Frame(simulation, 1);
+            for (int i = 0; i < 2; i++)
+            {
+                var unit = simulation.State.Movement[i];
+                unit.HasMoveOrder = false; unit.Mode = MovementMode.Idle; unit.ArrivalRule = rule;
+                simulation.State.Movement[i] = unit;
+                Frame(simulation);
+                Assert.That(simulation.MoveMarkerCount, Is.EqualTo(1 - i));
+            }
+        }
+
+        [Test]
+        public void MarkerCountsUntilLastActualArrivalAndDoesNotReappear()
+        {
+            using var simulation = new UnitSimulation(Settings());
+            simulation.QueueAdd(Side.First, UnitSize.Small, Vector3.zero);
+            simulation.QueueAdd(Side.First, UnitSize.Small, new Vector3(-5, 0, 0)); Frame(simulation, 1);
+            SelectAll(simulation); Order(simulation, new Vector3(10, 0, 0));
+            bool sawOneHolder = false;
+            for (int tick = 0; tick < 400; tick++)
+            {
+                Frame(simulation, 1);
+                int holders = (simulation.State.Movement[0].HasMoveOrder ? 1 : 0) +
+                    (simulation.State.Movement[1].HasMoveOrder ? 1 : 0);
+                Assert.That(simulation.MoveMarkerCount, Is.EqualTo(holders), "Same completed frame as movement.");
+                sawOneHolder |= holders == 1;
+            }
+            Assert.That(sawOneHolder, Is.True);
+            Assert.That(simulation.MoveMarkerCount, Is.Zero);
+        }
+
+        [Test]
+        public void OlderOrderArrivalCannotEndNewerMarkerOrReuseItsVersion()
+        {
+            using var simulation = new UnitSimulation(Settings());
+            simulation.QueueAdd(Side.First, UnitSize.Small, Vector3.zero);
+            simulation.QueueAdd(Side.First, UnitSize.Small, new Vector3(-10, 0, 0)); Frame(simulation, 1);
+            SelectAll(simulation); Order(simulation, new Vector3(1, 0, 0)); Frame(simulation, 1);
+            simulation.QueueSelection(SelectionRequest.PointerClick(new Ray(new Vector3(-10, 10, 0), Vector3.down),
+                Matrix4x4.identity, true, false, false, false, false)); Frame(simulation);
+            Order(simulation, new Vector3(-30, 0, 0));
+            Assert.That(simulation.MoveMarkerVersion, Is.EqualTo(2));
+            Assert.That(simulation.MoveMarkerCount, Is.EqualTo(1));
+            for (int tick = 0; tick < 60; tick++) Frame(simulation, 1);
+            Assert.That(simulation.State.Movement[0].HasMoveOrder, Is.False);
+            Assert.That(simulation.MoveMarkerCount, Is.EqualTo(1));
+            Assert.That(simulation.MoveMarkerPosition, Is.EqualTo(new Vector3(-30, 0, 0)));
+            for (int tick = 0; tick < 300; tick++) Frame(simulation, 1);
+            Assert.That(simulation.MoveMarkerCount, Is.Zero);
+            Order(simulation, new Vector3(-50, 0, 0));
+            Assert.That(simulation.MoveMarkerVersion, Is.EqualTo(3));
+            Assert.That(simulation.MoveMarkerCount, Is.EqualTo(1));
         }
 
         [TestCase(false, false, 15f, 0f)] [TestCase(true, false, 15f, 0f)] [TestCase(false, true, 15f, 0f)]

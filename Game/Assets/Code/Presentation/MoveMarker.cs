@@ -57,6 +57,8 @@ namespace Northwatch.Presentation
             }
         }
 
+        public void Hide() => drawing.enabled = false;
+
         private void OnDestroy()
         {
             if (Application.isPlaying) { Destroy(mesh); Destroy(material); }
