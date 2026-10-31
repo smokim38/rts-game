@@ -10,8 +10,8 @@
 // (read-only for reviewer), on-request approvals answered by auto-review, never full access.
 // It refuses to start the turn unless Codex's own thread/start reply reports exactly those
 // settings and the role's model and effort, stops if a later settings change or a model reroute
-// departs from them, declines any approval request that reaches it (auto-review didn't answer
-// it), logs the run under .studio/logs/ and prints a short summary.
+// departs from them, declines approval requests except the run-only Computer Use Player app
+// approval below, logs the run under .studio/logs/ and prints a short summary.
 // Codex, git and gh run by absolute path from PATH entries outside the repository, never through
 // a shell, so a worktree's content can't stand in for them.
 // Codex only edits files; the Producer commits, pushes and opens the PR.
@@ -38,6 +38,8 @@ const ROLES = {
 const BRANCH_TYPES = { feature: 'feat', bug: 'fix', task: 'chore', docs: 'docs', art: 'art' };
 const NUMBER = /^[1-9]\d{0,6}$/;
 const SHA = /^[0-9a-f]{40}$/;
+// Adding a Player app requires a new Critical, owner-approved PR (AGENTS.md §5, Issue #171).
+const COMPUTER_USE_PLAYER_APPS = Object.freeze(['movementorders']);
 
 class Refused extends Error {}
 const refuse = (reason) => {
@@ -576,8 +578,29 @@ function verifySettingsUpdate(settings, expected) {
   verifySettings({ ...settings, sandbox: settings.sandboxPolicy, reasoningEffort: settings.effort ?? expected.effort }, expected);
 }
 
-// Answers for requests that reach the launcher. Auto-review handles approvals, so anything that
-// still arrives here is declined; the launcher never approves anything.
+// Auto-review handles approvals. The only launcher acceptance is a run-only Computer Use
+// approval for an allowlisted Player app, for gameplay-programmer or qa-test-engineer.
+function computerUseApproval(role, method, params) {
+  if (role !== 'gameplay-programmer' && role !== 'qa-test-engineer') return null;
+  if (method !== 'mcpServer/elicitation/request') return null;
+  if (params?._meta?.connector_id !== 'computer-use' || params._meta.codex_approval_kind !== 'mcp_tool_call') return null;
+  const schema = params.requestedSchema;
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return null;
+  if (Object.hasOwn(schema, 'properties')) {
+    const properties = schema.properties;
+    if (!properties || typeof properties !== 'object' || Array.isArray(properties) || Object.keys(properties).length) return null;
+  }
+  const app = COMPUTER_USE_PLAYER_APPS.find((name) => params.message === `Allow Codex to use ${name}?`);
+  if (!app) return null;
+  const persist = params._meta.persist;
+  if (persist !== undefined && persist !== 'session' && !(Array.isArray(persist) && persist.includes('session'))) return null;
+  return {
+    app,
+    answer: { action: 'accept', content: {}, ...(persist === undefined ? {} : { _meta: { persist: 'session' } }) },
+  };
+}
+
+// Every other request keeps its existing decline response.
 function declineRequest(method) {
   if (method === 'item/commandExecution/requestApproval' || method === 'item/fileChange/requestApproval') return { decision: 'decline' };
   if (method === 'execCommandApproval' || method === 'applyPatchApproval') return { decision: 'denied' };
@@ -661,11 +684,11 @@ function helperTracker(run, log) {
 }
 
 // `command` is Codex's program and leading arguments (codexCommand); tests pass a fake server.
-function runCodex({ cwd, model, effort, sandbox, developerInstructions, prompt, outputSchema, log, timeoutMs = RUN_TIMEOUT_MS, command = codexCommand() }) {
+function runCodex({ role, cwd, model, effort, sandbox, developerInstructions, prompt, outputSchema, log, timeoutMs = RUN_TIMEOUT_MS, command = codexCommand() }) {
   const expected = { cwd, model, effort, sandboxType: sandbox === 'read-only' ? 'readOnly' : 'workspaceWrite' };
   const child = spawn(command.file, [...command.args, 'app-server'], { cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
   // `tokens` holds the latest total Codex reported per thread; `helpers` the helper agents by thread.
-  const run = { threadId: null, settings: null, reroutes: [], reviews: [], declined: [], tokens: {}, helpers: {}, items: {}, finalText: null, turn: null, stderr: '' };
+  const run = { threadId: null, settings: null, reroutes: [], reviews: [], declined: [], computerUseApprovals: [], tokens: {}, helpers: {}, items: {}, finalText: null, turn: null, stderr: '' };
   let nextId = 1;
   const pending = new Map();
   const send = (msg) => child.stdin.write(`${JSON.stringify(msg)}\n`);
@@ -770,9 +793,15 @@ function runCodex({ cwd, model, effort, sandbox, developerInstructions, prompt, 
         if (msg.error) p.reject(new Refused(`Codex rejected ${p.method}: ${msg.error.message}`));
         else p.resolve(msg.result);
       } else if (msg.id !== undefined) {
-        const answer = declineRequest(msg.method);
-        run.declined.push(msg.method);
-        log({ event: 'request-declined', method: msg.method, params: msg.params });
+        const approval = computerUseApproval(role, msg.method, msg.params);
+        const answer = approval ? approval.answer : declineRequest(msg.method);
+        if (approval) {
+          run.computerUseApprovals.push(approval.app);
+          log({ event: 'computer-use-app-approved', app: approval.app, persist: answer._meta?.persist ?? null });
+        } else {
+          run.declined.push(msg.method);
+          log({ event: 'request-declined', method: msg.method, params: msg.params });
+        }
         if (answer) send({ id: msg.id, result: answer });
         else send({ id: msg.id, error: { code: -32601, message: 'not supported by the studio launcher' } });
       } else {
@@ -817,6 +846,7 @@ function summarize({ args, branch, sha, dir, run, logFile, result, record, chang
   const reviewText = Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(', ') || 'none requested';
   const s = run.settings ?? {};
   const used = run.reroutes.length ? `${s.model}, rerouted to ${run.reroutes.map((r) => r.to).join(' then ')}` : s.model;
+  const apps = run.computerUseApprovals ?? [];
   const lines = [
     `Codex run: ${args.role} on Issue #${args.issue}${args.pr ? ` · PR #${args.pr} at ${sha}` : ''}`,
     `Run id: ${run.threadId} · Codex CLI ${s.cliVersion ?? 'unknown'}`,
@@ -824,6 +854,7 @@ function summarize({ args, branch, sha, dir, run, logFile, result, record, chang
     `Tokens: ${tokenText(run.tokens[run.threadId])}`,
     ...Object.values(run.helpers).map((h) => `Helper agent ${h.name ?? h.threadId} (${h.model ?? '?'} / ${h.effort ?? '?'}, ${h.status ?? 'running'}): ${tokenText(run.tokens[h.threadId])}`),
     `Auto-review: ${reviewText} · requests that reached the launcher (declined): ${run.declined.length}`,
+    `Computer Use app approvals accepted: ${apps.length} · apps: ${[...new Set(apps)].join(', ') || 'none'}`,
     `Turn: ${run.turn?.status}${run.turn?.error ? ` (${run.turn.error.message})` : ''}`,
     `Worktree: ${path.relative(ROOT, dir).replace(/\\/g, '/')}${branch ? ` · branch ${branch}` : ''}`,
     ...(feedback ? [feedbackSummary(feedback)] : []),
@@ -874,6 +905,7 @@ async function main(argv) {
     if (feedback) log({ event: 'implementation-feedback', pr: feedback.pr, sha, records: feedback.records.map((r) => r.url), summary: feedbackSummary(feedback) });
 
     const run = await runCodex({
+      role: args.role,
       cwd: dir,
       model: role.model,
       effort: role.model_reasoning_effort,
@@ -938,6 +970,7 @@ module.exports = {
   parseResult,
   verifySettings,
   verifySettingsUpdate,
+  computerUseApproval,
   declineRequest,
   helperTracker,
   runCodex,

@@ -14,6 +14,13 @@ const L = require('./codex-launch.js');
 const SHA = 'a'.repeat(40);
 const OTHER_SHA = 'b'.repeat(40);
 const refused = (fn, pattern) => assert.throws(fn, (err) => err instanceof L.Refused && pattern.test(err.message));
+const computerUseParams = (over = {}) => ({
+  threadId: 't1', turnId: 'u1', serverName: 'computer-use',
+  _meta: { connector_id: 'computer-use', codex_approval_kind: 'mcp_tool_call', persist: ['session', 'always'] },
+  message: 'Allow Codex to use movementorders?',
+  requestedSchema: { type: 'object', properties: {} },
+  ...over,
+});
 
 const issue = (over = {}) => ({
   number: 42,
@@ -384,6 +391,7 @@ test('programs come from absolute PATH entries outside the repository, never fro
 const FAKE_SERVER = String.raw`'use strict';
 const scenario = process.argv[2];
 let model = null;
+const elicitationAnswers = [];
 const send = (m) => process.stdout.write(JSON.stringify(m) + '\n');
 const note = (method, params) => send({ method, params });
 require('node:readline').createInterface({ input: process.stdin }).on('line', (line) => {
@@ -409,6 +417,9 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', (l
       done('{"ok":true}');
     }
     if (scenario === 'approval') send({ id: 99, method: 'item/commandExecution/requestApproval', params: { command: 'x' } });
+    if (scenario === 'computer-use') {
+      JSON.parse(process.argv[3]).forEach((params, i) => send({ id: 100 + i, method: 'mcpServer/elicitation/request', params }));
+    }
     if (scenario === 'exit') process.exit(3);
     if (scenario === 'agents') {
       // Helper h1 is spawned asking for gpt-mini/low and runs as gpt-mini-r/high. Its activity
@@ -449,6 +460,10 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', (l
       require('node:fs').writeFileSync(process.argv[3], String(child.pid));
     }
   } else if (msg.id === 99) done(JSON.stringify(msg.result));
+  else if (scenario === 'computer-use' && msg.id >= 100) {
+    elicitationAnswers.push(msg.result);
+    if (elicitationAnswers.length === JSON.parse(process.argv[3]).length) done(JSON.stringify(elicitationAnswers));
+  }
   function done(text) {
     note('item/completed', { item: { type: 'agentMessage', text } });
     note('turn/completed', { threadId: 't1', turn: { status: 'completed' } });
@@ -649,7 +664,7 @@ test('Codex must confirm the exact settings before the turn starts', () => {
   );
 });
 
-test('the launcher never approves a request that reaches it', () => {
+test('non-allowlisted launcher requests keep their decline responses', () => {
   assert.deepStrictEqual(L.declineRequest('item/commandExecution/requestApproval'), { decision: 'decline' });
   assert.deepStrictEqual(L.declineRequest('item/fileChange/requestApproval'), { decision: 'decline' });
   assert.deepStrictEqual(L.declineRequest('execCommandApproval'), { decision: 'denied' });
@@ -657,6 +672,87 @@ test('the launcher never approves a request that reaches it', () => {
   assert.deepStrictEqual(L.declineRequest('item/permissions/requestApproval'), { permissions: {}, scope: 'turn' });
   assert.deepStrictEqual(L.declineRequest('mcpServer/elicitation/request'), { action: 'decline' });
   assert.strictEqual(L.declineRequest('account/chatgptAuthTokens/refresh'), null);
+});
+
+test('Computer Use approvals: only the two permitted roles, exact metadata and message, and an empty schema', () => {
+  const method = 'mcpServer/elicitation/request';
+  const accept = { app: 'movementorders', answer: { action: 'accept', content: {}, _meta: { persist: 'session' } } };
+  for (const role of ['gameplay-programmer', 'qa-test-engineer']) {
+    assert.deepStrictEqual(L.computerUseApproval(role, method, computerUseParams()), accept);
+    assert.deepStrictEqual(L.computerUseApproval(role, method, computerUseParams({ requestedSchema: {} })), accept);
+    const deniedParams = [
+      undefined, null, {},
+      computerUseParams({ _meta: undefined }),
+      computerUseParams({ _meta: { ...computerUseParams()._meta, connector_id: 'another-connector' } }),
+      computerUseParams({ _meta: { ...computerUseParams()._meta, connector_id: 'Computer-Use' } }),
+      computerUseParams({ _meta: { ...computerUseParams()._meta, connector_id: undefined } }),
+      computerUseParams({ _meta: { ...computerUseParams()._meta, codex_approval_kind: 'tool_suggestion' } }),
+      computerUseParams({ _meta: { ...computerUseParams()._meta, codex_approval_kind: undefined } }),
+      ...[
+        'Allow Codex to use another-app?', 'Allow Codex to use MovementOrders?',
+        'allow Codex to use movementorders?', 'Allow  Codex to use movementorders?',
+        'Allow Codex to use movementorders ?', ' Allow Codex to use movementorders?',
+        'Allow Codex to use movementorders? ', 'Allow Codex to use movementorders?\n',
+        'Allow Codex to use movementorders? Extra text', null,
+      ].map((message) => computerUseParams({ message })),
+      ...[
+        { type: 'object', properties: { confirm: { type: 'boolean' } } },
+        undefined, null, [], '', true, 0,
+        { properties: null }, { properties: [] }, { properties: '' },
+      ].map((requestedSchema) => computerUseParams({ requestedSchema })),
+    ];
+    for (const params of deniedParams) assert.strictEqual(L.computerUseApproval(role, method, params), null, JSON.stringify(params));
+    for (const otherMethod of ['item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'elicitation/create', `${method} `]) {
+      assert.strictEqual(L.computerUseApproval(role, otherMethod, computerUseParams()), null);
+    }
+  }
+  for (const role of ['tech-artist', 'reviewer', 'producer', undefined, null]) {
+    assert.strictEqual(L.computerUseApproval(role, method, computerUseParams()), null);
+  }
+});
+
+test('Computer Use approval persistence is session or once, never always', () => {
+  const approve = (persist) => L.computerUseApproval('gameplay-programmer', 'mcpServer/elicitation/request',
+    computerUseParams({ _meta: { ...computerUseParams()._meta, persist } }));
+  for (const persist of ['session', ['session'], ['session', 'always'], ['always', 'session']]) {
+    assert.deepStrictEqual(approve(persist).answer, { action: 'accept', content: {}, _meta: { persist: 'session' } });
+  }
+  assert.deepStrictEqual(approve(undefined).answer, { action: 'accept', content: {} });
+  for (const persist of ['always', ['always'], [], null, {}, 'SESSION']) assert.strictEqual(approve(persist), null);
+});
+
+test('runCodex: Computer Use responses, individual events, declined counts and summary for each role', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-computer-use-'));
+  const server = path.join(dir, 'fake-app-server.js');
+  fs.writeFileSync(server, FAKE_SERVER);
+  const requests = [computerUseParams(), computerUseParams({ message: 'Allow Codex to use another-app?' }), computerUseParams()];
+  try {
+    for (const role of ['gameplay-programmer', 'qa-test-engineer', 'tech-artist', 'reviewer', undefined]) {
+      const events = [];
+      const run = await L.runCodex({
+        role, cwd: os.tmpdir(), model: 'gpt-6.1-sol', effort: 'high',
+        sandbox: role === 'reviewer' ? 'read-only' : 'workspace-write',
+        developerInstructions: 'x', prompt: 'y', outputSchema: L.SCHEMAS.implement,
+        log: (e) => events.push(e),
+        command: { file: process.execPath, args: [server, 'computer-use', JSON.stringify(requests)] },
+      });
+      const allowed = role === 'gameplay-programmer' || role === 'qa-test-engineer';
+      const accept = { action: 'accept', content: {}, _meta: { persist: 'session' } };
+      const decline = { action: 'decline' };
+      assert.deepStrictEqual(JSON.parse(run.finalText), allowed ? [accept, decline, accept] : [decline, decline, decline]);
+      assert.deepStrictEqual(run.computerUseApprovals, allowed ? ['movementorders', 'movementorders'] : []);
+      assert.deepStrictEqual(run.declined, Array(allowed ? 1 : 3).fill('mcpServer/elicitation/request'));
+      const approvals = events.filter((e) => e.event === 'computer-use-app-approved');
+      const event = { event: 'computer-use-app-approved', app: 'movementorders', persist: 'session' };
+      assert.deepStrictEqual(approvals, allowed ? [event, event] : []);
+      assert.deepStrictEqual(events.filter((e) => e.event === 'request-declined').map((e) => e.params), allowed ? [requests[1]] : requests);
+      const summary = L.summarize({ args: { role, issue: 171 }, dir, run, logFile: server });
+      assert.match(summary, new RegExp(`^Computer Use app approvals accepted: ${allowed ? 2 : 0} · apps: ${allowed ? 'movementorders' : 'none'}$`, 'm'));
+      assert.match(summary, new RegExp(`^Auto-review: none requested · requests that reached the launcher \\(declined\\): ${allowed ? 1 : 3}$`, 'm'));
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  }
 });
 
 test('results: JSON in the schema, and the SHA that was checked out', () => {
