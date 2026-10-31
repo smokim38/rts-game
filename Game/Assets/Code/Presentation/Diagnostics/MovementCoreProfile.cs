@@ -377,8 +377,9 @@ namespace Northwatch.Presentation.Diagnostics
                 bool stopped = true;
                 for (int t = last - 59; t <= last; t++)
                     stopped &= measurement.Metric(t, 9) == 0 && measurement.Metric(t, 18) == 0;
-                orderPassed &= stopped;
-                writer.WriteLine("stopped_at_wall=" + stopped + "; pass=" + orderPassed);
+                bool passedWall = measurement.AllPastSandboxWall();
+                orderPassed &= stopped && passedWall;
+                writer.WriteLine("stopped=" + stopped + "; all_past_wall=" + passedWall + "; pass=" + orderPassed);
             }
             Application.Quit(invalidFrames == 0 && !scopeCapacityReached && orderPassed ? 0 : 1);
         }

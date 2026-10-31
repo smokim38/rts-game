@@ -21,9 +21,12 @@ namespace Northwatch.Simulation.Movement
         private NativeArray<byte> emptyMap;
         private NativeArray<byte> walkable;
         private NativeArray<ushort> emptyDistances;
+        private readonly StaticMaps fieldMaps;
+        internal readonly FlowFieldPool Fields;
 
         // A caller may lend the static walkability map; field storage is outside this core.
-        internal MovementPipeline(int capacity, MovementParameters settings, NativeArray<byte> staticWalkable = default)
+        internal MovementPipeline(int capacity, MovementParameters settings, NativeArray<byte> staticWalkable = default,
+            StaticMaps staticMaps = null)
         {
             settings.Validate();
             if (staticWalkable.IsCreated && staticWalkable.Length != StaticClamp.MapWidth * StaticClamp.MapWidth)
@@ -41,12 +44,24 @@ namespace Northwatch.Simulation.Movement
             emptyMap = new NativeArray<byte>(0, Allocator.Persistent);
             emptyDistances = new NativeArray<ushort>(0, Allocator.Persistent);
             walkable = staticWalkable.IsCreated ? staticWalkable : emptyMap;
+            if (staticMaps != null)
+            {
+                settings.ValidateFields(staticMaps.Width, staticMaps.Height);
+                fieldMaps = staticMaps;
+                Fields = new FlowFieldPool(staticMaps.Width, staticMaps.Height, new float2(-128), capacity, settings);
+            }
         }
 
         internal JobHandle Schedule(UnitState state, JobHandle dependency, int batchSize = 64,
             NativeArray<long> timestamps = default, int timestampOffset = 0, ulong tick = 0)
         {
             var handle = MovementTimestampJob.Stamp(timestamps, timestampOffset, dependency);
+            if (Fields != null)
+            {
+                handle = Fields.Publish(tick, handle);
+                handle = Fields.RequestFields(state, fieldMaps.Passable, tick, handle);
+                handle = Fields.ScheduleBuilds(fieldMaps.Passable, tick, handle);
+            }
             handle = new BucketUnitsJob { Positions = state.Positions, Alive = state.Alive, Buckets = Grid.Buckets }
                 .ScheduleParallel(state.Alive.Length, batchSize, handle);
             handle = new BuildSpatialGridJob { Positions = state.Positions, Units = state.Movement, Alive = state.Alive, Grid = Grid }.Schedule(handle);
@@ -54,15 +69,21 @@ namespace Northwatch.Simulation.Movement
             handle = new OrderProgressJob
             {
                 Positions = state.Positions, Alive = state.Alive, Units = state.Movement,
-                LatestProgress = latestProgress, Tick = tick
+                LatestProgress = latestProgress, Tick = tick,
+                HasFields = Fields != null, UnitFields = Fields == null ? Grid.Buckets : Fields.UnitFields,
+                Fields = Fields == null ? new FlowFieldReader { Directions = emptyMap.AsReadOnly(),
+                    Classes = emptyMap.AsReadOnly(), Distances = emptyDistances.AsReadOnly() } : Fields.Reader
             }.Schedule(handle);
             handle = MovementTimestampJob.Stamp(timestamps, timestampOffset + 2, handle);
             handle = new PreferredVelocityJob
             {
                 Positions = state.Positions, Sizes = state.Sizes, Alive = state.Alive, Units = state.Movement,
                 Planned = planned, Grid = Grid, LatestProgress = latestProgress,
-                Settings = Settings, Tick = tick, Fields = new FlowFieldReader { Directions = emptyMap.AsReadOnly(),
-                    Classes = emptyMap.AsReadOnly(), Distances = emptyDistances.AsReadOnly() }
+                Settings = Settings, Tick = tick, UnitFields = Fields == null ? Grid.Buckets : Fields.UnitFields,
+                HasFields = Fields != null,
+                Passable = Fields == null ? emptyMap : fieldMaps.Passable,
+                Fields = Fields == null ? new FlowFieldReader { Directions = emptyMap.AsReadOnly(),
+                    Classes = emptyMap.AsReadOnly(), Distances = emptyDistances.AsReadOnly() } : Fields.Reader
             }.ScheduleParallel(state.Alive.Length, batchSize, handle);
             handle = MovementTimestampJob.Stamp(timestamps, timestampOffset + 3, handle);
             handle = new IntegrateMovementJob
@@ -103,6 +124,7 @@ namespace Northwatch.Simulation.Movement
             Grid.Dispose(); Start.Dispose(); Integrated.Dispose(); Corrected.Dispose(); Velocities.Dispose();
             LevelsA.Dispose(); LevelsB.Dispose(); emptyMap.Dispose(); emptyDistances.Dispose(); planned.Dispose();
             latestProgress.Dispose();
+            Fields?.Dispose();
         }
     }
 }

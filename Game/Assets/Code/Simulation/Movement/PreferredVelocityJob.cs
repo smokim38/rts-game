@@ -18,6 +18,9 @@ namespace Northwatch.Simulation.Movement
         [WriteOnly] internal NativeArray<MovementUnit> Planned;
         [ReadOnly] internal SpatialGrid Grid;
         internal FlowFieldReader Fields;
+        [ReadOnly] internal NativeArray<int> UnitFields;
+        internal bool HasFields;
+        [ReadOnly] internal NativeArray<byte> Passable;
         internal MovementParameters Settings;
         internal ulong Tick;
 
@@ -28,9 +31,13 @@ namespace Northwatch.Simulation.Movement
             if (!unit.HasMoveOrder) { Planned[i] = unit; return; }
             float2 delta = unit.Goal - Positions[i].xz;
             float distance = math.length(delta);
-            if (distance <= unit.BestGoalDistance - .1f)
+            int field = HasFields ? UnitFields[i] : -1;
+            FlowSampleStatus status = Fields.Sample(field, Positions[i].xz, out FlowSample sample);
+            float remaining = status == FlowSampleStatus.Ready ? sample.Distance : distance;
+            if (HasFields && field != unit.ProgressField || remaining <= unit.BestGoalDistance - .1f)
             {
-                unit.BestGoalDistance = distance;
+                unit.ProgressField = field;
+                unit.BestGoalDistance = remaining;
                 unit.LastProgressTick = Tick;
             }
             byte arrivalRule = distance <= .05f && math.lengthsq(unit.Velocity) < .01f ? (byte)1 : (byte)0;
@@ -55,8 +62,13 @@ namespace Northwatch.Simulation.Movement
                 unit.Velocity = unit.PreferredVelocity = unit.NewVelocity = float2.zero;
                 Planned[i] = unit; return;
             }
-            FlowSampleStatus status = Fields.Sample(FlowFieldReader.NoField, Positions[i].xz, out FlowSample sample);
             float2 direction = status == FlowSampleStatus.Ready ? sample.Direction : math.normalizesafe(delta);
+            // Finish at the order's exact point inside the goal neighbourhood.
+            // Switching individual members at directSeekRange splits a field-led
+            // order into conflicting routes before it reaches that neighbourhood.
+            if (HasFields && distance <= 1 && new RequestFieldsJob { Width = Fields.Width,
+                Height = Fields.Height, Origin = Fields.Origin, Passable = Passable, Settings = Settings }
+                .ClearLine(Positions[i].xz, unit.Goal, (byte)Sizes[i])) direction = math.normalizesafe(delta);
             // Reynolds arrival, bounded by the remaining step so a direct seek cannot orbit its goal.
             float speed = math.min(Settings.Speed(Sizes[i]), math.sqrt(2 * Settings.Deceleration * distance));
             speed = math.min(speed, distance / MovementParameters.TickDuration);

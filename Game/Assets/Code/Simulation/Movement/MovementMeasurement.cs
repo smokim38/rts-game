@@ -65,6 +65,13 @@ namespace Northwatch.Simulation.Movement
         public int Metric(int tick, int metric) => samples[tick * MetricCount + metric];
         public float2 Progress(int tick) => progress[tick];
 
+        public bool AllPastSandboxWall()
+        {
+            for (int i = 0; i < state.Alive.Length; i++)
+                if (state.Alive[i] != 0 && state.Positions[i].x <= 21 + Footprint.Radius(state.Sizes[i])) return false;
+            return true;
+        }
+
         public void WriteOrderState(TextWriter writer)
         {
             // Called only after the driver's final completion, outside the measured window.

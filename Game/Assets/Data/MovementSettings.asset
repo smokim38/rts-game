@@ -19,3 +19,8 @@ MonoBehaviour:
   turnSpeed: 6.2831855
   slotSpacing: 1.25
   moveCheckPasses: 1
+  fieldCapacity: 256
+  buildSlots: 2
+  buildLatencyTicks: 1
+  minLease: 3
+  directSeekRange: 12

@@ -18,8 +18,8 @@ namespace Northwatch.Simulation.FlowFields
         internal StaticMaps(int width, int height)
         {
             // With no corner cutting, even a checkerboard fits the ushort region labels.
-            if (width < 1 || height < 1 || (long)width * height > 256 * 256)
-                throw new ArgumentOutOfRangeException(nameof(width), "Static maps support up to 65,536 cells.");
+            if (width < 1 || height < 1 || (long)width * height > 87381)
+                throw new ArgumentOutOfRangeException(nameof(width), "Static maps support up to 87,381 cells (ADR 0011).");
             Width = width; Height = height;
             int cells = width * height;
             Walkable = new NativeArray<byte>(cells, Allocator.Persistent);
