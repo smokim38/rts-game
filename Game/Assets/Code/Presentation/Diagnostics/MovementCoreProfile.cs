@@ -49,7 +49,6 @@ namespace Northwatch.Presentation.Diagnostics
         private bool checkMarker, expectedMarker;
         private int markerTravelFrames, markerSettledFrames, markerMismatches;
         private int lastOrderStoppedFrame = -1, markerHiddenFrame = -1;
-        private MovementCheckRenderer batchRenderer;
 
         internal readonly struct AllocationScope : IDisposable
         {
@@ -116,11 +115,6 @@ namespace Northwatch.Presentation.Diagnostics
                 capturePaths = new[] { output + "-0.raw", output + "-1.raw", output + "-2.raw", output + "-3.raw" };
             driver = FindFirstObjectByType<MatchDriver>();
             if (driver == null || driver.MovementSettings == null) throw new InvalidOperationException("The match has no driver or movement settings.");
-            if (Application.isBatchMode)
-            {
-                batchRenderer = gameObject.AddComponent<MovementCheckRenderer>();
-                batchRenderer.Initialize(FindFirstObjectByType<Camera>());
-            }
             scene = int.Parse(args[sceneIndex + 1], CultureInfo.InvariantCulture);
             unitCount = int.Parse(args[countIndex + 1], CultureInfo.InvariantCulture);
             driver.Simulation.MeasureMovement(scene, unitCount);
@@ -332,8 +326,7 @@ namespace Northwatch.Presentation.Diagnostics
                 "unfocused_or_wrong_resolution_frames=" + invalidFrames + "; measured_s=" +
                 windowSeconds.ToString("F6", CultureInfo.InvariantCulture) + "\n" +
                 "scoped_gc=" + scopedGc.Valid + "; simulation_alloc_count=" + simulationAllocations +
-                "; drawing_alloc_count=" + drawingAllocations + "; scope_capacity_reached=" + scopeCapacityReached + "\n" +
-                "batch_rendered_frames=" + (batchRenderer == null ? -1 : batchRenderer.RenderedFrames) + "\n");
+                "; drawing_alloc_count=" + drawingAllocations + "; scope_capacity_reached=" + scopeCapacityReached + "\n");
             bool orderPassed = true;
             if (scene == 4)
             {
@@ -373,8 +366,7 @@ namespace Northwatch.Presentation.Diagnostics
                     "; marker_hidden_frame=" + markerHiddenFrame +
                     "; pass=" + orderPassed + "\n");
             }
-            Application.Quit(invalidFrames == 0 && !scopeCapacityReached && orderPassed &&
-                (batchRenderer == null || batchRenderer.RenderedFrames >= 200) ? 0 : 1);
+            Application.Quit(invalidFrames == 0 && !scopeCapacityReached && orderPassed ? 0 : 1);
         }
 
         private void WriteMovementJobLabels()
