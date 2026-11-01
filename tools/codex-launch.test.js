@@ -5,7 +5,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawn } = require('node:child_process');
+const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -13,6 +14,20 @@ const L = require('./codex-launch.js');
 
 const SHA = 'a'.repeat(40);
 const OTHER_SHA = 'b'.repeat(40);
+const UNITY_VERSION = '6000.3.23f1'; // stand-in for the launcher's main-branch lookup
+// taskkill cannot enumerate processes inside the Codex Windows sandbox. Check the
+// exact cleanup command, then use Node's job lifetime for these Node stand-ins.
+const unityKillSpawn = (file, args, options) => {
+  assert.strictEqual(file, path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe'));
+  assert.deepStrictEqual(args, ['/PID', args[1], '/T', '/F']);
+  assert.match(args[1], /^[1-9]\d*$/);
+  assert.deepStrictEqual(options, { windowsHide: true, stdio: 'ignore', shell: false });
+  const killer = new EventEmitter();
+  killer.kill = () => {};
+  process.kill(Number(args[1]));
+  setImmediate(() => killer.emit('exit', 0));
+  return killer;
+};
 const refused = (fn, pattern) => assert.throws(fn, (err) => err instanceof L.Refused && pattern.test(err.message));
 const computerUseParams = (over = {}) => ({
   threadId: 't1', turnId: 'u1', serverName: 'computer-use',
@@ -391,15 +406,21 @@ test('programs come from absolute PATH entries outside the repository, never fro
 const FAKE_SERVER = String.raw`'use strict';
 const scenario = process.argv[2];
 let model = null;
+let capabilities = null;
+let toolSpecs = [];
+let unityRequests = [];
+const unityAnswers = [];
+let parallelAnswer = null;
 const elicitationAnswers = [];
 const send = (m) => process.stdout.write(JSON.stringify(m) + '\n');
 const note = (method, params) => send({ method, params });
 require('node:readline').createInterface({ input: process.stdin }).on('line', (line) => {
   const msg = JSON.parse(line);
-  if (msg.method === 'initialize') send({ id: msg.id, result: {} });
+  if (msg.method === 'initialize') { capabilities = msg.params.capabilities; send({ id: msg.id, result: {} }); }
   else if (msg.method === 'thread/start') {
     const p = msg.params;
     model = p.model;
+    toolSpecs = p.dynamicTools || [];
     send({ id: msg.id, result: {
       thread: { id: 't1', cliVersion: '0.0.0' }, model, reasoningEffort: p.config.model_reasoning_effort, cwd: p.cwd,
       sandbox: { type: p.sandbox === 'read-only' ? 'readOnly' : 'workspaceWrite', writableRoots: [], networkAccess: false },
@@ -408,6 +429,11 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', (l
   } else if (msg.method === 'turn/start') {
     send({ id: msg.id, result: { turn: { id: 'u1' } } });
     if (scenario === 'ok') done('{"ok":true}');
+    if (scenario === 'unity') {
+      unityRequests = JSON.parse(process.argv[3]);
+      nextUnity();
+      if (process.argv[4] === 'parallel') send({ id: 999, method: 'item/tool/call', params: { threadId: 't1', turnId: 'u1', callId: 'parallel', tool: 'unity_batch', arguments: { args: [] } } });
+    }
     if (scenario === 'reroute' || scenario === 'reroute-same') {
       note('model/rerouted', { threadId: 't1', turnId: 'u1', fromModel: model, toModel: scenario === 'reroute' ? 'gpt-other' : model, reason: 'highRiskCyberActivity' });
       done('{"ok":true}');
@@ -459,6 +485,16 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', (l
       const child = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
       require('node:fs').writeFileSync(process.argv[3], String(child.pid));
     }
+    if (scenario === 'held-pipe' || scenario === 'held-pipe-exit') {
+      const child = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'inherit', 'inherit'] });
+      require('node:fs').writeFileSync(process.argv[3], String(child.pid));
+      if (scenario === 'held-pipe-exit') process.exit(3);
+      done('{"ok":true}');
+    }
+  } else if (scenario === 'unity' && msg.id === 999) parallelAnswer = msg.result;
+  else if (scenario === 'unity' && msg.id >= 200) {
+    unityAnswers.push(msg.result);
+    nextUnity();
   } else if (msg.id === 99) done(JSON.stringify(msg.result));
   else if (scenario === 'computer-use' && msg.id >= 100) {
     elicitationAnswers.push(msg.result);
@@ -468,8 +504,288 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', (l
     note('item/completed', { item: { type: 'agentMessage', text } });
     note('turn/completed', { threadId: 't1', turn: { status: 'completed' } });
   }
+  function nextUnity() {
+    if (!unityRequests.length) return done(JSON.stringify({ toolSpecs, capabilities, answers: unityAnswers, parallelAnswer }));
+    const n = unityAnswers.length;
+    send({ id: 200 + n, method: 'item/tool/call', params: { threadId: 't1', turnId: 'u1', callId: 'unity-' + n, tool: 'unity_batch', arguments: { args: [] }, ...unityRequests.shift() } });
+  }
 });
 `;
+
+const unityProject = (dir) => {
+  fs.mkdirSync(path.join(dir, 'Game', 'ProjectSettings'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'Game', 'ProjectSettings', 'ProjectVersion.txt'), 'm_EditorVersion: 6000.3.23f1\n');
+};
+
+test('Unity version is read from main, with no worktree or lookup-failure fallback', () => {
+  const read = (text) => (args) => {
+    assert.deepStrictEqual(args, ['api', 'repos/smokim38/rts-game/contents/Game/ProjectSettings/ProjectVersion.txt?ref=main']);
+    return JSON.stringify({ content: Buffer.from(text).toString('base64') });
+  };
+  assert.strictEqual(L.mainUnityVersion(read('m_EditorVersion: 6000.3.23f1\n')), UNITY_VERSION);
+  refused(() => L.mainUnityVersion(read('m_EditorVersion: ../other')), /Editor version/);
+  assert.throws(() => L.mainUnityVersion(() => { throw new Error('lookup unavailable'); }), /lookup unavailable/);
+});
+
+test('Unity command: main version, fixed executable and paths, allowlisted flags only', (t) => {
+  const dir = slotDir(t);
+  unityProject(dir);
+  const extra = ['-runTests', '-testPlatform', 'EditMode', '-testFilter', 'Rts.Tests.First;Rts.Tests.Second',
+    '-testCategory', 'Fast', '-assemblyNames', 'Rts.Tests', '-testResults', path.join(dir, 'Game', 'Logs', 'results with spaces.xml')];
+  const cmd = L.unityCommand(dir, { args: extra }, UNITY_VERSION);
+  assert.strictEqual(cmd.file, 'C:\\Program Files\\Unity\\Hub\\Editor\\6000.3.23f1\\Editor\\Unity.exe');
+  assert.deepStrictEqual(cmd.args, ['-batchmode', '-projectPath', path.join(dir, 'Game'), '-logFile', cmd.logFile, ...extra]);
+  assert.strictEqual(path.dirname(cmd.logFile), path.join(dir, '.studio', 'logs'));
+  const build = L.unityCommand(dir, { args: ['-quit', '-nographics', '-executeMethod', 'Rts.EditorTools.SandboxSceneBuilder.BuildWindows'] }, UNITY_VERSION);
+  assert.strictEqual(build.args.at(-1), 'Rts.EditorTools.SandboxSceneBuilder.BuildWindows');
+  for (const args of [null, ['x\0y'], ['x\ny'], ['x\ty'], ['"-quit"'], [' -quit'], ['-quit '], [''], [2], Array(257).fill('x'), ['x'.repeat(32769)]]) {
+    refused(() => L.unityCommand(dir, { args }, UNITY_VERSION), /args array/);
+  }
+  refused(() => L.unityCommand(dir, { args: [], file: 'another.exe' }, UNITY_VERSION), /args array/);
+  for (const flag of ['-projectPath', '--PROJECTPATH=elsewhere', '/projectPath:elsewhere', '-batchMode', '-logFile', '-createProject', '-projectPath elsewhere',
+    '-buildWindows64Player', '-buildWindowsPlayer', '-buildLinux64Player', '-buildOSXUniversalPlayer', '-exportPackage', '-importPackage', '-upmLogFile', '-openfile',
+    '-enableCodeCoverage', '-coverageResultsPath', '-coverageOptions', '-serial', '-username', '-password', '-returnlicense', '-manualLicenseFile',
+    '-createManualActivationFile', '-cacheServerEndpoint', '-accelerator', '@args.txt', '-unknown', '-quit=true', '--quit']) {
+    refused(() => L.unityCommand(dir, { args: [flag] }, UNITY_VERSION), /not allowed/);
+  }
+  for (const flag of ['-executeMethod', '-testResults', '-testPlatform', '-testFilter', '-testCategory', '-assemblyNames']) refused(() => L.unityCommand(dir, { args: [flag] }, UNITY_VERSION), /needs a value/);
+  refused(() => L.unityCommand(dir, { args: ['-testFilter', '-projectPath'] }, UNITY_VERSION), /needs a value/);
+  refused(() => L.unityCommand(dir, { args: ['-executeMethod', 'Literal; Write-Output fake'] }, UNITY_VERSION), /qualified method/);
+  refused(() => L.unityCommand(dir, { args: ['-testPlatform', 'StandaloneWindows64'] }, UNITY_VERSION), /EditMode or PlayMode/);
+  refused(() => L.unityCommand(dir, { args: ['-quit', '-quit'] }, UNITY_VERSION), /repeated/);
+  refused(() => L.unityCommand(dir, { args: [] }), /version from main/);
+  fs.writeFileSync(path.join(dir, 'Game', 'ProjectSettings', 'ProjectVersion.txt'), 'm_EditorVersion: 6000.3.24f1\n');
+  refused(() => L.unityCommand(dir, { args: [] }, UNITY_VERSION), /does not match main/);
+  fs.writeFileSync(path.join(dir, 'Game', 'ProjectSettings', 'ProjectVersion.txt'), 'm_EditorVersion: ../other');
+  refused(() => L.unityCommand(dir, { args: [] }, UNITY_VERSION), /Editor version/);
+  assert.strictEqual(L.unityVersion('m_EditorVersion: 6000.3.23f1\r\nm_EditorVersionWithRevision: ignored'), UNITY_VERSION);
+  refused(() => L.unityVersion('m_EditorVersion: ../other'), /Editor version/);
+});
+
+test('Unity paths: project and log junctions cannot escape the own worktree', (t) => {
+  const outside = slotDir(t);
+  unityProject(outside);
+  const dir = slotDir(t);
+  fs.symlinkSync(path.join(outside, 'Game'), path.join(dir, 'Game'), 'junction');
+  refused(() => L.unityCommand(dir, { args: [] }, UNITY_VERSION), /own worktree/);
+  fs.unlinkSync(path.join(dir, 'Game'));
+  unityProject(dir);
+  fs.symlinkSync(outside, path.join(dir, '.studio'), 'junction');
+  refused(() => L.unityCommand(dir, { args: [] }, UNITY_VERSION), /own worktree/);
+  fs.unlinkSync(path.join(dir, '.studio'));
+  for (const folder of ['Library', 'Temp', 'Logs', 'Builds', 'Assets', 'Packages', 'UserSettings', 'obj']) {
+    const link = path.join(dir, 'Game', folder);
+    fs.symlinkSync(outside, link, 'junction');
+    refused(() => L.unityCommand(dir, { args: [] }, UNITY_VERSION), /own worktree/);
+    fs.unlinkSync(link);
+  }
+  for (const output of [path.join(outside, 'new', 'results.xml'), '../results.xml', 'Game/Logs/results.xml:stream', 'Game/NUL.xml', 'Game/trailing./results.xml']) {
+    refused(() => L.unityCommand(dir, { args: ['-testResults', output] }, UNITY_VERSION), /own worktree|Windows devices/);
+  }
+  const resultDir = path.join(dir, 'results');
+  fs.symlinkSync(outside, resultDir, 'junction');
+  refused(() => L.unityCommand(dir, { args: ['-testResults', path.join(resultDir, 'new', 'results.xml')] }, UNITY_VERSION), /own worktree/);
+  fs.unlinkSync(resultDir);
+  const relative = L.unityCommand(dir, { args: ['-testResults', 'Game/Logs/new/results.xml'] }, UNITY_VERSION);
+  assert.strictEqual(relative.args.at(-1), path.join(dir, 'Game', 'Logs', 'new', 'results.xml'));
+});
+
+test('runCodex: Unity tools by role, settings, exit codes, refusals, logs and summary', async (t) => {
+  const dir = slotDir(t);
+  unityProject(dir);
+  const server = path.join(dir, 'fake-server.js');
+  fs.writeFileSync(server, FAKE_SERVER);
+  for (const [role, sandbox] of [['gameplay-programmer', 'workspace-write'], ['qa-test-engineer', 'workspace-write'], ['tech-artist', 'workspace-write'], ['reviewer', 'read-only'], ['reviewer', 'workspace-write'], ['gameplay-programmer', 'read-only']]) {
+    const events = [];
+    const launches = [];
+    const enabled = role !== 'reviewer' && sandbox === 'workspace-write';
+    const requests = [{}, { arguments: { args: ['-runTests'] } },
+      { arguments: { args: ['-projectPath', 'elsewhere'] } }, { tool: 'other' },
+      { threadId: 'other' }, { turnId: 'old' }, { callId: 'unity-0' }, { callId: null }];
+    const run = await L.runCodex({
+      role, cwd: dir, model: 'gpt-6.1-sol', effort: 'high', sandbox, expectedUnityVersion: UNITY_VERSION,
+      developerInstructions: 'x', prompt: 'y', outputSchema: L.SCHEMAS.implement, log: (e) => events.push(e),
+      command: { file: process.execPath, args: [server, 'unity', JSON.stringify(requests)] },
+      unitySpawn: (file, args, options) => {
+        launches.push({ file, args, options });
+        return spawn(process.execPath, ['-e', `process.stdout.write('Unity stand-in'); process.exit(${launches.length === 1 ? 0 : 2})`], options);
+      },
+    });
+    const result = JSON.parse(run.finalText);
+    assert.strictEqual(result.toolSpecs.length, enabled ? 1 : 0);
+    assert.strictEqual(result.toolSpecs[0]?.name, enabled ? 'unity_batch' : undefined);
+    assert.strictEqual(result.capabilities?.experimentalApi, enabled ? true : undefined);
+    assert.deepStrictEqual(result.answers.map((a) => a.success), enabled ? [true, false, false, false, false, false, false, false] : Array(8).fill(false));
+    assert.deepStrictEqual(run.unityRuns.map((r) => r.exitCode), enabled ? [0, 2] : []);
+    assert.deepStrictEqual(events.filter((e) => e.event === 'unity-completed').map((e) => e.exitCode), enabled ? [0, 2] : []);
+    assert.strictEqual(events.filter((e) => e.event === 'unity-started').length, launches.length);
+    assert.deepStrictEqual(run.reviews, []);
+    assert.deepStrictEqual(run.declined, []);
+    assert.strictEqual(run.settings.approvalPolicy, 'on-request');
+    assert.strictEqual(run.settings.approvalsReviewer, 'auto_review');
+    for (const launch of launches) {
+      assert.strictEqual(launch.file, 'C:\\Program Files\\Unity\\Hub\\Editor\\6000.3.23f1\\Editor\\Unity.exe');
+      assert.strictEqual(launch.options.cwd, dir);
+      assert.strictEqual(launch.options.shell, false);
+      assert.strictEqual(launch.options.stdio, 'ignore');
+      assert.deepStrictEqual(launch.args.slice(0, 3), ['-batchmode', '-projectPath', path.join(dir, 'Game')]);
+    }
+    assert.match(L.summarize({ args: { role, issue: 184 }, dir, run, logFile: server }), enabled ? /Unity runs outside the sandbox: 2 · exit codes: 0, 2/ : /Unity runs outside the sandbox: 0 · exit codes: none/);
+    assert.strictEqual(fs.existsSync(path.join(dir, '.studio', 'locks')), false);
+    assert.strictEqual(fs.existsSync(path.join(dir, '.studio', 'worktrees')), false);
+  }
+});
+
+test('runCodex: Unity serialisation, spawn errors and cancellation log completion before ending', async (t) => {
+  const dir = slotDir(t);
+  unityProject(dir);
+  const server = path.join(dir, 'fake-server.js');
+  fs.writeFileSync(server, FAKE_SERVER);
+  const events = [];
+  let editor;
+  const run = (extra = {}) => L.runCodex({
+    role: 'gameplay-programmer', cwd: dir, model: 'gpt-6.1-sol', effort: 'high', sandbox: 'workspace-write',
+    expectedUnityVersion: UNITY_VERSION,
+    unityKillSpawn,
+    developerInstructions: 'x', prompt: 'y', outputSchema: L.SCHEMAS.implement, log: (e) => events.push(e),
+    command: { file: process.execPath, args: [server, 'unity', '[{}]', 'parallel'] },
+    unitySpawn: (_file, _args, options) => spawn(process.execPath, ['-e', 'setTimeout(() => {}, 300)'], options),
+    ...extra,
+  });
+  const parallel = await run();
+  assert.strictEqual(parallel.unityRuns.length, 1);
+  assert.match(JSON.parse(parallel.finalText).parallelAnswer.contentItems[0].text, /already running/);
+  const missing = await run({ unitySpawn: (_file, _args, options) => spawn(path.join(dir, 'missing-unity.exe'), [], options) });
+  assert.strictEqual(missing.unityRuns[0].exitCode, null);
+  assert.match(missing.unityRuns[0].error, /ENOENT/);
+  assert.strictEqual(JSON.parse(missing.finalText).answers[0].success, false);
+  events.length = 0;
+  await assert.rejects(run({ timeoutMs: 1000, unitySpawn: (_file, _args, options) => {
+    editor = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], options);
+    return editor;
+  } }), /time limit/);
+  assert.ok(editor && (editor.exitCode !== null || editor.signalCode !== null));
+  const completed = events.findIndex((e) => e.event === 'unity-completed');
+  assert.ok(completed >= 0 && completed < events.findIndex((e) => e.event === 'end'));
+});
+
+const processAlive = (pid) => {
+  try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
+};
+
+test('runCodex: Unity call timeout and cancellation end the tree despite inherited pipes', { timeout: 15000 }, async (t) => {
+  const dir = slotDir(t);
+  unityProject(dir);
+  const server = path.join(dir, 'fake-server.js');
+  const pidFile = path.join(dir, 'worker.pid');
+  fs.writeFileSync(server, FAKE_SERVER);
+  for (const cancel of [false, true]) {
+    const events = [];
+    let editor;
+    let worker;
+    try {
+      const result = L.runCodex({
+        role: 'gameplay-programmer', cwd: dir, model: 'gpt-6.1-sol', effort: 'high', sandbox: 'workspace-write',
+        developerInstructions: 'x', prompt: 'y', outputSchema: L.SCHEMAS.implement, log: (e) => events.push(e),
+        expectedUnityVersion: UNITY_VERSION, timeoutMs: cancel ? 1200 : 6000, unityTimeoutMs: cancel ? 30000 : 1000,
+        unityKillSpawn,
+        command: { file: process.execPath, args: [server, 'unity', '[{}]'] },
+        unitySpawn: (_file, _args, options) => {
+          editor = spawn(process.execPath, ['-e', `
+            const child = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'inherit', 'inherit'] });
+            require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
+            setInterval(() => {}, 1000);
+          `], { ...options, stdio: ['ignore', 'pipe', 'pipe'] });
+          return editor;
+        },
+      });
+      if (cancel) await assert.rejects(result, /time limit/);
+      else {
+        const run = await result;
+        assert.strictEqual(JSON.parse(run.finalText).answers[0].success, false);
+        assert.match(run.unityRuns[0].error, /Unity run exceeded/);
+      }
+      worker = Number(fs.readFileSync(pidFile, 'utf8'));
+      for (let i = 0; i < 20 && processAlive(worker); i++) await new Promise((r) => setTimeout(r, 50));
+      assert.strictEqual(processAlive(worker), false, 'Unity worker outlived shutdown');
+      assert.ok(editor.exitCode !== null || editor.signalCode !== null);
+      const completed = events.findIndex((e) => e.event === 'unity-completed');
+      assert.ok(completed >= 0 && completed < events.findIndex((e) => e.event === 'end'));
+    } finally {
+      worker ??= fs.existsSync(pidFile) ? Number(fs.readFileSync(pidFile, 'utf8')) : null;
+      if (worker && processAlive(worker)) process.kill(worker);
+      editor?.kill();
+      fs.rmSync(pidFile, { force: true });
+    }
+  }
+});
+
+test('runCodex: server shutdown is bounded when a descendant inherits its pipes', { timeout: 10000 }, async (t) => {
+  const dir = slotDir(t);
+  const server = path.join(dir, 'fake-server.js');
+  fs.writeFileSync(server, FAKE_SERVER);
+  for (const scenario of ['held-pipe', 'held-pipe-exit']) {
+    const pidFile = path.join(dir, `${scenario}.pid`);
+    let worker;
+    try {
+      const result = L.runCodex({ cwd: dir, model: 'gpt-6.1-sol', effort: 'high', sandbox: 'read-only',
+        developerInstructions: 'x', prompt: 'y', outputSchema: L.SCHEMAS.review, log: () => {}, timeoutMs: 4000,
+        command: { file: process.execPath, args: [server, scenario, pidFile] } });
+      if (scenario === 'held-pipe') assert.strictEqual((await result).turn.status, 'completed');
+      else await assert.rejects(result, /exited \(3\)/);
+      worker = Number(fs.readFileSync(pidFile, 'utf8'));
+      if (scenario === 'held-pipe') {
+        for (let i = 0; i < 20 && processAlive(worker); i++) await new Promise((r) => setTimeout(r, 50));
+        assert.strictEqual(processAlive(worker), false, 'server worker outlived cancellation');
+      }
+    } finally {
+      worker ??= fs.existsSync(pidFile) ? Number(fs.readFileSync(pidFile, 'utf8')) : null;
+      if (worker && processAlive(worker)) process.kill(worker);
+    }
+  }
+});
+
+test('runCodex: a failed or stuck Unity tree cleanup fails the run within a bound', { timeout: 15000, skip: process.platform !== 'win32' }, async (t) => {
+  const dir = slotDir(t);
+  unityProject(dir);
+  const server = path.join(dir, 'fake-server.js');
+  fs.writeFileSync(server, FAKE_SERVER);
+  for (const mode of ['error', 'nonzero', 'stuck']) {
+    const events = [];
+    let editor;
+    let helperStopped = false;
+    try {
+      await assert.rejects(L.runCodex({
+        role: 'gameplay-programmer', cwd: dir, model: 'gpt-6.1-sol', effort: 'high', sandbox: 'workspace-write',
+        developerInstructions: 'x', prompt: 'y', outputSchema: L.SCHEMAS.implement, log: (e) => events.push(e),
+        expectedUnityVersion: UNITY_VERSION, timeoutMs: 7000, unityTimeoutMs: 100,
+        command: { file: process.execPath, args: [server, 'unity', '[{},{}]'] },
+        unitySpawn: (_file, _args, options) => {
+          assert.strictEqual(editor, undefined, 'cleanup failure must stop further Unity calls');
+          editor = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], options);
+          return editor;
+        },
+        unityKillSpawn: () => {
+          const killer = new EventEmitter();
+          killer.kill = () => { helperStopped = true; };
+          if (mode === 'error') setImmediate(() => killer.emit('error', new Error('stand-in cleanup failure')));
+          if (mode === 'nonzero') setImmediate(() => killer.emit('exit', 1));
+          return killer;
+        },
+      }), /Unity cleanup failed: .*(?:cleanup failure|exited 1|grace period)/);
+      assert.strictEqual(helperStopped, true);
+      assert.strictEqual(events.filter((e) => e.event === 'unity-started').length, 1);
+      const completed = events.findIndex((e) => e.event === 'unity-completed');
+      assert.ok(completed >= 0 && completed < events.findIndex((e) => e.event === 'end'));
+    } finally {
+      if (editor && editor.exitCode === null && editor.signalCode === null) {
+        const exited = new Promise((r) => editor.once('exit', r));
+        editor.kill();
+        await exited;
+      }
+    }
+  }
+});
 
 test('runCodex: the whole app-server flow, failing closed', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-fake-'));
@@ -677,7 +993,7 @@ test('non-allowlisted launcher requests keep their decline responses', () => {
 test('Computer Use approvals: only the two permitted roles, exact metadata and message, and an empty schema', () => {
   const method = 'mcpServer/elicitation/request';
   for (const role of ['gameplay-programmer', 'qa-test-engineer']) {
-    for (const app of ['movementorders', 'sandbox', 'performanceladder']) {
+    for (const app of ['movementorders', 'sandbox', 'performanceladder', 'movementcore']) {
       const message = `Allow Codex to use ${app}?`;
       const accept = { app, answer: { action: 'accept', content: {}, _meta: { persist: 'session' } } };
       assert.deepStrictEqual(L.computerUseApproval(role, method, computerUseParams({ message })), accept);
@@ -711,7 +1027,7 @@ test('Computer Use approvals: only the two permitted roles, exact metadata and m
     }
   }
   for (const role of ['tech-artist', 'reviewer', 'producer', undefined, null]) {
-    for (const app of ['movementorders', 'sandbox', 'performanceladder']) {
+    for (const app of ['movementorders', 'sandbox', 'performanceladder', 'movementcore']) {
       assert.strictEqual(L.computerUseApproval(role, method, computerUseParams({ message: `Allow Codex to use ${app}?` })), null);
     }
   }
@@ -732,7 +1048,7 @@ test('runCodex: Computer Use responses, individual events, declined counts and s
   fs.writeFileSync(server, FAKE_SERVER);
   const withoutPersist = computerUseParams();
   delete withoutPersist._meta.persist;
-  const apps = ['movementorders', 'sandbox', 'performanceladder'];
+  const apps = ['movementorders', 'sandbox', 'performanceladder', 'movementcore'];
   const requests = [
     ...apps.map((app) => computerUseParams({ message: `Allow Codex to use ${app}?` })),
     computerUseParams({ message: 'Allow Codex to use explorer?' }),
@@ -752,17 +1068,17 @@ test('runCodex: Computer Use responses, individual events, declined counts and s
       const allowed = role === 'gameplay-programmer' || role === 'qa-test-engineer';
       const accept = { action: 'accept', content: {}, _meta: { persist: 'session' } };
       const decline = { action: 'decline' };
-      assert.deepStrictEqual(JSON.parse(run.finalText), allowed ? [accept, accept, accept, decline, decline, decline, accept] : Array(requests.length).fill(decline));
+      assert.deepStrictEqual(JSON.parse(run.finalText), allowed ? [accept, accept, accept, accept, decline, decline, decline, accept] : Array(requests.length).fill(decline));
       assert.deepStrictEqual(run.computerUseApprovals, allowed ? [...apps, 'movementorders'] : []);
       assert.deepStrictEqual(run.declined, Array(allowed ? 3 : requests.length).fill('mcpServer/elicitation/request'));
       const approvals = events.filter((e) => e.event === 'computer-use-app-approved');
-      const expectedApprovals = [0, 1, 2, 6].map((i) => ({
-        event: 'computer-use-app-approved', app: i === 6 ? 'movementorders' : apps[i], persist: 'session', params: requests[i],
+      const expectedApprovals = [0, 1, 2, 3, 7].map((i) => ({
+        event: 'computer-use-app-approved', app: i === 7 ? 'movementorders' : apps[i], persist: 'session', params: requests[i],
       }));
       assert.deepStrictEqual(approvals, allowed ? expectedApprovals : []);
-      assert.deepStrictEqual(events.filter((e) => e.event === 'request-declined').map((e) => e.params), allowed ? requests.slice(3, 6) : requests);
+      assert.deepStrictEqual(events.filter((e) => e.event === 'request-declined').map((e) => e.params), allowed ? requests.slice(4, 7) : requests);
       const summary = L.summarize({ args: { role, issue: 174 }, dir, run, logFile: server });
-      assert.match(summary, new RegExp(`^Computer Use app approvals accepted: ${allowed ? 4 : 0} · apps: ${allowed ? apps.join(', ') : 'none'}$`, 'm'));
+      assert.match(summary, new RegExp(`^Computer Use app approvals accepted: ${allowed ? 5 : 0} · apps: ${allowed ? apps.join(', ') : 'none'}$`, 'm'));
       assert.match(summary, new RegExp(`^Auto-review: none requested · requests that reached the launcher \\(declined\\): ${allowed ? 3 : requests.length}$`, 'm'));
     }
   } finally {
