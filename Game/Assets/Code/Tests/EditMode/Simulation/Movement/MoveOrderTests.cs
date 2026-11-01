@@ -72,16 +72,25 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
                     }
                 }
             }
+            int groupStalls = 0, exact = 0, contact = 0, congestion = 0;
             for (int i = 0; i < count; i++)
             {
                 Assert.That(simulation.State.Movement[i].HasMoveOrder, Is.False);
-                Assert.That(simulation.State.Movement[i].ArrivalRule, Is.Not.EqualTo(4), "Must reach the corrected goal or its queue, rather than stall.");
+                switch (simulation.State.Movement[i].ArrivalRule)
+                {
+                    case 1: exact++; break;
+                    case 2: contact++; break;
+                    case 3: congestion++; break;
+                    case 4: groupStalls++; break;
+                }
             }
             if (count == 1) Assert.That(math.distance(simulation.State.Positions[0].xz, new float2(95.5f, 30.5f)), Is.LessThan(.05f));
             long searches = simulation.GoalSearchCount, requests = simulation.FieldRequestCount;
             for (int tick = 0; tick < 120; tick++) Frame(simulation, 1);
             Assert.That(simulation.GoalSearchCount, Is.EqualTo(searches));
             Assert.That(simulation.FieldRequestCount, Is.EqualTo(requests));
+            TestContext.WriteLine($"ring_units={count}; exact={exact}; contact={contact}; congestion={congestion}; group_stalls={groupStalls}; searches={searches}; requests={requests}");
+            Assert.That(groupStalls, Is.Zero, "Must reach the corrected goal or its queue, rather than stall.");
         }
 
         [TestCase(true, true, false)] [TestCase(false, true, false)]

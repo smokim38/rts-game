@@ -48,13 +48,14 @@ namespace Northwatch.Simulation
             return (StaticMaps ?? openFieldMaps).Regions[size * 65536 + cell];
         }
 
-        public bool RouteDirection(int field, Vector3 point, out Vector3 direction)
+        public bool RouteDirection(int field, Vector3 point, out Vector3 direction, out bool inSight)
         {
-            RequireComplete(); direction = default;
+            RequireComplete(); direction = default; inSight = false;
             if (movement?.Fields == null || movement.Fields.Reader.Sample(field, ((float3)point).xz, out var sample) != FlowSampleStatus.Ready)
                 return false;
             direction = new Vector3(sample.Direction.x, 0, sample.Direction.y);
-            return sample.Distance > 0;
+            inSight = sample.InSight;
+            return true;
         }
 
         public void MeasureMovement(int scene, int count)

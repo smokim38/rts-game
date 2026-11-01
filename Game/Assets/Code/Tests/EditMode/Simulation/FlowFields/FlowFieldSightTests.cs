@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using Northwatch.Presentation;
+using Northwatch.Simulation;
 using Northwatch.Simulation.FlowFields;
+using Northwatch.Simulation.Movement;
 using NUnit.Framework;
 using Unity.Burst;
 using Unity.Collections;
@@ -115,6 +117,53 @@ namespace Northwatch.Tests.EditMode.Simulation.FlowFields
             }
         }
 
+        [TestCase(0)] [TestCase(1)]
+        public void CorrectedRingGoalPublishesTheUnitsGoalAndMatchesSightOracle(byte size)
+        {
+            const int width = 32, cells = width * width;
+            using var boxes = new NativeArray<StaticBox>(new[] {
+                new StaticBox { Min = new int2(8, 8), MaxExclusive = new int2(16, 9) },
+                new StaticBox { Min = new int2(8, 15), MaxExclusive = new int2(16, 16) },
+                new StaticBox { Min = new int2(8, 9), MaxExclusive = new int2(9, 15) },
+                new StaticBox { Min = new int2(15, 9), MaxExclusive = new int2(16, 15) } }, Allocator.TempJob);
+            using var maps = new StaticMaps(width, width);
+            maps.ScheduleBuild(boxes).Complete();
+            var asset = ScriptableObject.CreateInstance<MovementSettings>();
+            var settings = asset.Snapshot(); UnityEngine.Object.DestroyImmediate(asset);
+            using var state = new UnitState(1);
+            using var pool = new FlowFieldPool(width, width, 0, 1, settings);
+            float anchor = (size + 1) * .5f;
+            var alive = state.Alive; alive[0] = 1;
+            var sizes = state.Sizes; sizes[0] = (UnitSize)size;
+            var positions = state.Positions; positions[0] = new float3(2 + anchor, 0, 2 + anchor);
+            var units = state.Movement;
+            units[0] = new MovementUnit { HasMoveOrder = true, OrderVersion = 1, Goal = new float2(12 + anchor) };
+            var handle = pool.RequestFields(state, maps, 0, default);
+            pool.ScheduleBuilds(maps.Passable, 0, handle).Complete();
+            handle = pool.Publish((ulong)settings.BuildLatencyTicks, default);
+            pool.RequestFields(state, maps, (ulong)settings.BuildLatencyTicks, handle).Complete();
+            int field = pool.UnitFields[0], goal = 12 * width + 16;
+            Assert.That(field, Is.GreaterThanOrEqualTo(0));
+            Assert.That(pool.Goals[field], Is.EqualTo(goal));
+            float2 corrected = new float2(16, 12) + anchor;
+            Assert.That(state.Movement[0].Goal, Is.EqualTo(corrected));
+            Assert.That(pool.Reader.Sample(field, corrected, out var sample), Is.EqualTo(FlowSampleStatus.Ready));
+            Assert.That(sample.Goal, Is.EqualTo(corrected));
+            Assert.That(sample.InSight, Is.True);
+            Assert.That(sample.Direction, Is.EqualTo(float2.zero));
+            using var blocked = new NativeList<int2>(Allocator.TempJob);
+            for (int cell = 0; cell < cells; cell++)
+                if (maps.Passable[size * cells + cell] == 0) blocked.Add(new int2(cell % width, cell / width));
+            using var errors = new NativeArray<int>(cells, Allocator.TempJob);
+            new OracleJob { Width = width, Goal = goal, Class = size, FieldOffset = field * cells,
+                Passable = maps.Passable, Directions = pool.Directions, Distances = pool.Distances,
+                Blocked = blocked.AsArray(), Errors = errors }.Schedule(cells, 64).Complete();
+            for (int cell = 0; cell < cells; cell++) Assert.That(errors[cell], Is.Zero, "Corrected field cell " + cell);
+            new ClearTargetsJob { Width = width, Class = size, FieldIndex = field, Reader = pool.Reader,
+                Blocked = blocked.AsArray(), Errors = errors }.Schedule(cells, 64).Complete();
+            for (int cell = 0; cell < cells; cell++) Assert.That(errors[cell], Is.Zero, "Corrected target cell " + cell);
+        }
+
         // Independent segment/open-square intersection using rational clipping.
         private static bool Hits(int2 start, int2 end, int2 centre, int half)
         {
@@ -136,7 +185,7 @@ namespace Northwatch.Tests.EditMode.Simulation.FlowFields
         [BurstCompile(CompileSynchronously = true)]
         private struct OracleJob : IJobParallelFor
         {
-            internal int Width, Goal, Class;
+            internal int Width, Goal, Class, FieldOffset;
             [ReadOnly] internal NativeArray<byte> Passable, Directions;
             [ReadOnly] internal NativeArray<ushort> Distances;
             [ReadOnly] internal NativeArray<int2> Blocked;
@@ -145,23 +194,24 @@ namespace Northwatch.Tests.EditMode.Simulation.FlowFields
             {
                 int cells = Width * Width;
                 int2 p = new int2(cell % Width, cell / Width), goal = new int2(Goal % Width, Goal / Width);
-                bool visible = Distances[cell] != ushort.MaxValue;
+                int index = FieldOffset + cell;
+                bool visible = Distances[index] != ushort.MaxValue;
                 for (int i = 0; visible && i < Blocked.Length; i++)
                     if (Hits(p, goal, Blocked[i], 1)) visible = false;
-                int error = visible != ((Directions[cell] & 8) != 0) ? 1 : 0;
-                if ((Directions[cell] & 240) != 0) error |= 2;
-                if (Distances[cell] != ushort.MaxValue && cell != Goal)
+                int error = visible != ((Directions[index] & 8) != 0) ? 1 : 0;
+                if ((Directions[index] & 240) != 0) error |= 2;
+                if (Distances[index] != ushort.MaxValue && cell != Goal)
                 {
-                    int best = Distances[cell], chosen = int.MaxValue;
+                    int best = Distances[index], chosen = int.MaxValue;
                     for (int d = 0; d < 8; d++)
                     {
                         int2 step = BuildFlowFieldJob.Step(d), next = p + step;
                         if (math.any(next < 0) || math.any(next >= Width) || Passable[Class * cells + next.y * Width + next.x] == 0) continue;
                         if (step.x != 0 && step.y != 0 && (Passable[Class * cells + p.y * Width + next.x] == 0 ||
                             Passable[Class * cells + next.y * Width + p.x] == 0)) continue;
-                        int distance = Distances[next.y * Width + next.x];
+                        int distance = Distances[FieldOffset + next.y * Width + next.x];
                         best = math.min(best, distance);
-                        if (d == (Directions[cell] & 7)) chosen = distance;
+                        if (d == (Directions[index] & 7)) chosen = distance;
                     }
                     if (chosen != best) error |= 2;
                 }
@@ -172,7 +222,7 @@ namespace Northwatch.Tests.EditMode.Simulation.FlowFields
         [BurstCompile(CompileSynchronously = true)]
         private struct ClearTargetsJob : IJobParallelFor
         {
-            internal int Width, Class;
+            internal int Width, Class, FieldIndex;
             internal FlowFieldReader Reader;
             [ReadOnly] internal NativeArray<int2> Blocked;
             internal NativeArray<int> Errors;
@@ -184,7 +234,7 @@ namespace Northwatch.Tests.EditMode.Simulation.FlowFields
                 {
                     int2 p = lattice + new int2(sub & 1, sub >> 1) * 32;
                     float2 world = (float2)p / 64 + (Class + 1) * .5f;
-                    if (Reader.Sample(0, world, out var sample) != FlowSampleStatus.Ready || !sample.InSight) continue;
+                    if (Reader.Sample(FieldIndex, world, out var sample) != FlowSampleStatus.Ready || !sample.InSight) continue;
                     int2 goal = (int2)math.round((sample.Goal - (Class + 1) * .5f) * 64);
                     var random = new Unity.Mathematics.Random((uint)(cell + 1));
                     for (int target = 0; target < 13; target++)

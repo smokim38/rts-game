@@ -14,20 +14,22 @@ namespace Northwatch.Presentation
         private readonly Mesh cube;
         private readonly Matrix4x4[] regions = new Matrix4x4[Cells];
         private readonly int[] counts = new int[Colours], offsets = new int[Colours], written = new int[Colours];
-        private readonly RenderParams[] parameters = new RenderParams[Colours + 1];
-        private readonly Material[] materials = new Material[Colours + 1];
+        private readonly RenderParams[] parameters = new RenderParams[Colours + 2];
+        private readonly Material[] materials = new Material[Colours + 2];
         private readonly Matrix4x4[] arrows = new Matrix4x4[Cells * 3];
-        private int lastField = int.MinValue, lastClass = -1, arrowCount;
+        private readonly Matrix4x4[] sight = new Matrix4x4[Cells];
+        private int lastField = int.MinValue, lastClass = -1, arrowCount, sightCount;
         private ulong lastPublished;
-        private static readonly ProfilerMarker Marker = new ProfilerMarker("Northwatch.RouteOverlay");
+        internal static readonly ProfilerMarker Marker = new ProfilerMarker("Northwatch.RouteOverlay");
 
         internal RouteOverlay(Mesh cube, Material source)
         {
             this.cube = cube;
-            for (int i = 0; i <= Colours; i++)
+            for (int i = 0; i < materials.Length; i++)
             {
                 materials[i] = new Material(source);
-                materials[i].SetColor("_BaseColor", i == Colours ? Color.white : Color.HSVToRGB(i / (float)Colours, .55f, .65f));
+                materials[i].SetColor("_BaseColor", i == Colours ? Color.white : i == Colours + 1 ?
+                    new Color(.65f, 1, .75f) : Color.HSVToRGB(i / (float)Colours, .55f, .65f));
                 parameters[i] = new RenderParams(materials[i]) { shadowCastingMode = ShadowCastingMode.Off, receiveShadows = false };
             }
         }
@@ -58,12 +60,16 @@ namespace Northwatch.Presentation
                 }
                 if (field != lastField || size != lastClass || published != lastPublished)
                 {
-                    arrowCount = 0;
+                    arrowCount = sightCount = 0;
                     if (field >= 0)
                         for (int cell = 0; cell < Cells; cell++)
                         {
                             Vector3 point = new Vector3(cell % 256 - 127.5f + size * .5f, .06f, cell / 256 - 127.5f + size * .5f);
-                            if (!simulation.RouteDirection(field, point, out Vector3 direction)) continue;
+                            if (!simulation.RouteDirection(field, point, out Vector3 direction, out bool inSight)) continue;
+                            if (inSight)
+                                sight[sightCount++] = Matrix4x4.TRS(new Vector3(point.x, .04f, point.z),
+                                    Quaternion.identity, new Vector3(.65f, .01f, .65f));
+                            if (direction.sqrMagnitude == 0) continue;
                             Vector3 tip = point + direction * .3f;
                             Vector3 side = new Vector3(-direction.z, 0, direction.x);
                             Line(point - direction * .3f, tip);
@@ -73,6 +79,7 @@ namespace Northwatch.Presentation
                 }
                 lastField = field; lastClass = size; lastPublished = published;
                 for (int colour = 0; colour < Colours; colour++) Render(regions, offsets[colour], counts[colour], ref parameters[colour]);
+                Render(sight, 0, sightCount, ref parameters[Colours + 1]);
                 Render(arrows, 0, arrowCount, ref parameters[Colours]);
             }
         }

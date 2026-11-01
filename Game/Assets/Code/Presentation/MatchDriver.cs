@@ -78,13 +78,15 @@ namespace Northwatch.Presentation
                 if (routeOverlay == null && movementSettings != null) routeOverlay = new RouteOverlay(cube, firstSide);
                 else { routeOverlay?.Dispose(); routeOverlay = null; }
             }
-            routeOverlay?.Draw(simulation);
 #endif
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
             using (Diagnostics.MovementCoreProfile.TraceAllocations(true))
 #endif
             using (DrawingMarker.Auto())
             {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                routeOverlay?.Draw(simulation);
+#endif
                 Draw(simulation.DrawCount(Side.First) - simulation.SelectedCount, 0, ref firstParameters);
                 Draw(simulation.DrawCount(Side.Second), UnitSimulation.Capacity, ref secondParameters);
                 Draw(simulation.SelectedCount, UnitSimulation.Capacity * 2, ref selectedParameters);

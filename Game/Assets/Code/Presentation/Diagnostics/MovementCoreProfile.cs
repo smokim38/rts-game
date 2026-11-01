@@ -21,7 +21,7 @@ namespace Northwatch.Presentation.Diagnostics
         private const int FrameCapacity = 1000000;
         private MatchDriver driver;
         private MovementMeasurement measurement;
-        private ProfilerRecorder main, wait, gc, gcBytes;
+        private ProfilerRecorder main, wait, gc, gcBytes, overlay;
         private long[] mainTimes, waitTimes, allocations, allocationCounts;
         private int[] scheduled, completed;
         private int frames, firstTick, invalidFrames;
@@ -35,6 +35,7 @@ namespace Northwatch.Presentation.Diagnostics
         private static MovementCoreProfile allocationProfile;
         private ProfilerRecorder scopedGc;
         private long simulationAllocations, drawingAllocations;
+        private long overlayCalls, overlayNanoseconds;
         private bool scopeCapacityReached;
         private int scene, unitCount, orderPhase, releaseFrame, acknowledgementFrame = -1, firstOrderTick = -1;
         private bool modern, selectionQueued, drawPending, allDrawPending;
@@ -155,7 +156,10 @@ namespace Northwatch.Presentation.Diagnostics
             wait = ProfilerRecorder.StartNew(ProfilerCategory.Scripts, "Northwatch.Simulation.Wait", 1, options);
             gc = ProfilerRecorder.StartNew(ProfilerCategory.Memory, "GC.Alloc", 1, options);
             gcBytes = ProfilerRecorder.StartNew(ProfilerCategory.Memory, "GC Allocated In Frame", 1, options);
-            if (!main.Valid || !wait.Valid || !gc.Valid || !gcBytes.Valid) throw new InvalidOperationException("Required driver/wait/GC recorders are unavailable.");
+            _ = RouteOverlay.Marker;
+            overlay = ProfilerRecorder.StartNew(ProfilerCategory.Scripts, "Northwatch.RouteOverlay", 1, options);
+            if (!main.Valid || !wait.Valid || !gc.Valid || !gcBytes.Valid || !overlay.Valid)
+                throw new InvalidOperationException("Required driver/wait/GC/overlay recorders are unavailable.");
             if (Array.IndexOf(args, "-movement-gc-scopes") >= 0)
             {
                 // Individual samples delimit the driver's scopes without a raw capture.
@@ -212,6 +216,8 @@ namespace Northwatch.Presentation.Diagnostics
                 mainTimes[frames] = main.LastValue; waitTimes[frames] = wait.LastValue;
                 allocations[frames] = gcBytes.LastValue;
                 allocationCounts[frames] = gc.Count == 0 ? 0 : gc.GetSample(0).Count;
+                overlayCalls += overlay.Count == 0 ? 0 : overlay.GetSample(0).Count;
+                overlayNanoseconds += overlay.LastValue;
                 scheduled[frames] = driver.ScheduledTicks; completed[frames] = driver.CompletedTicks;
                 frames++;
                 // Diagnostic captures use 60 fps and short chunks so the Editor's
@@ -345,6 +351,8 @@ namespace Northwatch.Presentation.Diagnostics
                 windowSeconds.ToString("F6", CultureInfo.InvariantCulture) + "\n" +
                 "scoped_gc=" + scopedGc.Valid + "; simulation_alloc_count=" + simulationAllocations +
                 "; drawing_alloc_count=" + drawingAllocations + "; scope_capacity_reached=" + scopeCapacityReached + "\n");
+            File.AppendAllText(output + "-info.txt", "overlay_calls=" + overlayCalls +
+                "; overlay_total_ms=" + (overlayNanoseconds * .000001).ToString("F6", CultureInfo.InvariantCulture) + "\n");
             bool orderPassed = true;
             if (scene >= 4)
             {
@@ -411,7 +419,8 @@ namespace Northwatch.Presentation.Diagnostics
                 File.WriteAllText(output + "-unreachable.txt", "stopped=" + stopped + "; searches=" + driver.Simulation.GoalSearchCount +
                     "; requests=" + driver.Simulation.FieldRequestCount + "; no_retries=" + noRetries + "; pass=" + orderPassed + "\n");
             }
-            Application.Quit(invalidFrames == 0 && !scopeCapacityReached && orderPassed ? 0 : 1);
+            bool scopesPassed = !scopedGc.Valid || simulationAllocations == 0 && drawingAllocations == 0;
+            Application.Quit(invalidFrames == 0 && !scopeCapacityReached && scopesPassed && overlayCalls == 0 && orderPassed ? 0 : 1);
         }
 
         private void WriteMovementJobLabels()
@@ -437,7 +446,7 @@ namespace Northwatch.Presentation.Diagnostics
             RenderPipelineManager.endContextRendering -= RecordDrawnResponse;
             if (allocationProfile == this) allocationProfile = null;
             if (scopedGc.Valid) scopedGc.Dispose();
-            main.Dispose(); wait.Dispose(); gc.Dispose(); gcBytes.Dispose();
+            main.Dispose(); wait.Dispose(); gc.Dispose(); gcBytes.Dispose(); overlay.Dispose();
         }
     }
 }
