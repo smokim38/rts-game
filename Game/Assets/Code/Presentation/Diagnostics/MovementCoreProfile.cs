@@ -415,9 +415,13 @@ namespace Northwatch.Presentation.Diagnostics
                     stopped &= measurement.Metric(t, 9) == 0 && measurement.Metric(t, 11) == 0 && measurement.Metric(t, 18) == 0;
                 bool noRetries = searchesAtRest == 1 && requestsAtRest <= 1 &&
                     driver.Simulation.GoalSearchCount == searchesAtRest && driver.Simulation.FieldRequestCount == requestsAtRest;
-                orderPassed &= stopped && noRetries && measurement.Metric(last, 17) == 0;
+                // ADR 0015 reports crowd stalls here; Issue 5 gates arrival without them.
+                orderPassed &= stopped && noRetries;
                 File.WriteAllText(output + "-unreachable.txt", "stopped=" + stopped + "; searches=" + driver.Simulation.GoalSearchCount +
-                    "; requests=" + driver.Simulation.FieldRequestCount + "; no_retries=" + noRetries + "; pass=" + orderPassed + "\n");
+                    "; requests=" + driver.Simulation.FieldRequestCount + "; no_retries=" + noRetries +
+                    "; exact/contact/congestion/group_stall=" + measurement.Metric(last, 12) + "/" +
+                    measurement.Metric(last, 13) + "/" + measurement.Metric(last, 14) + "/" + measurement.Metric(last, 17) +
+                    "; positions_file=" + Path.GetFileName(output) + "-orders.csv; pass=" + orderPassed + "\n");
             }
             bool scopesPassed = !scopedGc.Valid || simulationAllocations == 0 && drawingAllocations == 0;
             Application.Quit(invalidFrames == 0 && !scopeCapacityReached && scopesPassed && overlayCalls == 0 && orderPassed ? 0 : 1);
