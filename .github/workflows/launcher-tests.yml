@@ -1,0 +1,25 @@
+name: launcher-tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  launcher-tests:
+    # Exercise Windows-only process cleanup and native junction/path handling.
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - name: Check out the head to test
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Run launcher tests
+        run: node --test tools/codex-launch.test.js

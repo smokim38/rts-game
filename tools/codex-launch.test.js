@@ -590,6 +590,67 @@ test('Unity paths: project and log junctions cannot escape the own worktree', (t
   assert.strictEqual(relative.args.at(-1), path.join(dir, 'Game', 'Logs', 'new', 'results.xml'));
 });
 
+test('Unity testResults: only files inside either log folder are accepted', (t) => {
+  const dir = slotDir(t);
+  const outside = slotDir(t);
+  unityProject(dir);
+  const command = (output) => L.unityCommand(dir, { args: ['-testResults', output] }, UNITY_VERSION);
+  for (const folder of ['Game/Logs', '.studio/logs']) {
+    for (const output of [`${folder}/new/results with spaces.xml`, `${folder}/sub/../results.xml`]) {
+      assert.strictEqual(command(output).args.at(-1), path.resolve(dir, output));
+      assert.strictEqual(command(path.resolve(dir, output)).args.at(-1), path.resolve(dir, output));
+    }
+    fs.mkdirSync(path.join(dir, folder), { recursive: true });
+    const existing = path.join(dir, folder, 'existing.xml');
+    fs.writeFileSync(existing, 'previous results');
+    assert.strictEqual(command(existing).args.at(-1), existing);
+  }
+  for (const output of ['results.xml', '.git/results.xml', '.githooks/results.xml', '.codex/results.xml', '.claude/results.xml',
+    'Game/Assets/results.xml', 'Game/Packages/results.xml', 'Game/ProjectSettings/results.xml', 'Game/Library/results.xml',
+    'Game/Logs-other/results.xml', '.studio/logs-other/results.xml', 'Game/Logs/../Assets/results.xml',
+    '.studio/logs/../../.git/results.xml', '../results.xml', path.join(outside, 'results.xml'),
+    path.join(`${dir}-sibling`, 'Game', 'Logs', 'results.xml'), 'Game/Logs', '.studio/logs']) {
+    refused(() => command(output), /own worktree|log folders/);
+    refused(() => command(path.resolve(dir, output)), /own worktree|log folders/);
+  }
+  if (process.platform === 'win32') {
+    assert.strictEqual(command('game\\logs\\results.xml').args.at(-1), path.join(dir, 'game', 'logs', 'results.xml'));
+    for (const output of ['\\\\server\\share\\Game\\Logs\\results.xml', '\\\\.\\NUL', '\\??\\C:\\Game\\Logs\\results.xml',
+      path.toNamespacedPath(path.join(dir, 'Game', 'Logs', 'results.xml')), 'Game\\Logs\\results.xml:stream',
+      'Game/Logs/NUL.xml', 'Game/Logs/trailing./results.xml', 'Game/Logs/trailing /results.xml']) {
+      refused(() => command(output), /own worktree|Windows devices|log folders/);
+    }
+  }
+});
+
+test('Unity testResults: resolved files and missing descendants must stay in the log folders', (t) => {
+  const dir = slotDir(t);
+  const outside = slotDir(t);
+  unityProject(dir);
+  fs.mkdirSync(path.join(dir, 'Game', 'Assets'));
+  for (const folder of ['Game/Logs', '.studio/logs']) {
+    const logs = path.join(dir, folder);
+    fs.mkdirSync(path.dirname(logs), { recursive: true });
+    for (const target of [path.join(dir, 'Game', 'Assets'), outside]) {
+      fs.writeFileSync(path.join(target, 'results.xml'), 'existing file');
+      fs.symlinkSync(target, logs, 'junction');
+      for (const output of ['results.xml', 'missing/results.xml']) {
+        refused(() => L.unityCommand(dir, { args: ['-testResults', path.join(logs, output)] }, UNITY_VERSION), /own worktree|log folders/);
+      }
+      fs.unlinkSync(logs);
+    }
+    fs.mkdirSync(logs);
+    const link = path.join(logs, 'redirect');
+    for (const target of [path.join(dir, 'Game', 'Assets'), outside]) {
+      fs.symlinkSync(target, link, 'junction');
+      for (const output of ['results.xml', 'missing/results.xml']) {
+        refused(() => L.unityCommand(dir, { args: ['-testResults', path.join(link, output)] }, UNITY_VERSION), /own worktree|log folders/);
+      }
+      fs.unlinkSync(link);
+    }
+  }
+});
+
 test('runCodex: Unity tools by role, settings, exit codes, refusals, logs and summary', async (t) => {
   const dir = slotDir(t);
   unityProject(dir);
