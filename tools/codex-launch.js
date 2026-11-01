@@ -562,7 +562,7 @@ function parseResult(kind, text, sha) {
 // Prefix allow rules cannot prevent later arguments from overriding a fixed project prefix.
 const UNITY_TOOL = {
   name: 'unity_batch',
-  description: 'Run Unity outside the sandbox without auto-review, with the main branch Editor version, fixed -batchmode, own -projectPath and -logFile. Allowed flags: -quit, -nographics, -executeMethod (qualified static method), -runTests, -testPlatform (EditMode or PlayMode), -testFilter, -testCategory, -assemblyNames, -testResults (inside own worktree Game/Logs/ or .studio/logs/). Pass separate strings, without quotes. Other flags and custom arguments are refused. Use this tool for all Unity runs. One Editor at a time, 30 minute limit. Worktree Editor code (including tests and InitializeOnLoad) runs outside the sandbox and must obey AGENTS.md.',
+  description: 'Run Unity outside the sandbox without auto-review, with the main branch Editor version, fixed -batchmode, own -projectPath and -logFile. Pass each argument as a separate string. Arguments pass through unchanged, including custom options, except -projectPath, -logFile, -createProject and -openProject, which are refused. Any argument making Unity write outside the own worktree counts as the agent\'s own write and stays forbidden. Use this tool for all Unity runs. One Editor at a time, 30 minute limit. Worktree Editor code (including tests and InitializeOnLoad) runs outside the sandbox and must obey AGENTS.md.',
   inputSchema: {
     type: 'object', properties: { args: { type: 'array', items: { type: 'string' } } },
     required: ['args'], additionalProperties: false,
@@ -602,40 +602,14 @@ function unityPath(cwd, value) {
   return target;
 }
 
-function unityTestResultsPath(cwd, value) {
-  const target = unityPath(cwd, value);
-  const root = fs.realpathSync(cwd);
-  // Resolve the nearest existing ancestor so new output folders cannot hide a
-  // junction into a different worktree folder, including a redirected log root.
-  let ancestor = target;
-  while (!fs.lstatSync(ancestor, { throwIfNoEntry: false })) ancestor = path.dirname(ancestor);
-  const resolved = path.resolve(fs.realpathSync(ancestor), path.relative(ancestor, target));
-  const logs = [path.join(root, 'Game', 'Logs'), path.join(root, '.studio', 'logs')];
-  if (!logs.some((folder) => {
-    const rel = path.relative(folder, resolved);
-    return rel !== '' && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
-  })) refuse('Unity testResults must stay inside the own worktree log folders (Game/Logs/ or .studio/logs/)');
-  return target;
-}
-
 function unityCommand(cwd, input, expectedVersion) {
-  if (!input || Object.keys(input).length !== 1 || !Array.isArray(input.args) || input.args.length > 256 ||
-      input.args.some((a) => typeof a !== 'string' || !a || a.trim() !== a || /[\x00-\x1f"]/.test(a) || a.length > 32768)) refuse('Unity expects an args array of plain strings without quotes or surrounding whitespace');
+  if (!input || Object.keys(input).length !== 1 || !Array.isArray(input.args) ||
+      input.args.some((a) => typeof a !== 'string')) refuse('Unity expects an args array of strings');
   if (!/^\d+\.\d+\.\d+[abfp]\d+$/.test(expectedVersion ?? '')) refuse('Unity requires an Editor version from main');
-  const extra = [];
-  const seen = new Set();
-  for (let i = 0; i < input.args.length; i++) {
-    const flag = input.args[i];
-    if (seen.has(flag)) refuse('Unity flags must not be repeated');
-    seen.add(flag);
-    extra.push(flag);
-    if (['-quit', '-nographics', '-runTests'].includes(flag)) continue;
-    if (!['-executeMethod', '-testPlatform', '-testFilter', '-testCategory', '-assemblyNames', '-testResults'].includes(flag)) refuse(`Unity flag is not allowed: ${flag}`);
-    const value = input.args[++i];
-    if (!value || /^[-@]/.test(value) || (value.startsWith('/') && flag !== '-testResults')) refuse(`Unity flag needs a value: ${flag}`);
-    if (flag === '-executeMethod' && !/^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$/.test(value)) refuse('Unity executeMethod must be a qualified method name');
-    if (flag === '-testPlatform' && !['EditMode', 'PlayMode'].includes(value)) refuse('Unity testPlatform must be EditMode or PlayMode');
-    extra.push(flag === '-testResults' ? unityTestResultsPath(cwd, value) : value);
+  for (const arg of input.args) {
+    if (/^[-/]+(?:projectPath|logFile|createProject|openProject)(?:$|[=:\s])/i.test(arg.trim().replace(/^["']+|["']+$/g, ''))) {
+      refuse(`Unity project and log flags are locked by the launcher: ${arg}`);
+    }
   }
   const game = path.join(cwd, 'Game');
   const realRoot = fs.realpathSync(cwd);
@@ -651,7 +625,7 @@ function unityCommand(cwd, input, expectedVersion) {
   const logFile = path.join(cwd, '.studio', 'logs', `unity-${crypto.randomUUID()}.log`);
   unityPath(cwd, logFile);
   return { file: `C:\\Program Files\\Unity\\Hub\\Editor\\${expectedVersion}\\Editor\\Unity.exe`,
-    args: ['-batchmode', '-projectPath', game, '-logFile', logFile, ...extra], cwd, logFile };
+    args: ['-batchmode', '-projectPath', game, '-logFile', logFile, ...input.args], cwd, logFile };
 }
 
 // A descendant holding a pipe must not keep shutdown waiting for `close`. On Windows
@@ -698,7 +672,7 @@ function stopProcessTree(child, tree = false, spawnKiller = spawn) {
   });
 }
 
-// No shell, caller-supplied executable, external config file, or reusable approval is involved.
+// Launch the fixed Editor directly; no shell or reusable approval is involved.
 function startUnity(command, entry, log, spawnProcess = spawn, timeoutMs = UNITY_TIMEOUT_MS, spawnKiller = spawn) {
   log({ event: 'unity-started', ...entry });
   let child;
