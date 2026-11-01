@@ -16,7 +16,6 @@
 // a shell, so a worktree's content can't stand in for them.
 // Codex only edits files; the Producer commits, pushes and opens the PR.
 // The role files are read from main on GitHub, so local edits can't change a role.
-// Issue #184 is a proposal only until its Critical, owner-approved PR merges.
 // Node.js built-in modules only. Tests: node --test tools/codex-launch.test.js
 
 const { execFileSync, spawn } = require('node:child_process');
@@ -30,6 +29,8 @@ const OWNER = 'smokim38';
 const ROOT = path.resolve(__dirname, '..');
 const STUDIO = path.join(ROOT, '.studio');
 const RUN_TIMEOUT_MS = 4 * 60 * 60 * 1000;
+const UNITY_TIMEOUT_MS = 30 * 60 * 1000;
+const STOP_GRACE_MS = 2000;
 const ROLES = {
   'gameplay-programmer': 'implement',
   'tech-artist': 'implement',
@@ -237,6 +238,7 @@ const github = {
     const file = JSON.parse(gh(['api', `repos/${REPO}/contents/.codex/agents/${role}.toml?ref=main`]));
     return Buffer.from(file.content, 'base64').toString('utf8');
   },
+  unityVersion: mainUnityVersion,
   comment: (pr, body) => gh(['pr', 'comment', String(pr), '--repo', REPO, '--body-file', '-'], body).trim(),
 };
 
@@ -560,7 +562,7 @@ function parseResult(kind, text, sha) {
 // Prefix allow rules cannot prevent later arguments from overriding a fixed project prefix.
 const UNITY_TOOL = {
   name: 'unity_batch',
-  description: 'Run the project Unity Editor outside the sandbox without auto-review. The launcher fixes the executable version, -batchmode, -projectPath and an in-worktree -logFile. Supply remaining Unity arguments as individual strings. Use this tool for all Unity runs; no shell wrappers. Only one Editor can run at a time. Editor code must obey AGENTS.md and write only inside the worktree.',
+  description: 'Run Unity outside the sandbox without auto-review, with the main branch Editor version, fixed -batchmode, own -projectPath and -logFile. Allowed flags: -quit, -nographics, -executeMethod (qualified static method), -runTests, -testPlatform (EditMode or PlayMode), -testFilter, -testCategory, -assemblyNames, -testResults (own worktree path). Pass separate strings, without quotes. Other flags and custom arguments are refused. Use this tool for all Unity runs. One Editor at a time, 30 minute limit. Worktree Editor code (including tests and InitializeOnLoad) runs outside the sandbox and must obey AGENTS.md.',
   inputSchema: {
     type: 'object', properties: { args: { type: 'array', items: { type: 'string' } } },
     required: ['args'], additionalProperties: false,
@@ -569,11 +571,55 @@ const UNITY_TOOL = {
 const unityRole = (role, sandbox) => sandbox === 'workspace-write' &&
   ['gameplay-programmer', 'qa-test-engineer', 'tech-artist'].includes(role);
 
-function unityCommand(cwd, input) {
+function unityVersion(text) {
+  const version = /^m_EditorVersion: (\d+\.\d+\.\d+[abfp]\d+)\s*$/m.exec(text)?.[1];
+  if (!version) refuse('Unity project has no usable Editor version');
+  return version;
+}
+
+function mainUnityVersion(readGh = gh) {
+  const file = JSON.parse(readGh(['api', `repos/${REPO}/contents/Game/ProjectSettings/ProjectVersion.txt?ref=main`]));
+  return unityVersion(Buffer.from(file.content, 'base64').toString('utf8'));
+}
+
+function unityPath(cwd, value) {
+  const root = fs.realpathSync(cwd);
+  const target = path.resolve(cwd, value);
+  const inside = (file) => {
+    const rel = path.relative(root, file);
+    return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
+  };
+  // Check every existing ancestor too: outputs may not exist yet, and a junction can
+  // escape then return through another link. Reject Windows device/ADS spellings.
+  if (!inside(target) || /[:*?<>|]/.test(target.slice(path.parse(target).root.length))) refuse('Unity paths must stay inside the own worktree');
+  let current = target;
+  while (path.relative(root, current) !== '') {
+    if (fs.lstatSync(current, { throwIfNoEntry: false }) && !inside(fs.realpathSync(current))) refuse('Unity paths must stay inside the own worktree');
+    const part = path.basename(current);
+    if (/[. ]$/.test(part) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part)) refuse('Unity paths must not name Windows devices');
+    current = path.dirname(current);
+  }
+  return target;
+}
+
+function unityCommand(cwd, input, expectedVersion) {
   if (!input || Object.keys(input).length !== 1 || !Array.isArray(input.args) || input.args.length > 256 ||
-      input.args.some((a) => typeof a !== 'string' || /[\0\r\n]/.test(a) || a.length > 32768)) refuse('Unity expects an args array of plain strings');
-  if (input.args.some((a) => /^[-/]+(?:batchmode|projectpath|logfile|createproject)(?:$|[=:\s])/i.test(a))) {
-    refuse('Unity batch mode, project and log paths are fixed by the launcher');
+      input.args.some((a) => typeof a !== 'string' || !a || a.trim() !== a || /[\x00-\x1f"]/.test(a) || a.length > 32768)) refuse('Unity expects an args array of plain strings without quotes or surrounding whitespace');
+  if (!/^\d+\.\d+\.\d+[abfp]\d+$/.test(expectedVersion ?? '')) refuse('Unity requires an Editor version from main');
+  const extra = [];
+  const seen = new Set();
+  for (let i = 0; i < input.args.length; i++) {
+    const flag = input.args[i];
+    if (seen.has(flag)) refuse('Unity flags must not be repeated');
+    seen.add(flag);
+    extra.push(flag);
+    if (['-quit', '-nographics', '-runTests'].includes(flag)) continue;
+    if (!['-executeMethod', '-testPlatform', '-testFilter', '-testCategory', '-assemblyNames', '-testResults'].includes(flag)) refuse(`Unity flag is not allowed: ${flag}`);
+    const value = input.args[++i];
+    if (!value || /^[-@]/.test(value) || (value.startsWith('/') && flag !== '-testResults')) refuse(`Unity flag needs a value: ${flag}`);
+    if (flag === '-executeMethod' && !/^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$/.test(value)) refuse('Unity executeMethod must be a qualified method name');
+    if (flag === '-testPlatform' && !['EditMode', 'PlayMode'].includes(value)) refuse('Unity testPlatform must be EditMode or PlayMode');
+    extra.push(flag === '-testResults' ? unityPath(cwd, value) : value);
   }
   const game = path.join(cwd, 'Game');
   const realRoot = fs.realpathSync(cwd);
@@ -581,41 +627,94 @@ function unityCommand(cwd, input) {
   if (path.dirname(realGame) !== realRoot) refuse('Unity Game folder must be inside the own worktree');
   const versionFile = path.join(game, 'ProjectSettings', 'ProjectVersion.txt');
   // Reject junctions/symlinks that would redirect our reads or launcher-created log folders.
-  for (const file of [versionFile, ...['', 'logs', 'locks', 'worktrees', '.gitignore'].map((p) => path.join(cwd, '.studio', p))]) {
-    if (!fs.lstatSync(file, { throwIfNoEntry: false })) continue;
-    const relative = path.relative(realRoot, fs.realpathSync(file));
-    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) refuse('Unity paths must stay inside the own worktree');
-  }
-  const version = /^m_EditorVersion: (\d+\.\d+\.\d+[abfp]\d+)\s*$/m.exec(fs.readFileSync(versionFile, 'utf8'))?.[1];
-  if (!version) refuse('Unity project has no usable Editor version');
+  unityPath(cwd, versionFile);
+  // Unity writes these implicitly, even when no path-bearing flag is supplied.
+  for (const folder of ['Assets', 'Packages', 'ProjectSettings', 'Library', 'Temp', 'Logs', 'Builds', 'UserSettings', 'obj']) unityPath(cwd, path.join(game, folder));
+  const version = unityVersion(fs.readFileSync(versionFile, 'utf8'));
+  if (version !== expectedVersion) refuse('Unity worktree Editor version does not match main');
   const logFile = path.join(cwd, '.studio', 'logs', `unity-${crypto.randomUUID()}.log`);
-  return { file: `C:\\Program Files\\Unity\\Hub\\Editor\\${version}\\Editor\\Unity.exe`,
-    args: ['-batchmode', '-projectPath', game, '-logFile', logFile, ...input.args], cwd, logFile };
+  unityPath(cwd, logFile);
+  return { file: `C:\\Program Files\\Unity\\Hub\\Editor\\${expectedVersion}\\Editor\\Unity.exe`,
+    args: ['-batchmode', '-projectPath', game, '-logFile', logFile, ...extra], cwd, logFile };
+}
+
+// A descendant holding a pipe must not keep shutdown waiting for `close`. On Windows
+// kill the tree while its root is alive; Unity's native children are not Node jobs.
+function stopProcessTree(child, tree = false, spawnKiller = spawn) {
+  return new Promise((resolve) => {
+    let killer;
+    let timer;
+    let settled = false;
+    let killerFinished = false;
+    let terminationError = null;
+    const done = (error = null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.removeListener('exit', exited);
+      killer?.kill();
+      for (const stream of [child.stdin, child.stdout, child.stderr]) stream?.destroy();
+      child.unref();
+      resolve(error);
+    };
+    const exited = () => { if (!killer || killerFinished) done(terminationError); };
+    if (child.exitCode !== null || child.signalCode !== null || !child.pid) return done();
+    child.once('exit', exited);
+    timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      done('process tree shutdown exceeded its grace period');
+    }, STOP_GRACE_MS);
+    if (process.platform === 'win32' && tree) {
+      const killed = (error) => {
+        terminationError = error;
+        killerFinished = true;
+        if (error) child.kill();
+        if (child.exitCode !== null || child.signalCode !== null) done(error);
+      };
+      try {
+        killer = spawnKiller(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe'), ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', shell: false });
+        killer.once('error', (err) => killed(`could not stop process tree: ${err.message}`));
+        killer.once('exit', (code) => killed(code === 0 ? null : `process tree termination exited ${code}`));
+      } catch (err) { killed(`could not stop process tree: ${err.message}`); }
+    } else if (process.platform !== 'win32') {
+      try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
+    } else child.kill(); // Node's own Windows job contains the app-server wrapper's children.
+  });
 }
 
 // No shell, caller-supplied executable, external config file, or reusable approval is involved.
-function startUnity(command, entry, log, spawnProcess = spawn) {
+function startUnity(command, entry, log, spawnProcess = spawn, timeoutMs = UNITY_TIMEOUT_MS, spawnKiller = spawn) {
   log({ event: 'unity-started', ...entry });
   let child;
-  let output = '';
+  let complete;
+  let timer;
+  let stopping;
+  const stop = (reason = 'Unity run cancelled') => {
+    if (!stopping) stopping = stopProcessTree(child, true, spawnKiller).then((error) => {
+      if (error) entry.cleanupError = error;
+      complete(child.exitCode, child.signalCode, error || reason);
+    });
+    return stopping;
+  };
   const done = new Promise((resolve) => {
     let closed = false;
-    const complete = (exitCode, signal = null, error = null) => {
+    complete = (exitCode, signal = null, error = null) => {
       if (closed) return;
       closed = true;
-      Object.assign(entry, { exitCode, signal, error, status: exitCode === 0 ? 'completed' : 'failed' });
+      clearTimeout(timer);
+      Object.assign(entry, { exitCode, signal, error, status: exitCode === 0 && !error ? 'completed' : 'failed' });
       log({ event: 'unity-completed', ...entry });
-      resolve({ ...entry, output });
+      resolve({ ...entry });
     };
     try {
-      ensureStudio(path.join(command.cwd, '.studio'));
-      child = spawnProcess(command.file, command.args, { cwd: command.cwd, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-      for (const stream of [child.stdout, child.stderr]) stream.on('data', (d) => { output = (output + d).slice(-16000); });
+      fs.mkdirSync(path.dirname(command.logFile), { recursive: true });
+      child = spawnProcess(command.file, command.args, { cwd: command.cwd, shell: false, windowsHide: true, stdio: 'ignore', detached: process.platform !== 'win32' });
       child.on('error', (err) => complete(null, null, err.message));
-      child.on('close', (code, signal) => complete(code, signal));
+      child.on('exit', (code, signal) => { if (!stopping) complete(code, signal); });
+      timer = setTimeout(() => stop('Unity run exceeded its 30 minute time limit'), timeoutMs);
     } catch (err) { complete(null, null, err.message); }
   });
-  return { done, stop: () => { child?.kill(); return done; } };
+  return { done, stop: () => { if (child) stop(); return done; } };
 }
 
 // Codex's own thread/start reply must report exactly the settings the launcher asked for.
@@ -748,17 +847,17 @@ function helperTracker(run, log) {
 }
 
 // `command` is Codex's program and leading arguments (codexCommand); tests pass a fake server.
-function runCodex({ role, cwd, model, effort, sandbox, developerInstructions, prompt, outputSchema, log, timeoutMs = RUN_TIMEOUT_MS, command = codexCommand(), unitySpawn = spawn }) {
+function runCodex({ role, cwd, model, effort, sandbox, developerInstructions, prompt, outputSchema, log, timeoutMs = RUN_TIMEOUT_MS, command = codexCommand(), unitySpawn = spawn, expectedUnityVersion, unityTimeoutMs = UNITY_TIMEOUT_MS, unityKillSpawn = spawn }) {
   const hasUnity = unityRole(role, sandbox);
   const expected = { cwd, model, effort, sandboxType: sandbox === 'read-only' ? 'readOnly' : 'workspaceWrite' };
-  const child = spawn(command.file, [...command.args, 'app-server'], { cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+  const child = spawn(command.file, [...command.args, 'app-server'], { cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32' });
   // `tokens` holds the latest total Codex reported per thread; `helpers` the helper agents by thread.
   const run = { threadId: null, settings: null, reroutes: [], reviews: [], declined: [], computerUseApprovals: [], unityRuns: [], tokens: {}, helpers: {}, items: {}, finalText: null, turn: null, stderr: '' };
   const unityCalls = new Set();
   let unityJob = null;
   let nextId = 1;
   const pending = new Map();
-  const send = (msg) => child.stdin.write(`${JSON.stringify(msg)}\n`);
+  const send = (msg) => { if (!child.stdin.destroyed) child.stdin.write(`${JSON.stringify(msg)}\n`); };
   const request = (method, params) =>
     new Promise((resolve, reject) => {
       const id = nextId++;
@@ -774,10 +873,10 @@ function runCodex({ role, cwd, model, effort, sandbox, developerInstructions, pr
       if (finished) return;
       finished = true;
       clearTimeout(timer);
-      const serverClosed = new Promise((closed) => child.once('close', closed));
-      child.kill();
       const stopped = unityJob?.stop();
-      Promise.all([serverClosed, stopped]).then(() => {
+      Promise.all([stopProcessTree(child), stopped]).then(([stopError, unityResult]) => {
+        if (stopError) err ??= new Refused(stopError);
+        if (unityResult?.cleanupError) err ??= new Refused(`Unity cleanup failed: ${unityResult.cleanupError}`);
         helpers.end();
         log({
           event: 'run-tokens',
@@ -795,6 +894,7 @@ function runCodex({ role, cwd, model, effort, sandbox, developerInstructions, pr
       finish(new Refused(`the Codex run passed its time limit (${Math.round(timeoutMs / 60000)} minutes)`));
     }, timeoutMs);
     child.on('error', (err) => finish(new Refused(`could not start Codex: ${err.message}`)));
+    child.stdin.on('error', (err) => finish(new Refused(`could not write to Codex: ${err.message}`)));
     child.on('exit', (code) => finish(run.turn ? null : new Refused(`Codex exited (${code}) before the turn completed`)));
     child.stderr.on('data', (d) => {
       run.stderr = (run.stderr + d).slice(-4000);
@@ -850,6 +950,7 @@ function runCodex({ role, cwd, model, effort, sandbox, developerInstructions, pr
     };
 
     readline.createInterface({ input: child.stdout }).on('line', (line) => {
+      if (finished) return;
       let msg;
       try {
         msg = JSON.parse(line);
@@ -873,14 +974,15 @@ function runCodex({ role, cwd, model, effort, sandbox, developerInstructions, pr
             if (finished || !hasUnity || p.tool !== UNITY_TOOL.name || p.threadId !== run.threadId ||
                 !run.turnId || p.turnId !== run.turnId || typeof p.callId !== 'string' || !p.callId || unityCalls.has(p.callId)) refuse('Unity tool call is not authorised for this role and turn');
             if (unityJob) refuse('a Unity Editor is already running in this worktree');
-            const command = unityCommand(cwd, p.arguments);
+            const command = unityCommand(cwd, p.arguments, expectedUnityVersion);
             unityCalls.add(p.callId);
             const entry = { callId: p.callId, command: [command.file, ...command.args], logFile: path.relative(cwd, command.logFile), exitCode: null, status: 'running' };
             run.unityRuns.push(entry);
-            unityJob = startUnity(command, entry, log, unitySpawn);
+            unityJob = startUnity(command, entry, log, unitySpawn, unityTimeoutMs, unityKillSpawn);
             const result = await unityJob.done;
             unityJob = null;
-            return { success: result.exitCode === 0, contentItems: [{ type: 'inputText', text: JSON.stringify(result) }] };
+            if (result.cleanupError) finish(new Refused(`Unity cleanup failed: ${result.cleanupError}`));
+            return { success: result.status === 'completed', contentItems: [{ type: 'inputText', text: JSON.stringify(result) }] };
           })().catch((err) => {
             log({ event: 'unity-refused', reason: err.message });
             return { success: false, contentItems: [{ type: 'inputText', text: err.message }] };
@@ -1010,6 +1112,7 @@ async function main(argv) {
       prompt: buildPrompt({ ...args, issue, branch, sha, feedback }),
       outputSchema: SCHEMAS[args.kind],
       log,
+      expectedUnityVersion: args.kind === 'review' ? undefined : github.unityVersion(),
     });
     let result = null;
     let record = null;
@@ -1067,6 +1170,8 @@ module.exports = {
   verifySettings,
   verifySettingsUpdate,
   unityCommand,
+  unityVersion,
+  mainUnityVersion,
   computerUseApproval,
   declineRequest,
   helperTracker,
