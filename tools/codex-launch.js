@@ -39,7 +39,7 @@ const BRANCH_TYPES = { feature: 'feat', bug: 'fix', task: 'chore', docs: 'docs',
 const NUMBER = /^[1-9]\d{0,6}$/;
 const SHA = /^[0-9a-f]{40}$/;
 // Adding a Player app requires a new Critical, owner-approved PR (AGENTS.md §5, Issue #171).
-const COMPUTER_USE_PLAYER_APPS = Object.freeze(['movementorders', 'sandbox', 'performanceladder']);
+const COMPUTER_USE_PLAYER_APPS = Object.freeze(['movementorders', 'sandbox', 'performanceladder', 'movementcore']);
 
 class Refused extends Error {}
 const refuse = (reason) => {
