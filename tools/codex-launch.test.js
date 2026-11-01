@@ -527,7 +527,7 @@ test('Unity version is read from main, with no worktree or lookup-failure fallba
   assert.throws(() => L.mainUnityVersion(() => { throw new Error('lookup unavailable'); }), /lookup unavailable/);
 });
 
-test('Unity command: main version, fixed executable and paths, allowlisted flags only', (t) => {
+test('Unity command: main version, fixed executable, batch mode, project and log', (t) => {
   const dir = slotDir(t);
   unityProject(dir);
   const extra = ['-runTests', '-testPlatform', 'EditMode', '-testFilter', 'Rts.Tests.First;Rts.Tests.Second',
@@ -538,21 +538,11 @@ test('Unity command: main version, fixed executable and paths, allowlisted flags
   assert.strictEqual(path.dirname(cmd.logFile), path.join(dir, '.studio', 'logs'));
   const build = L.unityCommand(dir, { args: ['-quit', '-nographics', '-executeMethod', 'Rts.EditorTools.SandboxSceneBuilder.BuildWindows'] }, UNITY_VERSION);
   assert.strictEqual(build.args.at(-1), 'Rts.EditorTools.SandboxSceneBuilder.BuildWindows');
-  for (const args of [null, ['x\0y'], ['x\ny'], ['x\ty'], ['"-quit"'], [' -quit'], ['-quit '], [''], [2], Array(257).fill('x'), ['x'.repeat(32769)]]) {
+  for (const args of [null, undefined, 'not an array', [2], [null], [{}]]) {
     refused(() => L.unityCommand(dir, { args }, UNITY_VERSION), /args array/);
   }
+  refused(() => L.unityCommand(dir, null, UNITY_VERSION), /args array/);
   refused(() => L.unityCommand(dir, { args: [], file: 'another.exe' }, UNITY_VERSION), /args array/);
-  for (const flag of ['-projectPath', '--PROJECTPATH=elsewhere', '/projectPath:elsewhere', '-batchMode', '-logFile', '-createProject', '-projectPath elsewhere',
-    '-buildWindows64Player', '-buildWindowsPlayer', '-buildLinux64Player', '-buildOSXUniversalPlayer', '-exportPackage', '-importPackage', '-upmLogFile', '-openfile',
-    '-enableCodeCoverage', '-coverageResultsPath', '-coverageOptions', '-serial', '-username', '-password', '-returnlicense', '-manualLicenseFile',
-    '-createManualActivationFile', '-cacheServerEndpoint', '-accelerator', '@args.txt', '-unknown', '-quit=true', '--quit']) {
-    refused(() => L.unityCommand(dir, { args: [flag] }, UNITY_VERSION), /not allowed/);
-  }
-  for (const flag of ['-executeMethod', '-testResults', '-testPlatform', '-testFilter', '-testCategory', '-assemblyNames']) refused(() => L.unityCommand(dir, { args: [flag] }, UNITY_VERSION), /needs a value/);
-  refused(() => L.unityCommand(dir, { args: ['-testFilter', '-projectPath'] }, UNITY_VERSION), /needs a value/);
-  refused(() => L.unityCommand(dir, { args: ['-executeMethod', 'Literal; Write-Output fake'] }, UNITY_VERSION), /qualified method/);
-  refused(() => L.unityCommand(dir, { args: ['-testPlatform', 'StandaloneWindows64'] }, UNITY_VERSION), /EditMode or PlayMode/);
-  refused(() => L.unityCommand(dir, { args: ['-quit', '-quit'] }, UNITY_VERSION), /repeated/);
   refused(() => L.unityCommand(dir, { args: [] }), /version from main/);
   fs.writeFileSync(path.join(dir, 'Game', 'ProjectSettings', 'ProjectVersion.txt'), 'm_EditorVersion: 6000.3.24f1\n');
   refused(() => L.unityCommand(dir, { args: [] }, UNITY_VERSION), /does not match main/);
@@ -560,6 +550,39 @@ test('Unity command: main version, fixed executable and paths, allowlisted flags
   refused(() => L.unityCommand(dir, { args: [] }, UNITY_VERSION), /Editor version/);
   assert.strictEqual(L.unityVersion('m_EditorVersion: 6000.3.23f1\r\nm_EditorVersionWithRevision: ignored'), UNITY_VERSION);
   refused(() => L.unityVersion('m_EditorVersion: ../other'), /Editor version/);
+});
+
+test('Unity arguments: custom options and values pass through unchanged', (t) => {
+  const dir = slotDir(t);
+  unityProject(dir);
+  for (const args of [
+    ['-quit', '-executeMethod', 'Rts.EditorTools.PerformanceLadderBuilder.Build', '-ladder-commit', SHA],
+    ['-testPlatform', 'StandaloneWindows64', '-executeMethod', 'Literal; Write-Output fake'],
+    ['-testResults', 'Game/Results/sub/../results with spaces.xml'],
+    ['-testResults', '../results.xml'], // Only construct the command; no output is written.
+    ['-executeMethod', '-testResults', '-testPlatform', '-testFilter', '-testCategory', '-assemblyNames'],
+    ['-custom', '-1', '-custom', 'same', '-other', 'same', '-quit', '-quit'],
+    ['--unknown=value', '/custom:value', '-batchMode', '@args.txt', '', ' leading and trailing ', '"quoted"', 'x\ny', 'x\ty', '\u5355\u4f4d'],
+    Array(257).fill('x'), ['x'.repeat(32769)],
+  ]) {
+    const original = [...args];
+    const command = L.unityCommand(dir, { args }, UNITY_VERSION);
+    assert.deepStrictEqual(command.args.slice(5), original);
+    assert.deepStrictEqual(args, original);
+  }
+});
+
+test('Unity arguments: project and log flags cannot be supplied in any position', (t) => {
+  const dir = slotDir(t);
+  unityProject(dir);
+  for (const flag of ['projectPath', 'logFile', 'createProject', 'openProject']) {
+    for (const arg of [`-${flag}`, `--${flag.toUpperCase()}=elsewhere`, `/${flag}:elsewhere`,
+      `-${flag} elsewhere`, ` -${flag} `, `"-${flag}"`]) {
+      for (const args of [[arg], [arg, 'elsewhere', '-quit'], ['-custom', 'value', arg, 'elsewhere'], ['-testFilter', arg]]) {
+        refused(() => L.unityCommand(dir, { args }, UNITY_VERSION), /locked by the launcher/);
+      }
+    }
+  }
 });
 
 test('Unity paths: project and log junctions cannot escape the own worktree', (t) => {
@@ -579,15 +602,6 @@ test('Unity paths: project and log junctions cannot escape the own worktree', (t
     refused(() => L.unityCommand(dir, { args: [] }, UNITY_VERSION), /own worktree/);
     fs.unlinkSync(link);
   }
-  for (const output of [path.join(outside, 'new', 'results.xml'), '../results.xml', 'Game/Logs/results.xml:stream', 'Game/NUL.xml', 'Game/trailing./results.xml']) {
-    refused(() => L.unityCommand(dir, { args: ['-testResults', output] }, UNITY_VERSION), /own worktree|Windows devices/);
-  }
-  const resultDir = path.join(dir, 'results');
-  fs.symlinkSync(outside, resultDir, 'junction');
-  refused(() => L.unityCommand(dir, { args: ['-testResults', path.join(resultDir, 'new', 'results.xml')] }, UNITY_VERSION), /own worktree/);
-  fs.unlinkSync(resultDir);
-  const relative = L.unityCommand(dir, { args: ['-testResults', 'Game/Logs/new/results.xml'] }, UNITY_VERSION);
-  assert.strictEqual(relative.args.at(-1), path.join(dir, 'Game', 'Logs', 'new', 'results.xml'));
 });
 
 test('runCodex: Unity tools by role, settings, exit codes, refusals, logs and summary', async (t) => {
@@ -595,13 +609,16 @@ test('runCodex: Unity tools by role, settings, exit codes, refusals, logs and su
   unityProject(dir);
   const server = path.join(dir, 'fake-server.js');
   fs.writeFileSync(server, FAKE_SERVER);
+  const timers = t.mock.method(global, 'setTimeout');
   for (const [role, sandbox] of [['gameplay-programmer', 'workspace-write'], ['qa-test-engineer', 'workspace-write'], ['tech-artist', 'workspace-write'], ['reviewer', 'read-only'], ['reviewer', 'workspace-write'], ['gameplay-programmer', 'read-only']]) {
     const events = [];
     const launches = [];
     const enabled = role !== 'reviewer' && sandbox === 'workspace-write';
-    const requests = [{}, { arguments: { args: ['-runTests'] } },
-      { arguments: { args: ['-projectPath', 'elsewhere'] } }, { tool: 'other' },
+    const custom = ['-executeMethod', 'Rts.EditorTools.PerformanceLadderBuilder.Build', '-ladder-commit', SHA, '-custom', 'value with spaces; & |'];
+    const requests = [{ arguments: { args: custom } }, { arguments: { args: ['-runTests', '-testResults', 'Game/Results/results.xml'] } },
+      ...['-projectPath', '-logFile', '-createProject', '-openProject'].map((flag) => ({ arguments: { args: [flag, 'elsewhere'] } })), { tool: 'other' },
       { threadId: 'other' }, { turnId: 'old' }, { callId: 'unity-0' }, { callId: null }];
+    const timerCount = timers.mock.callCount();
     const run = await L.runCodex({
       role, cwd: dir, model: 'gpt-6.1-sol', effort: 'high', sandbox, expectedUnityVersion: UNITY_VERSION,
       developerInstructions: 'x', prompt: 'y', outputSchema: L.SCHEMAS.implement, log: (e) => events.push(e),
@@ -615,7 +632,7 @@ test('runCodex: Unity tools by role, settings, exit codes, refusals, logs and su
     assert.strictEqual(result.toolSpecs.length, enabled ? 1 : 0);
     assert.strictEqual(result.toolSpecs[0]?.name, enabled ? 'unity_batch' : undefined);
     assert.strictEqual(result.capabilities?.experimentalApi, enabled ? true : undefined);
-    assert.deepStrictEqual(result.answers.map((a) => a.success), enabled ? [true, false, false, false, false, false, false, false] : Array(8).fill(false));
+    assert.deepStrictEqual(result.answers.map((a) => a.success), requests.map((_, i) => enabled && i === 0));
     assert.deepStrictEqual(run.unityRuns.map((r) => r.exitCode), enabled ? [0, 2] : []);
     assert.deepStrictEqual(events.filter((e) => e.event === 'unity-completed').map((e) => e.exitCode), enabled ? [0, 2] : []);
     assert.strictEqual(events.filter((e) => e.event === 'unity-started').length, launches.length);
@@ -623,12 +640,19 @@ test('runCodex: Unity tools by role, settings, exit codes, refusals, logs and su
     assert.deepStrictEqual(run.declined, []);
     assert.strictEqual(run.settings.approvalPolicy, 'on-request');
     assert.strictEqual(run.settings.approvalsReviewer, 'auto_review');
-    for (const launch of launches) {
+    assert.strictEqual(run.settings.sandbox.type, sandbox === 'workspace-write' ? 'workspaceWrite' : 'readOnly');
+    assert.strictEqual(timers.mock.calls.slice(timerCount).filter((call) => call.arguments[1] === 30 * 60 * 1000).length, launches.length);
+    for (const [i, launch] of launches.entries()) {
       assert.strictEqual(launch.file, 'C:\\Program Files\\Unity\\Hub\\Editor\\6000.3.23f1\\Editor\\Unity.exe');
       assert.strictEqual(launch.options.cwd, dir);
       assert.strictEqual(launch.options.shell, false);
       assert.strictEqual(launch.options.stdio, 'ignore');
       assert.deepStrictEqual(launch.args.slice(0, 3), ['-batchmode', '-projectPath', path.join(dir, 'Game')]);
+      assert.strictEqual(launch.args[3], '-logFile');
+      assert.strictEqual(path.dirname(launch.args[4]), path.join(dir, '.studio', 'logs'));
+      assert.deepStrictEqual(launch.args.slice(5), requests[i].arguments.args);
+      assert.deepStrictEqual(events.filter((e) => e.event === 'unity-started')[i].command, [launch.file, ...launch.args]);
+      assert.deepStrictEqual(events.filter((e) => e.event === 'unity-completed')[i].command, [launch.file, ...launch.args]);
     }
     assert.match(L.summarize({ args: { role, issue: 184 }, dir, run, logFile: server }), enabled ? /Unity runs outside the sandbox: 2 · exit codes: 0, 2/ : /Unity runs outside the sandbox: 0 · exit codes: none/);
     assert.strictEqual(fs.existsSync(path.join(dir, '.studio', 'locks')), false);
