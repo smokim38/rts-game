@@ -5,7 +5,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -391,15 +391,21 @@ test('programs come from absolute PATH entries outside the repository, never fro
 const FAKE_SERVER = String.raw`'use strict';
 const scenario = process.argv[2];
 let model = null;
+let capabilities = null;
+let toolSpecs = [];
+let unityRequests = [];
+const unityAnswers = [];
+let parallelAnswer = null;
 const elicitationAnswers = [];
 const send = (m) => process.stdout.write(JSON.stringify(m) + '\n');
 const note = (method, params) => send({ method, params });
 require('node:readline').createInterface({ input: process.stdin }).on('line', (line) => {
   const msg = JSON.parse(line);
-  if (msg.method === 'initialize') send({ id: msg.id, result: {} });
+  if (msg.method === 'initialize') { capabilities = msg.params.capabilities; send({ id: msg.id, result: {} }); }
   else if (msg.method === 'thread/start') {
     const p = msg.params;
     model = p.model;
+    toolSpecs = p.dynamicTools || [];
     send({ id: msg.id, result: {
       thread: { id: 't1', cliVersion: '0.0.0' }, model, reasoningEffort: p.config.model_reasoning_effort, cwd: p.cwd,
       sandbox: { type: p.sandbox === 'read-only' ? 'readOnly' : 'workspaceWrite', writableRoots: [], networkAccess: false },
@@ -408,6 +414,11 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', (l
   } else if (msg.method === 'turn/start') {
     send({ id: msg.id, result: { turn: { id: 'u1' } } });
     if (scenario === 'ok') done('{"ok":true}');
+    if (scenario === 'unity') {
+      unityRequests = JSON.parse(process.argv[3]);
+      nextUnity();
+      if (process.argv[4] === 'parallel') send({ id: 999, method: 'item/tool/call', params: { threadId: 't1', turnId: 'u1', callId: 'parallel', tool: 'unity_batch', arguments: { args: [] } } });
+    }
     if (scenario === 'reroute' || scenario === 'reroute-same') {
       note('model/rerouted', { threadId: 't1', turnId: 'u1', fromModel: model, toModel: scenario === 'reroute' ? 'gpt-other' : model, reason: 'highRiskCyberActivity' });
       done('{"ok":true}');
@@ -459,6 +470,10 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', (l
       const child = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
       require('node:fs').writeFileSync(process.argv[3], String(child.pid));
     }
+  } else if (scenario === 'unity' && msg.id === 999) parallelAnswer = msg.result;
+  else if (scenario === 'unity' && msg.id >= 200) {
+    unityAnswers.push(msg.result);
+    nextUnity();
   } else if (msg.id === 99) done(JSON.stringify(msg.result));
   else if (scenario === 'computer-use' && msg.id >= 100) {
     elicitationAnswers.push(msg.result);
@@ -468,8 +483,124 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', (l
     note('item/completed', { item: { type: 'agentMessage', text } });
     note('turn/completed', { threadId: 't1', turn: { status: 'completed' } });
   }
+  function nextUnity() {
+    if (!unityRequests.length) return done(JSON.stringify({ toolSpecs, capabilities, answers: unityAnswers, parallelAnswer }));
+    const n = unityAnswers.length;
+    send({ id: 200 + n, method: 'item/tool/call', params: { threadId: 't1', turnId: 'u1', callId: 'unity-' + n, tool: 'unity_batch', arguments: { args: [] }, ...unityRequests.shift() } });
+  }
 });
 `;
+
+const unityProject = (dir) => {
+  fs.mkdirSync(path.join(dir, 'Game', 'ProjectSettings'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'Game', 'ProjectSettings', 'ProjectVersion.txt'), 'm_EditorVersion: 6000.3.23f1\n');
+};
+
+test('Unity command: fixed executable, own project and log, literal argv and no overrides', (t) => {
+  const dir = slotDir(t);
+  unityProject(dir);
+  const extra = ['-runTests', '-testPlatform', 'EditMode', '-executeMethod', 'Literal; Write-Output fake'];
+  const cmd = L.unityCommand(dir, { args: extra });
+  assert.strictEqual(cmd.file, 'C:\\Program Files\\Unity\\Hub\\Editor\\6000.3.23f1\\Editor\\Unity.exe');
+  assert.deepStrictEqual(cmd.args, ['-batchmode', '-projectPath', path.join(dir, 'Game'), '-logFile', cmd.logFile, ...extra]);
+  assert.strictEqual(path.dirname(cmd.logFile), path.join(dir, '.studio', 'logs'));
+  for (const args of [null, ['x\0y'], ['x\ny'], [2], Array(257).fill('x'), ['x'.repeat(32769)]]) {
+    refused(() => L.unityCommand(dir, { args }), /args array/);
+  }
+  refused(() => L.unityCommand(dir, { args: [], file: 'another.exe' }), /args array/);
+  for (const flag of ['-projectPath', '--PROJECTPATH=elsewhere', '/projectPath:elsewhere', '-batchMode', '-logFile', '-createProject', '-projectPath elsewhere']) {
+    refused(() => L.unityCommand(dir, { args: [flag] }), /fixed by the launcher/);
+  }
+  fs.writeFileSync(path.join(dir, 'Game', 'ProjectSettings', 'ProjectVersion.txt'), 'm_EditorVersion: ../other');
+  refused(() => L.unityCommand(dir, { args: [] }), /Editor version/);
+});
+
+test('Unity paths: project and log junctions cannot escape the own worktree', (t) => {
+  const outside = slotDir(t);
+  unityProject(outside);
+  const dir = slotDir(t);
+  fs.symlinkSync(path.join(outside, 'Game'), path.join(dir, 'Game'), 'junction');
+  refused(() => L.unityCommand(dir, { args: [] }), /own worktree/);
+  fs.unlinkSync(path.join(dir, 'Game'));
+  unityProject(dir);
+  fs.symlinkSync(outside, path.join(dir, '.studio'), 'junction');
+  refused(() => L.unityCommand(dir, { args: [] }), /own worktree/);
+  fs.unlinkSync(path.join(dir, '.studio'));
+});
+
+test('runCodex: Unity tools by role, settings, exit codes, refusals, logs and summary', async (t) => {
+  const dir = slotDir(t);
+  unityProject(dir);
+  const server = path.join(dir, 'fake-server.js');
+  fs.writeFileSync(server, FAKE_SERVER);
+  for (const role of ['gameplay-programmer', 'qa-test-engineer', 'tech-artist', 'reviewer']) {
+    const events = [];
+    const launches = [];
+    const enabled = role !== 'reviewer';
+    const requests = [{}, { arguments: { args: ['-runTests'] } },
+      { arguments: { args: ['-projectPath', 'elsewhere'] } }, { tool: 'other' },
+      { threadId: 'other' }, { turnId: 'old' }, { callId: 'unity-0' }, { callId: null }];
+    const run = await L.runCodex({
+      role, cwd: dir, model: 'gpt-6.1-sol', effort: 'high', sandbox: enabled ? 'workspace-write' : 'read-only',
+      developerInstructions: 'x', prompt: 'y', outputSchema: L.SCHEMAS.implement, log: (e) => events.push(e),
+      command: { file: process.execPath, args: [server, 'unity', JSON.stringify(requests)] },
+      unitySpawn: (file, args, options) => {
+        launches.push({ file, args, options });
+        return spawn(process.execPath, ['-e', `process.stdout.write('Unity stand-in'); process.exit(${launches.length === 1 ? 0 : 2})`], options);
+      },
+    });
+    const result = JSON.parse(run.finalText);
+    assert.strictEqual(result.toolSpecs.length, enabled ? 1 : 0);
+    assert.strictEqual(result.toolSpecs[0]?.name, enabled ? 'unity_batch' : undefined);
+    assert.strictEqual(result.capabilities?.experimentalApi, enabled ? true : undefined);
+    assert.deepStrictEqual(result.answers.map((a) => a.success), enabled ? [true, false, false, false, false, false, false, false] : Array(8).fill(false));
+    assert.deepStrictEqual(run.unityRuns.map((r) => r.exitCode), enabled ? [0, 2] : []);
+    assert.deepStrictEqual(events.filter((e) => e.event === 'unity-completed').map((e) => e.exitCode), enabled ? [0, 2] : []);
+    assert.strictEqual(events.filter((e) => e.event === 'unity-started').length, launches.length);
+    assert.deepStrictEqual(run.reviews, []);
+    assert.deepStrictEqual(run.declined, []);
+    assert.strictEqual(run.settings.approvalPolicy, 'on-request');
+    assert.strictEqual(run.settings.approvalsReviewer, 'auto_review');
+    for (const launch of launches) {
+      assert.strictEqual(launch.file, 'C:\\Program Files\\Unity\\Hub\\Editor\\6000.3.23f1\\Editor\\Unity.exe');
+      assert.strictEqual(launch.options.cwd, dir);
+      assert.strictEqual(launch.options.shell, false);
+      assert.deepStrictEqual(launch.args.slice(0, 3), ['-batchmode', '-projectPath', path.join(dir, 'Game')]);
+    }
+    assert.match(L.summarize({ args: { role, issue: 184 }, dir, run, logFile: server }), enabled ? /Unity runs outside the sandbox: 2 · exit codes: 0, 2/ : /Unity runs outside the sandbox: 0 · exit codes: none/);
+  }
+});
+
+test('runCodex: Unity serialisation, spawn errors and cancellation log completion before ending', async (t) => {
+  const dir = slotDir(t);
+  unityProject(dir);
+  const server = path.join(dir, 'fake-server.js');
+  fs.writeFileSync(server, FAKE_SERVER);
+  const events = [];
+  let editor;
+  const run = (extra = {}) => L.runCodex({
+    role: 'gameplay-programmer', cwd: dir, model: 'gpt-6.1-sol', effort: 'high', sandbox: 'workspace-write',
+    developerInstructions: 'x', prompt: 'y', outputSchema: L.SCHEMAS.implement, log: (e) => events.push(e),
+    command: { file: process.execPath, args: [server, 'unity', '[{}]', 'parallel'] },
+    unitySpawn: (_file, _args, options) => spawn(process.execPath, ['-e', 'setTimeout(() => {}, 300)'], options),
+    ...extra,
+  });
+  const parallel = await run();
+  assert.strictEqual(parallel.unityRuns.length, 1);
+  assert.match(JSON.parse(parallel.finalText).parallelAnswer.contentItems[0].text, /already running/);
+  const missing = await run({ unitySpawn: (_file, _args, options) => spawn(path.join(dir, 'missing-unity.exe'), [], options) });
+  assert.strictEqual(missing.unityRuns[0].exitCode, null);
+  assert.match(missing.unityRuns[0].error, /ENOENT/);
+  assert.strictEqual(JSON.parse(missing.finalText).answers[0].success, false);
+  events.length = 0;
+  await assert.rejects(run({ timeoutMs: 1000, unitySpawn: (_file, _args, options) => {
+    editor = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], options);
+    return editor;
+  } }), /time limit/);
+  assert.ok(editor && (editor.exitCode !== null || editor.signalCode !== null));
+  const completed = events.findIndex((e) => e.event === 'unity-completed');
+  assert.ok(completed >= 0 && completed < events.findIndex((e) => e.event === 'end'));
+});
 
 test('runCodex: the whole app-server flow, failing closed', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-fake-'));

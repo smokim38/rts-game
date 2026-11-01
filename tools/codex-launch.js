@@ -16,6 +16,7 @@
 // a shell, so a worktree's content can't stand in for them.
 // Codex only edits files; the Producer commits, pushes and opens the PR.
 // The role files are read from main on GitHub, so local edits can't change a role.
+// Issue #184 is a proposal only until its Critical, owner-approved PR merges.
 // Node.js built-in modules only. Tests: node --test tools/codex-launch.test.js
 
 const { execFileSync, spawn } = require('node:child_process');
@@ -554,6 +555,69 @@ function parseResult(kind, text, sha) {
 
 // ---------- Codex app-server ----------
 
+// App-server dynamic tools keep this exception out of shell approval policy entirely:
+// https://developers.openai.com/codex/app-server#dynamic-tool-calls-experimental
+// Prefix allow rules cannot prevent later arguments from overriding a fixed project prefix.
+const UNITY_TOOL = {
+  name: 'unity_batch',
+  description: 'Run the project Unity Editor outside the sandbox without auto-review. The launcher fixes the executable version, -batchmode, -projectPath and an in-worktree -logFile. Supply remaining Unity arguments as individual strings. Use this tool for all Unity runs; no shell wrappers. Only one Editor can run at a time. Editor code must obey AGENTS.md and write only inside the worktree.',
+  inputSchema: {
+    type: 'object', properties: { args: { type: 'array', items: { type: 'string' } } },
+    required: ['args'], additionalProperties: false,
+  },
+};
+const unityRole = (role, sandbox) => sandbox === 'workspace-write' &&
+  ['gameplay-programmer', 'qa-test-engineer', 'tech-artist'].includes(role);
+
+function unityCommand(cwd, input) {
+  if (!input || Object.keys(input).length !== 1 || !Array.isArray(input.args) || input.args.length > 256 ||
+      input.args.some((a) => typeof a !== 'string' || /[\0\r\n]/.test(a) || a.length > 32768)) refuse('Unity expects an args array of plain strings');
+  if (input.args.some((a) => /^[-/]+(?:batchmode|projectpath|logfile|createproject)(?:$|[=:\s])/i.test(a))) {
+    refuse('Unity batch mode, project and log paths are fixed by the launcher');
+  }
+  const game = path.join(cwd, 'Game');
+  const realRoot = fs.realpathSync(cwd);
+  const realGame = fs.realpathSync(game);
+  if (path.dirname(realGame) !== realRoot) refuse('Unity Game folder must be inside the own worktree');
+  const versionFile = path.join(game, 'ProjectSettings', 'ProjectVersion.txt');
+  // Reject junctions/symlinks that would redirect our reads or launcher-created log folders.
+  for (const file of [versionFile, ...['', 'logs', 'locks', 'worktrees', '.gitignore'].map((p) => path.join(cwd, '.studio', p))]) {
+    if (!fs.lstatSync(file, { throwIfNoEntry: false })) continue;
+    const relative = path.relative(realRoot, fs.realpathSync(file));
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) refuse('Unity paths must stay inside the own worktree');
+  }
+  const version = /^m_EditorVersion: (\d+\.\d+\.\d+[abfp]\d+)\s*$/m.exec(fs.readFileSync(versionFile, 'utf8'))?.[1];
+  if (!version) refuse('Unity project has no usable Editor version');
+  const logFile = path.join(cwd, '.studio', 'logs', `unity-${crypto.randomUUID()}.log`);
+  return { file: `C:\\Program Files\\Unity\\Hub\\Editor\\${version}\\Editor\\Unity.exe`,
+    args: ['-batchmode', '-projectPath', game, '-logFile', logFile, ...input.args], cwd, logFile };
+}
+
+// No shell, caller-supplied executable, external config file, or reusable approval is involved.
+function startUnity(command, entry, log, spawnProcess = spawn) {
+  log({ event: 'unity-started', ...entry });
+  let child;
+  let output = '';
+  const done = new Promise((resolve) => {
+    let closed = false;
+    const complete = (exitCode, signal = null, error = null) => {
+      if (closed) return;
+      closed = true;
+      Object.assign(entry, { exitCode, signal, error, status: exitCode === 0 ? 'completed' : 'failed' });
+      log({ event: 'unity-completed', ...entry });
+      resolve({ ...entry, output });
+    };
+    try {
+      ensureStudio(path.join(command.cwd, '.studio'));
+      child = spawnProcess(command.file, command.args, { cwd: command.cwd, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      for (const stream of [child.stdout, child.stderr]) stream.on('data', (d) => { output = (output + d).slice(-16000); });
+      child.on('error', (err) => complete(null, null, err.message));
+      child.on('close', (code, signal) => complete(code, signal));
+    } catch (err) { complete(null, null, err.message); }
+  });
+  return { done, stop: () => { child?.kill(); return done; } };
+}
+
 // Codex's own thread/start reply must report exactly the settings the launcher asked for.
 function verifySettings(reply, expected) {
   const problems = [];
@@ -684,11 +748,14 @@ function helperTracker(run, log) {
 }
 
 // `command` is Codex's program and leading arguments (codexCommand); tests pass a fake server.
-function runCodex({ role, cwd, model, effort, sandbox, developerInstructions, prompt, outputSchema, log, timeoutMs = RUN_TIMEOUT_MS, command = codexCommand() }) {
+function runCodex({ role, cwd, model, effort, sandbox, developerInstructions, prompt, outputSchema, log, timeoutMs = RUN_TIMEOUT_MS, command = codexCommand(), unitySpawn = spawn }) {
+  const hasUnity = unityRole(role, sandbox);
   const expected = { cwd, model, effort, sandboxType: sandbox === 'read-only' ? 'readOnly' : 'workspaceWrite' };
   const child = spawn(command.file, [...command.args, 'app-server'], { cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
   // `tokens` holds the latest total Codex reported per thread; `helpers` the helper agents by thread.
-  const run = { threadId: null, settings: null, reroutes: [], reviews: [], declined: [], computerUseApprovals: [], tokens: {}, helpers: {}, items: {}, finalText: null, turn: null, stderr: '' };
+  const run = { threadId: null, settings: null, reroutes: [], reviews: [], declined: [], computerUseApprovals: [], unityRuns: [], tokens: {}, helpers: {}, items: {}, finalText: null, turn: null, stderr: '' };
+  const unityCalls = new Set();
+  let unityJob = null;
   let nextId = 1;
   const pending = new Map();
   const send = (msg) => child.stdin.write(`${JSON.stringify(msg)}\n`);
@@ -707,17 +774,21 @@ function runCodex({ role, cwd, model, effort, sandbox, developerInstructions, pr
       if (finished) return;
       finished = true;
       clearTimeout(timer);
+      const serverClosed = new Promise((closed) => child.once('close', closed));
       child.kill();
-      helpers.end();
-      log({
-        event: 'run-tokens',
-        threadId: run.threadId,
-        total: run.tokens[run.threadId] ?? null,
-        helpers: Object.keys(run.helpers).map((id) => ({ threadId: id, total: run.tokens[id] ?? null })),
+      const stopped = unityJob?.stop();
+      Promise.all([serverClosed, stopped]).then(() => {
+        helpers.end();
+        log({
+          event: 'run-tokens',
+          threadId: run.threadId,
+          total: run.tokens[run.threadId] ?? null,
+          helpers: Object.keys(run.helpers).map((id) => ({ threadId: id, total: run.tokens[id] ?? null })),
+        });
+        log({ event: 'end', error: err?.message ?? null });
+        if (err) reject(err);
+        else resolve(run);
       });
-      log({ event: 'end', error: err?.message ?? null });
-      if (err) reject(err);
-      else resolve(run);
     };
     const timer = setTimeout(() => {
       if (run.threadId && run.turnId) send({ method: 'turn/interrupt', id: nextId++, params: { threadId: run.threadId, turnId: run.turnId } });
@@ -791,8 +862,31 @@ function runCodex({ role, cwd, model, effort, sandbox, developerInstructions, pr
         pending.delete(msg.id);
         if (!p) return;
         if (msg.error) p.reject(new Refused(`Codex rejected ${p.method}: ${msg.error.message}`));
-        else p.resolve(msg.result);
+        else {
+          if (p.method === 'turn/start') run.turnId = msg.result?.turn?.id ?? null;
+          p.resolve(msg.result);
+        }
       } else if (msg.id !== undefined) {
+        if (msg.method === 'item/tool/call') {
+          (async () => {
+            const p = msg.params ?? {};
+            if (finished || !hasUnity || p.tool !== UNITY_TOOL.name || p.threadId !== run.threadId ||
+                !run.turnId || p.turnId !== run.turnId || typeof p.callId !== 'string' || !p.callId || unityCalls.has(p.callId)) refuse('Unity tool call is not authorised for this role and turn');
+            if (unityJob) refuse('a Unity Editor is already running in this worktree');
+            const command = unityCommand(cwd, p.arguments);
+            unityCalls.add(p.callId);
+            const entry = { callId: p.callId, command: [command.file, ...command.args], logFile: path.relative(cwd, command.logFile), exitCode: null, status: 'running' };
+            run.unityRuns.push(entry);
+            unityJob = startUnity(command, entry, log, unitySpawn);
+            const result = await unityJob.done;
+            unityJob = null;
+            return { success: result.exitCode === 0, contentItems: [{ type: 'inputText', text: JSON.stringify(result) }] };
+          })().catch((err) => {
+            log({ event: 'unity-refused', reason: err.message });
+            return { success: false, contentItems: [{ type: 'inputText', text: err.message }] };
+          }).then((result) => { if (!finished) send({ id: msg.id, result }); });
+          return;
+        }
         const approval = computerUseApproval(role, msg.method, msg.params);
         const answer = approval ? approval.answer : declineRequest(msg.method);
         if (approval) {
@@ -810,7 +904,7 @@ function runCodex({ role, cwd, model, effort, sandbox, developerInstructions, pr
     });
 
     (async () => {
-      await request('initialize', { clientInfo: { name: 'rts_studio_launcher', title: 'RTS studio launcher', version: '1.0.0' } });
+      await request('initialize', { clientInfo: { name: 'rts_studio_launcher', title: 'RTS studio launcher', version: '1.0.0' }, ...(hasUnity ? { capabilities: { experimentalApi: true } } : {}) });
       send({ method: 'initialized', params: {} });
       const reply = await request('thread/start', {
         cwd,
@@ -818,7 +912,8 @@ function runCodex({ role, cwd, model, effort, sandbox, developerInstructions, pr
         sandbox,
         approvalPolicy: 'on-request',
         approvalsReviewer: 'auto_review',
-        developerInstructions,
+        developerInstructions: developerInstructions + (hasUnity ? '\nUse the launcher unity_batch dynamic tool for Unity. It fixes the executable, batch mode, own project path and log file; do not request shell escalations for Unity.' : ''),
+        ...(hasUnity ? { dynamicTools: [UNITY_TOOL] } : {}),
         config: { model_reasoning_effort: effort },
         serviceName: 'rts_studio_launcher',
       });
@@ -855,6 +950,7 @@ function summarize({ args, branch, sha, dir, run, logFile, result, record, chang
     ...Object.values(run.helpers).map((h) => `Helper agent ${h.name ?? h.threadId} (${h.model ?? '?'} / ${h.effort ?? '?'}, ${h.status ?? 'running'}): ${tokenText(run.tokens[h.threadId])}`),
     `Auto-review: ${reviewText} · requests that reached the launcher (declined): ${run.declined.length}`,
     `Computer Use app approvals accepted: ${apps.length} · apps: ${[...new Set(apps)].join(', ') || 'none'}`,
+    `Unity runs outside the sandbox: ${(run.unityRuns ?? []).length} · exit codes: ${(run.unityRuns ?? []).map((r) => r.exitCode ?? 'not reported').join(', ') || 'none'}`,
     `Turn: ${run.turn?.status}${run.turn?.error ? ` (${run.turn.error.message})` : ''}`,
     `Worktree: ${path.relative(ROOT, dir).replace(/\\/g, '/')}${branch ? ` · branch ${branch}` : ''}`,
     ...(feedback ? [feedbackSummary(feedback)] : []),
@@ -970,6 +1066,7 @@ module.exports = {
   parseResult,
   verifySettings,
   verifySettingsUpdate,
+  unityCommand,
   computerUseApproval,
   declineRequest,
   helperTracker,
