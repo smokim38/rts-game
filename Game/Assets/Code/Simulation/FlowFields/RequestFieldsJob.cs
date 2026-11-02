@@ -103,19 +103,17 @@ namespace Northwatch.Simulation.FlowFields
                     Units[i] = unit;
                 }
                 if (request.NeedsField == 0 && !ClearLine(Positions[i].xz, unit.Goal, request.Class))
-                { request.NeedsField = 1; GoalMetrics[2]++; }
-                Requests[row] = request;
-            }
-            // The direct-route exemption belongs to the whole order, across classes.
-            for (int i = 0; i < Requests.Length; i++)
-                if (Requests[i].Users != 0 && Requests[i].NeedsField != 0)
                 {
+                    request.NeedsField = 1; Requests[row] = request; GoalMetrics[2]++;
+                    // The direct-route exemption belongs to the whole order, across classes.
+                    // Spread only on this transition; retained field needs do no table scan.
                     for (int other = 0; other < Requests.Length; other++)
-                        if (Requests[other].Users != 0 && Requests[other].Order == Requests[i].Order && Requests[other].NeedsField == 0)
+                        if (Requests[other].Users != 0 && Requests[other].Order == request.Order && Requests[other].NeedsField == 0)
                         {
-                            var row = Requests[other]; row.NeedsField = 1; Requests[other] = row; GoalMetrics[2]++;
+                            var related = Requests[other]; related.NeedsField = 1; Requests[other] = related; GoalMetrics[2]++;
                         }
                 }
+            }
             for (int i = 0; i < Requests.Length; i++)
             {
                 var row = Requests[i]; row.Users = 0; Requests[i] = row;
