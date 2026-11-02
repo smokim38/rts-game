@@ -36,6 +36,7 @@ namespace Northwatch.Presentation.Diagnostics
         private ProfilerRecorder scopedGc;
         private long simulationAllocations, drawingAllocations;
         private long overlayCalls, overlayNanoseconds;
+        private bool expectRouteOverlay, injectOverlayKey;
         private bool scopeCapacityReached;
         private int scene, unitCount, orderPhase, releaseFrame, acknowledgementFrame = -1, firstOrderTick = -1;
         private bool modern, selectionQueued, drawPending, allDrawPending;
@@ -107,6 +108,8 @@ namespace Northwatch.Presentation.Diagnostics
         private void Initialize()
         {
             string[] args = ProfileArguments();
+            expectRouteOverlay = Array.IndexOf(args, "-movement-route-overlay") >= 0;
+            injectOverlayKey = Array.IndexOf(args, "-movement-inject-overlay-key") >= 0;
             capture = Array.IndexOf(args, "-movement-capture") >= 0;
             int index = Array.IndexOf(args, "-movement-output"), sceneIndex = Array.IndexOf(args, "-movement-scene");
             int countIndex = Array.IndexOf(args, "-movement-units");
@@ -127,6 +130,8 @@ namespace Northwatch.Presentation.Diagnostics
             driver = FindFirstObjectByType<MatchDriver>();
             if (driver == null || driver.MovementSettings == null) throw new InvalidOperationException("The match has no driver or movement settings.");
             scene = int.Parse(args[sceneIndex + 1], CultureInfo.InvariantCulture);
+            if (injectOverlayKey && (!expectRouteOverlay || scene < 4))
+                throw new ArgumentException("Overlay key injection requires an order scene and -movement-route-overlay.");
             unitCount = int.Parse(args[countIndex + 1], CultureInfo.InvariantCulture);
             driver.Simulation.MeasureMovement(scene, unitCount);
             measurement = driver.Simulation.Measurement;
@@ -187,13 +192,15 @@ namespace Northwatch.Presentation.Diagnostics
                 if (orderPhase == 0 && now - began >= 1)
                 {
                     if (modern) InputSystem.QueueStateEvent(keyboard, new KeyboardState(Key.F2));
+                    if (injectOverlayKey) InputSystem.QueueStateEvent(keyboard, new KeyboardState(Key.F8));
                     orderPhase = 1;
                 }
                 else if (orderPhase == 1)
                 {
                     InputSystem.QueueStateEvent(keyboard, new KeyboardState()); orderPhase = 2;
                 }
-                else if (measuring && orderPhase == 2)
+                // Overlay checks exercise field drawing during the normal warm-up too.
+                else if ((measuring || expectRouteOverlay) && orderPhase == 2)
                 {
                     orderPoint = orderCamera.WorldToScreenPoint(scene == 6 ? new Vector3(88, 0, 30) :
                         new Vector3(scene == 5 ? 40 : unitCount == 5 ? 20 : unitCount == 100 ? 15 : 60, 0, 0));
@@ -352,7 +359,8 @@ namespace Northwatch.Presentation.Diagnostics
                 "scoped_gc=" + scopedGc.Valid + "; simulation_alloc_count=" + simulationAllocations +
                 "; drawing_alloc_count=" + drawingAllocations + "; scope_capacity_reached=" + scopeCapacityReached + "\n");
             File.AppendAllText(output + "-info.txt", "overlay_calls=" + overlayCalls +
-                "; overlay_total_ms=" + (overlayNanoseconds * .000001).ToString("F6", CultureInfo.InvariantCulture) + "\n");
+                "; overlay_total_ms=" + (overlayNanoseconds * .000001).ToString("F6", CultureInfo.InvariantCulture) +
+                "; overlay_expected=" + expectRouteOverlay + "; overlay_key_injected=" + injectOverlayKey + "\n");
             bool orderPassed = true;
             if (scene >= 4)
             {
@@ -424,7 +432,8 @@ namespace Northwatch.Presentation.Diagnostics
                     "; positions_file=" + Path.GetFileName(output) + "-orders.csv; pass=" + orderPassed + "\n");
             }
             bool scopesPassed = !scopedGc.Valid || simulationAllocations == 0 && drawingAllocations == 0;
-            Application.Quit(invalidFrames == 0 && !scopeCapacityReached && scopesPassed && overlayCalls == 0 && orderPassed ? 0 : 1);
+            bool overlayPassed = expectRouteOverlay ? overlayCalls > 0 : overlayCalls == 0;
+            Application.Quit(invalidFrames == 0 && !scopeCapacityReached && scopesPassed && overlayPassed && orderPassed ? 0 : 1);
         }
 
         private void WriteMovementJobLabels()

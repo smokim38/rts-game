@@ -20,6 +20,8 @@ namespace Northwatch.Presentation
         private TickClock clock;
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
         private RouteOverlay routeOverlay;
+        private UnityEngine.InputSystem.InputAction routeOverlayKey;
+        private bool toggleRouteOverlay;
 #endif
         private RenderParams firstParameters, secondParameters, selectedParameters;
         private static readonly ProfilerMarker SimulationMarker = new ProfilerMarker("Northwatch.Simulation");
@@ -56,7 +58,18 @@ namespace Northwatch.Presentation
             selectedParameters = new RenderParams(selectedSide);
             if (!TryGetComponent(out MatchFrameStart start)) start = gameObject.AddComponent<MatchFrameStart>();
             start.Configure(this);
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            routeOverlayKey = new UnityEngine.InputSystem.InputAction("RouteOverlay", UnityEngine.InputSystem.InputActionType.Button, "<Keyboard>/f8");
+            routeOverlayKey.performed += ToggleRouteOverlay;
+            routeOverlayKey.Enable();
+#endif
         }
+
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        // Keep the press until drawing, even if another manual input update follows it.
+        private void ToggleRouteOverlay(UnityEngine.InputSystem.InputAction.CallbackContext context)
+            => toggleRouteOverlay = !toggleRouteOverlay;
+#endif
 
         internal void BeginFrame()
         {
@@ -73,8 +86,9 @@ namespace Northwatch.Presentation
         private void LateUpdate()
         {
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
-            if (UnityEngine.InputSystem.Keyboard.current?.f8Key.wasPressedThisFrame == true)
+            if (toggleRouteOverlay)
             {
+                toggleRouteOverlay = false;
                 if (routeOverlay == null && movementSettings != null) routeOverlay = new RouteOverlay(cube, firstSide);
                 else { routeOverlay?.Dispose(); routeOverlay = null; }
             }
@@ -116,6 +130,7 @@ namespace Northwatch.Presentation
         private void OnDisable()
         {
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
+            routeOverlayKey?.Dispose(); routeOverlayKey = null; toggleRouteOverlay = false;
             routeOverlay?.Dispose(); routeOverlay = null;
 #endif
             simulation?.Dispose();
