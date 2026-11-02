@@ -102,18 +102,18 @@ namespace Northwatch.Simulation.FlowFields
                     unit.BestGoalDistance = math.distance(Positions[i].xz, unit.Goal);
                     Units[i] = unit;
                 }
-                if (request.Resolved == 1 && !ClearLine(Positions[i].xz, unit.Goal, request.Class)) request.NeedsField = 1;
+                if (request.NeedsField == 0 && !ClearLine(Positions[i].xz, unit.Goal, request.Class))
+                { request.NeedsField = 1; GoalMetrics[2]++; }
                 Requests[row] = request;
             }
             // The direct-route exemption belongs to the whole order, across classes.
             for (int i = 0; i < Requests.Length; i++)
-                if (Requests[i].Users != 0 && Requests[i].NeedsField != 0 &&
-                    Requests[i].Resolved == 1)
+                if (Requests[i].Users != 0 && Requests[i].NeedsField != 0)
                 {
                     for (int other = 0; other < Requests.Length; other++)
-                        if (Requests[other].Users != 0 && Requests[other].Order == Requests[i].Order)
+                        if (Requests[other].Users != 0 && Requests[other].Order == Requests[i].Order && Requests[other].NeedsField == 0)
                         {
-                            var row = Requests[other]; row.NeedsField = 1; Requests[other] = row;
+                            var row = Requests[other]; row.NeedsField = 1; Requests[other] = row; GoalMetrics[2]++;
                         }
                 }
             for (int i = 0; i < Requests.Length; i++)
@@ -167,7 +167,6 @@ namespace Northwatch.Simulation.FlowFields
             for (int i = 0; i < Requests.Length; i++)
             {
                 var row = Requests[i];
-                if (row.Users != 0 && row.NeedsField != 0 && row.Resolved == 1) GoalMetrics[2]++;
                 if (row.Resolved == 1) { row.Resolved = 2; Requests[i] = row; }
             }
         }

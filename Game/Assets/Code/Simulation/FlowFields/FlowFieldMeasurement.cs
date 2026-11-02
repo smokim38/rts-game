@@ -18,8 +18,8 @@ namespace Northwatch.Simulation.FlowFields
         private readonly int width, cells;
         private Unity.Mathematics.Random random;
         private readonly bool[] usedGoals, usedStarts;
-        private readonly bool[] seenOrders = new bool[801];
-        private readonly int[] orderTicks = new int[801];
+        private readonly bool[] seenOrders = new bool[2201];
+        private readonly int[] orderTicks = new int[2201];
         private readonly double[] builds = new double[4096], sights = new double[4096], publishes = new double[4096], waits = new double[801];
         private readonly double[] goalSearches = new double[200];
         private int goalSearchCount;
@@ -34,7 +34,7 @@ namespace Northwatch.Simulation.FlowFields
             usedGoals = new bool[cells]; usedStarts = new bool[cells];
             settings.ValidateFields(width, width);
             maps = new StaticMaps(width, width);
-            using var ownedBoxes = new NativeArray<StaticBox>(mode >= 5 ? 4 : mode == 1 ? cells / 5 : mode == 3 ? cells / 50 : 0, Allocator.TempJob);
+            using var ownedBoxes = new NativeArray<StaticBox>(mode >= 7 ? 1 : mode >= 5 ? 4 : mode == 1 ? cells / 5 : mode == 3 ? cells / 50 : 0, Allocator.TempJob);
             var boxes = ownedBoxes;
             var blocked = new bool[cells];
             for (int i = 0; i < boxes.Length && mode < 5; i++)
@@ -42,7 +42,9 @@ namespace Northwatch.Simulation.FlowFields
                 int cell; do { cell = random.NextInt(cells); } while (blocked[cell]); blocked[cell] = true;
                 boxes[i] = new StaticBox { Min = new int2(cell % width, cell / width), MaxExclusive = new int2(cell % width + 1, cell / width + 1) };
             }
-            if (mode >= 5)
+            if (mode >= 7)
+                boxes[0] = new StaticBox { Min = new int2(16, 0), MaxExclusive = new int2(17, width) };
+            else if (mode >= 5)
             {
                 boxes[0] = new StaticBox { Min = new int2(203, 148), MaxExclusive = new int2(223, 149) };
                 boxes[1] = new StaticBox { Min = new int2(203, 167), MaxExclusive = new int2(223, 168) };
@@ -50,7 +52,7 @@ namespace Northwatch.Simulation.FlowFields
                 boxes[3] = new StaticBox { Min = new int2(222, 149), MaxExclusive = new int2(223, 167) };
             }
             maps.ScheduleBuild(boxes).Complete();
-            state = new UnitState(mode == 2 ? 200 : 1);
+            state = new UnitState(mode >= 7 ? 2000 : mode == 2 ? 200 : 1);
             pool = new FlowFieldPool(width, width, new float2(-128), state.Alive.Length, settings);
             seenBuilds = new long[settings.BuildSlots];
             for (int i = 0; i < state.Alive.Length; i++)
@@ -59,7 +61,14 @@ namespace Northwatch.Simulation.FlowFields
                 do { cell = random.NextInt(cells); } while (usedStarts[cell] || maps.Passable[cell] == 0);
                 usedStarts[cell] = true;
                 state.Alive[i] = 1; state.Positions[i] = new float3(cell % width - 127.5f, 0, cell / width - 127.5f);
-                if (mode >= 5)
+                if (mode >= 7)
+                {
+                    state.Positions[i] = new float3(2.5f + i % 10 - 128, 0, 2.5f + i / 10 - 128);
+                    state.Sizes[i] = (UnitSize)(mode - 7);
+                    state.Movement[i] = new MovementUnit { HasMoveOrder = true, Mode = MovementMode.Moving,
+                        OrderVersion = i + 1, Goal = state.Positions[i].xz };
+                }
+                else if (mode >= 5)
                 {
                     state.Positions[i] = new float3(0, 0, 0);
                     state.Sizes[i] = (UnitSize)(mode - 5);
@@ -72,7 +81,8 @@ namespace Northwatch.Simulation.FlowFields
         {
             bool right = state.Positions[i].x < 0;
             int cell;
-            do { cell = mode >= 5 ? random.NextInt(149, 166) * width + random.NextInt(204, 221) :
+            do { cell = mode >= 7 ? random.NextInt(1, width - 1) * width + random.NextInt(240, width - 1) :
+                mode >= 5 ? random.NextInt(149, 166) * width + random.NextInt(204, 221) :
                 random.NextInt(width) * width + (right ? random.NextInt(144, width) : random.NextInt(112)); }
             while (usedGoals[cell] || maps.Passable[cell] == 0);
             usedGoals[cell] = true; orderTicks[order] = tick;
@@ -87,7 +97,7 @@ namespace Northwatch.Simulation.FlowFields
             {
                 if (tick > 0 && tick <= 1800 && tick % 3 == 0) Order((tick / 3 - 1) % 200, 200 + tick / 3);
             }
-            else if (tick < 200) Order(0, tick + 1);
+            else if (tick < 200) Order(0, (mode >= 7 ? 2000 : 0) + tick + 1);
             var chain = pool.Publish((ulong)tick, default);
             chain = pool.RequestFields(state, maps, (ulong)tick, chain);
             chain = pool.ScheduleBuilds(maps.Passable, (ulong)tick, chain);
@@ -120,6 +130,10 @@ namespace Northwatch.Simulation.FlowFields
             writer.WriteLine(string.Format(CultureInfo.InvariantCulture,
                 "goal_searches={0}; goal_median_ms={1:F6}; goal_p95_ms={2:F6}; goal_max_ms={3:F6}",
                 goalSearchCount, Percentile(goalSearches, goalSearchCount, .5), Percentile(goalSearches, goalSearchCount, .95), Percentile(goalSearches, goalSearchCount, 1)));
+            writer.WriteLine(string.Format(CultureInfo.InvariantCulture,
+                "request_rows={0}; goal_search_case={1}; unit_class={2}", state.Alive.Length,
+                mode >= 7 ? "far_region_225_to_240_cells_2000_active_rows" : mode >= 5 ? "ring" : "reachable",
+                mode >= 7 ? mode - 7 : mode >= 5 ? mode - 5 : 0));
             Array.Sort(builds, 0, buildCount); Array.Sort(sights, 0, buildCount); Array.Sort(publishes, 0, buildCount); Array.Sort(waits, 0, waitCount);
             long missed = 0, replacements = 0;
             for (int slot = 0; slot < seenBuilds.Length; slot++)

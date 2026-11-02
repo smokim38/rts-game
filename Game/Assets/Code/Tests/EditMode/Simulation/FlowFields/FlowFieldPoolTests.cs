@@ -86,6 +86,71 @@ namespace Northwatch.Tests.EditMode.Simulation.FlowFields
             Assert.That(length, Is.LessThanOrEqualTo(1.25f * shortest));
         }
 
+        [TestCase(0, false)] [TestCase(1, false)]
+        [TestCase(0, true)] [TestCase(1, true)]
+        public void LosingADirectRouteLaterRequestsOneFieldForEveryClassOfTheOrder(byte displacedClass, bool beyondRange)
+        {
+            using var maps = new StaticMaps(32, 32);
+            using var boxes = new NativeArray<StaticBox>(new[] {
+                new StaticBox { Min = new int2(11, 10), MaxExclusive = new int2(12, 15) } }, Allocator.TempJob);
+            maps.ScheduleBuild(boxes).Complete();
+            using var state = new UnitState(4);
+            using var pool = new FlowFieldPool(32, 32, 0, 4, Settings(2));
+            for (int i = 0; i < 4; i++)
+                Order(state, i, 1, new float2(16.5f, 8.5f) + (i / 2) * .5f,
+                    new float2(12.5f, 8.5f) + (i / 2) * .5f, (byte)(i / 2));
+            Tick(pool, maps, state, 0).Complete(); Tick(pool, maps, state, 1).Complete();
+            Assert.That(pool.GoalMetrics[0], Is.Zero);
+            Assert.That(pool.GoalMetrics[2], Is.Zero);
+            for (int i = 0; i < 4; i++) Assert.That(pool.UnitFields[i], Is.EqualTo(FlowFieldReader.NoField));
+
+            var positions = state.Positions;
+            float2 displaced = (beyondRange ? new float2(.5f, 8.5f) : new float2(8.5f, 12.5f)) + displacedClass * .5f;
+            positions[displacedClass * 2] = new float3(displaced.x, 0, displaced.y);
+            Tick(pool, maps, state, 2).Complete();
+            Assert.That(pool.GoalMetrics[2], Is.EqualTo(2), "The order needs one field per class, including the class still in sight.");
+            Tick(pool, maps, state, 3).Complete();
+            for (int i = 0; i < 4; i++)
+            {
+                Assert.That(pool.UnitFields[i], Is.GreaterThanOrEqualTo(0));
+                Assert.That(pool.UnitFields[i], Is.EqualTo(pool.UnitFields[i / 2 * 2]));
+                Assert.That(state.Movement[i].OrderVersion, Is.EqualTo(1));
+                Assert.That(state.Movement[i].Goal, Is.EqualTo(new float2(16.5f, 8.5f) + (i / 2) * .5f));
+            }
+            Assert.That(pool.UnitFields[0], Is.Not.EqualTo(pool.UnitFields[2]));
+            positions[displacedClass * 2] = new float3(12.5f + displacedClass * .5f, 0, 8.5f + displacedClass * .5f);
+            for (ulong tick = 4; tick < 24; tick++) Tick(pool, maps, state, tick).Complete();
+            Assert.That(pool.GoalMetrics[0], Is.Zero, "Losing a route must not repeat goal resolution.");
+            Assert.That(pool.GoalMetrics[2], Is.EqualTo(2));
+            Assert.That(pool.Metrics[4] + pool.Metrics[FlowFieldPool.MetricStride + 4], Is.EqualTo(2));
+        }
+
+        [TestCase(0)] [TestCase(1)]
+        public void AnOrderStartingOnARegionZeroCellStopsInPlaceWithoutSearchOrRequest(byte size)
+        {
+            using var maps = new StaticMaps(32, 32);
+            using var boxes = new NativeArray<StaticBox>(new[] {
+                new StaticBox { Min = new int2(8), MaxExclusive = new int2(12) } }, Allocator.TempJob);
+            maps.ScheduleBuild(boxes).Complete();
+            using var state = new UnitState(1);
+            using var pool = new FlowFieldPool(32, 32, 0, 1, Settings(2));
+            Order(state, 0, 1, new float2(20), new float2(9.5f + size * .5f), size);
+            var units = state.Movement; var unit = units[0];
+            unit.Velocity = unit.PreferredVelocity = unit.NewVelocity = new float2(1); units[0] = unit;
+            for (ulong tick = 0; tick < 20; tick++) Tick(pool, maps, state, tick).Complete();
+            unit = units[0];
+            Assert.That(unit.GoalRegion, Is.Zero);
+            Assert.That(unit.HasMoveOrder, Is.False);
+            Assert.That(unit.Mode, Is.EqualTo(MovementMode.Idle));
+            Assert.That(unit.Home, Is.EqualTo(state.Positions[0].xz));
+            Assert.That(unit.Velocity, Is.EqualTo(float2.zero));
+            Assert.That(unit.PreferredVelocity, Is.EqualTo(float2.zero));
+            Assert.That(unit.NewVelocity, Is.EqualTo(float2.zero));
+            Assert.That(pool.GoalMetrics[0], Is.Zero);
+            Assert.That(pool.GoalMetrics[2], Is.Zero);
+            Assert.That(pool.UnitFields[0], Is.EqualTo(FlowFieldReader.NoField));
+        }
+
         [Test]
         public void SaturationRotatesOnlyAfterLeaseAndEveryOrderReceivesAField()
         {
