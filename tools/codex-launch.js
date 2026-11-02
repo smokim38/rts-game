@@ -562,7 +562,7 @@ function parseResult(kind, text, sha) {
 // Prefix allow rules cannot prevent later arguments from overriding a fixed project prefix.
 const UNITY_TOOL = {
   name: 'unity_batch',
-  description: 'Run Unity outside the sandbox without auto-review, with the main branch Editor version, fixed -batchmode, own -projectPath and -logFile. Pass each argument as a separate string. Arguments pass through unchanged, including custom options, except -projectPath, -logFile, -createProject and -openProject, which are refused. Any argument making Unity write outside the own worktree counts as the agent\'s own write and stays forbidden. Use this tool for all Unity runs. One Editor at a time, 30 minute limit. Worktree Editor code (including tests and InitializeOnLoad) runs outside the sandbox and must obey AGENTS.md.',
+  description: 'Run Unity outside the sandbox without auto-review, with the main branch Editor version, fixed -batchmode, own -projectPath and -logFile. Pass each argument as a separate string. Arguments pass through unchanged, including custom options, except -projectPath, -logFile, -createProject, -openProject and -openfile, which are refused. Any argument making Unity write outside the own worktree counts as the agent\'s own write and stays forbidden. Use this tool for all Unity runs. One Editor at a time, 30 minute limit. Worktree Editor code (including tests and InitializeOnLoad) runs outside the sandbox and must obey AGENTS.md.',
   inputSchema: {
     type: 'object', properties: { args: { type: 'array', items: { type: 'string' } } },
     required: ['args'], additionalProperties: false,
@@ -607,7 +607,7 @@ function unityCommand(cwd, input, expectedVersion) {
       input.args.some((a) => typeof a !== 'string')) refuse('Unity expects an args array of strings');
   if (!/^\d+\.\d+\.\d+[abfp]\d+$/.test(expectedVersion ?? '')) refuse('Unity requires an Editor version from main');
   for (const arg of input.args) {
-    if (/^[-/]+(?:projectPath|logFile|createProject|openProject)(?:$|[=:\s])/i.test(arg.trim().replace(/^["']+|["']+$/g, ''))) {
+    if (/^[-/]+(?:projectPath|logFile|createProject|openProject|openfile)(?:$|[=:\s])/i.test(arg.trim().replace(/^["']+|["']+$/g, ''))) {
       refuse(`Unity project and log flags are locked by the launcher: ${arg}`);
     }
   }

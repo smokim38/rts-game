@@ -575,7 +575,7 @@ test('Unity arguments: custom options and values pass through unchanged', (t) =>
 test('Unity arguments: project and log flags cannot be supplied in any position', (t) => {
   const dir = slotDir(t);
   unityProject(dir);
-  for (const flag of ['projectPath', 'logFile', 'createProject', 'openProject']) {
+  for (const flag of ['projectPath', 'logFile', 'createProject', 'openProject', 'openfile']) {
     for (const arg of [`-${flag}`, `--${flag.toUpperCase()}=elsewhere`, `/${flag}:elsewhere`,
       `-${flag} elsewhere`, ` -${flag} `, `"-${flag}"`]) {
       for (const args of [[arg], [arg, 'elsewhere', '-quit'], ['-custom', 'value', arg, 'elsewhere'], ['-testFilter', arg]]) {
@@ -616,7 +616,7 @@ test('runCodex: Unity tools by role, settings, exit codes, refusals, logs and su
     const enabled = role !== 'reviewer' && sandbox === 'workspace-write';
     const custom = ['-executeMethod', 'Rts.EditorTools.PerformanceLadderBuilder.Build', '-ladder-commit', SHA, '-custom', 'value with spaces; & |'];
     const requests = [{ arguments: { args: custom } }, { arguments: { args: ['-runTests', '-testResults', 'Game/Results/results.xml'] } },
-      ...['-projectPath', '-logFile', '-createProject', '-openProject'].map((flag) => ({ arguments: { args: [flag, 'elsewhere'] } })), { tool: 'other' },
+      ...['-projectPath', '-logFile', '-createProject', '-openProject', '-openfile'].map((flag) => ({ arguments: { args: [flag, 'elsewhere'] } })), { tool: 'other' },
       { threadId: 'other' }, { turnId: 'old' }, { callId: 'unity-0' }, { callId: null }];
     const timerCount = timers.mock.callCount();
     const run = await L.runCodex({
