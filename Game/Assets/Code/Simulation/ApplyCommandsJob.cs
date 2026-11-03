@@ -33,6 +33,8 @@ namespace Northwatch.Simulation
                     if (State.Alive[slot] == 0 || State.Generations[slot] != command.Handle.Generation) continue;
                     MovementUnit unit = State.Movement[slot];
                     unit.Goal = command.Position.xz;
+                    unit.GoalResolved = false;
+                    unit.GoalRegion = 0;
                     unit.HasMoveOrder = true;
                     unit.Mode = MovementMode.Moving;
                     unit.BestGoalDistance = math.distance(unit.Goal, State.Positions[slot].xz);

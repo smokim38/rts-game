@@ -76,6 +76,70 @@ namespace Northwatch.Tests.EditMode.Presentation
             }
         }
 
+        [TestCase(UnitSize.Small)] [TestCase(UnitSize.Large)]
+        public void RouteOverlayKeepsF8AcrossInputUpdatesAndOnlyTintsCutOffRegions(UnitSize size)
+        {
+            var scene = EditorSceneManager.OpenScene(SandboxSceneBuilder.ScenePath);
+            MatchDriver driver = scene.GetRootGameObjects().Select(root => root.GetComponent<MatchDriver>()).Single(value => value != null);
+            var keyboard = InputSystem.AddDevice<Keyboard>();
+            InputSettings.UpdateMode previousMode = InputSystem.settings.updateMode;
+            try
+            {
+                InputSystem.settings.updateMode = InputSettings.UpdateMode.ProcessEventsManually;
+                Call(driver, "OnEnable");
+                Assert.That(Field<object>(driver, "routeOverlay"), Is.Null, "Off by default.");
+                UnitSimulation simulation = driver.Simulation;
+                Assert.That(simulation.QueueBlock(Side.First, size, new Vector3(60, 0, 30), 1), Is.True);
+                simulation.ScheduleFrame(1); simulation.CompleteFrame();
+                simulation.QueueSelection(SelectionRequest.Box(new Matrix4x4 { m00 = .001f, m12 = .001f, m33 = 1 }, new Rect(0, 0, 1, 1)));
+                simulation.ScheduleFrame(0); simulation.CompleteFrame();
+                Vector3 goal = new Vector3(88, 0, 30);
+                simulation.QueueSelection(SelectionRequest.PointerClick(new Ray(goal + Vector3.up * 10, Vector3.down),
+                    Matrix4x4.identity, true, true, false, false, false));
+                simulation.ScheduleFrame(2); simulation.CompleteFrame();
+                // The harness pumps input again before LateUpdate; the press must survive it.
+                Press(keyboard, () => { }, Key.F8);
+                Call(driver, "LateUpdate"); simulation.CompleteFrame();
+                object route = Field<object>(driver, "routeOverlay");
+                Assert.That(route, Is.Not.Null);
+                var sizes = new int[ushort.MaxValue + 1];
+                for (int cell = 0; cell < 65536; cell++) sizes[simulation.RouteRegion(cell, (byte)size)]++;
+                int mainRegion = Enumerable.Range(1, ushort.MaxValue).OrderByDescending(region => sizes[region]).First();
+                int expected = 65536 - sizes[0] - sizes[mainRegion];
+                Assert.That(expected, Is.GreaterThan(0), "The closed ring has a separate interior.");
+                Assert.That(Field<int[]>(route, "counts").Sum(), Is.EqualTo(expected));
+                Matrix4x4[] regions = Field<Matrix4x4[]>(route, "regions");
+                for (int i = 0; i < expected; i++)
+                {
+                    int x = Mathf.RoundToInt(regions[i].m03 + 127.5f - (byte)size * .5f);
+                    int z = Mathf.RoundToInt(regions[i].m23 + 127.5f - (byte)size * .5f);
+                    Assert.That(simulation.RouteRegion(z * 256 + x, (byte)size), Is.Not.EqualTo(mainRegion).And.Not.Zero);
+                }
+                Material[] materials = Field<Material[]>(route, "materials");
+                foreach (Material tint in materials.Where((_, i) => i != 12))
+                {
+                    Assert.That(tint.GetColor("_BaseColor").a, Is.InRange(.01f, .15f));
+                    Assert.That(tint.GetFloat("_Surface"), Is.EqualTo(1));
+                    Assert.That(tint.GetFloat("_ZWrite"), Is.Zero);
+                    Assert.That(tint.IsKeywordEnabled("_SURFACE_TYPE_TRANSPARENT"), Is.True);
+                }
+                Assert.That(Field<int>(route, "arrowCount"), Is.GreaterThan(0));
+                Assert.That(Field<Matrix4x4[]>(route, "arrows")[0].GetColumn(0).magnitude, Is.EqualTo(.075f).Within(.00001f));
+                Press(keyboard, () => { }, Key.F8);
+                Call(driver, "LateUpdate"); simulation.CompleteFrame();
+                Assert.That(Field<object>(driver, "routeOverlay"), Is.Null, "F8 toggles it off again.");
+            }
+            finally
+            {
+                Call(driver, "OnDisable"); InputSystem.RemoveDevice(keyboard);
+                InputSystem.settings.updateMode = previousMode;
+                EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+            }
+        }
+
+        private static T Field<T>(object target, string name) => (T)target.GetType()
+            .GetField(name, BindingFlags.NonPublic | BindingFlags.Instance).GetValue(target);
+
         private static void Press(Keyboard keyboard, Action update, Key key)
         {
             InputSystem.QueueStateEvent(keyboard, new KeyboardState(key)); InputSystem.Update(); update();

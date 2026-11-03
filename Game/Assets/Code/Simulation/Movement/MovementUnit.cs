@@ -10,6 +10,8 @@ namespace Northwatch.Simulation.Movement
         internal float2 Goal;
         internal bool HasMoveOrder;
         internal int OrderVersion;
+        internal ushort GoalRegion;
+        internal bool GoalResolved;
         internal int ProgressField;
         internal float BestGoalDistance;
         internal ulong LastProgressTick;

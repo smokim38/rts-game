@@ -1,0 +1,133 @@
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+using System;
+using Northwatch.Simulation;
+using Unity.Profiling;
+using UnityEngine;
+using UnityEngine.Rendering;
+
+namespace Northwatch.Presentation
+{
+    // Created only on F8. All cell and arrow storage is cached while the overlay is visible.
+    internal sealed class RouteOverlay : IDisposable
+    {
+        private const int Colours = 12, Cells = 256 * 256;
+        private readonly Mesh cube;
+        private readonly Matrix4x4[] regions = new Matrix4x4[Cells];
+        private readonly int[] regionSizes = new int[ushort.MaxValue + 1];
+        private readonly int[] counts = new int[Colours], offsets = new int[Colours], written = new int[Colours];
+        private readonly RenderParams[] parameters = new RenderParams[Colours + 2];
+        private readonly Material[] materials = new Material[Colours + 2];
+        private readonly Matrix4x4[] arrows = new Matrix4x4[Cells * 3];
+        private readonly Matrix4x4[] sight = new Matrix4x4[Cells];
+        private int lastField = int.MinValue, lastClass = -1, arrowCount, sightCount;
+        private ulong lastPublished;
+        internal static readonly ProfilerMarker Marker = new ProfilerMarker("Northwatch.RouteOverlay");
+
+        internal RouteOverlay(Mesh cube, Material source)
+        {
+            this.cube = cube;
+            for (int i = 0; i < materials.Length; i++)
+            {
+                materials[i] = new Material(source);
+                Color colour = i == Colours ? new Color(1, .85f, .08f) : i == Colours + 1 ?
+                    new Color(.65f, 1, .75f, .06f) : Color.HSVToRGB(i / (float)Colours, .6f, 1);
+                if (i < Colours) colour.a = .12f;
+                materials[i].SetColor("_BaseColor", colour);
+                if (i != Colours)
+                {
+                    materials[i].SetFloat("_Surface", 1);
+                    materials[i].SetFloat("_SrcBlend", (float)BlendMode.SrcAlpha);
+                    materials[i].SetFloat("_DstBlend", (float)BlendMode.OneMinusSrcAlpha);
+                    materials[i].SetFloat("_SrcBlendAlpha", (float)BlendMode.One);
+                    materials[i].SetFloat("_DstBlendAlpha", (float)BlendMode.OneMinusSrcAlpha);
+                    materials[i].SetFloat("_ZWrite", 0);
+                    materials[i].EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+                    materials[i].DisableKeyword("_ALPHAPREMULTIPLY_ON");
+                    materials[i].SetOverrideTag("RenderType", "Transparent");
+                    materials[i].renderQueue = (int)RenderQueue.Transparent;
+                    materials[i].SetShaderPassEnabled("DepthOnly", false);
+                    materials[i].SetShaderPassEnabled("ShadowCaster", false);
+                }
+                parameters[i] = new RenderParams(materials[i]) { shadowCastingMode = ShadowCastingMode.Off, receiveShadows = false };
+            }
+        }
+
+        internal void Draw(UnitSimulation simulation)
+        {
+            using (Marker.Auto())
+            {
+                simulation.TrySelectedRoute(out int field, out byte size, out ulong published);
+                if (size != lastClass)
+                {
+                    Array.Clear(counts, 0, counts.Length);
+                    Array.Clear(written, 0, written.Length);
+                    Array.Clear(regionSizes, 0, regionSizes.Length);
+                    for (int cell = 0; cell < Cells; cell++)
+                        regionSizes[simulation.RouteRegion(cell, size)]++;
+                    // Labels depend on scan order; the largest passable area is the main region.
+                    int mainRegion = 0, largestRegion = 0;
+                    for (int region = 1; region < regionSizes.Length; region++)
+                        if (regionSizes[region] > largestRegion)
+                        { mainRegion = region; largestRegion = regionSizes[region]; }
+                    for (int cell = 0; cell < Cells; cell++)
+                    {
+                        ushort region = simulation.RouteRegion(cell, size);
+                        if (region != 0 && region != mainRegion) counts[(region - 1) % Colours]++;
+                    }
+                    for (int colour = 1; colour < Colours; colour++) offsets[colour] = offsets[colour - 1] + counts[colour - 1];
+                    for (int cell = 0; cell < Cells; cell++)
+                    {
+                        ushort region = simulation.RouteRegion(cell, size);
+                        if (region == 0 || region == mainRegion) continue;
+                        int colour = (region - 1) % Colours;
+                        Vector3 point = new Vector3(cell % 256 - 127.5f + size * .5f, .025f, cell / 256 - 127.5f + size * .5f);
+                        regions[offsets[colour] + written[colour]++] = Matrix4x4.TRS(point, Quaternion.identity, new Vector3(.94f, .01f, .94f));
+                    }
+                }
+                if (field != lastField || size != lastClass || published != lastPublished)
+                {
+                    arrowCount = sightCount = 0;
+                    if (field >= 0)
+                        for (int cell = 0; cell < Cells; cell++)
+                        {
+                            Vector3 point = new Vector3(cell % 256 - 127.5f + size * .5f, .06f, cell / 256 - 127.5f + size * .5f);
+                            if (!simulation.RouteDirection(field, point, out Vector3 direction, out bool inSight)) continue;
+                            if (inSight)
+                                sight[sightCount++] = Matrix4x4.TRS(new Vector3(point.x, .04f, point.z),
+                                    Quaternion.identity, new Vector3(.25f, .01f, .25f));
+                            if (direction.sqrMagnitude == 0) continue;
+                            Vector3 tip = point + direction * .3f;
+                            Vector3 side = new Vector3(-direction.z, 0, direction.x);
+                            Line(point - direction * .3f, tip);
+                            Line(tip, tip - direction * .22f + side * .16f);
+                            Line(tip, tip - direction * .22f - side * .16f);
+                        }
+                }
+                lastField = field; lastClass = size; lastPublished = published;
+                for (int colour = 0; colour < Colours; colour++) Render(regions, offsets[colour], counts[colour], ref parameters[colour]);
+                Render(sight, 0, sightCount, ref parameters[Colours + 1]);
+                Render(arrows, 0, arrowCount, ref parameters[Colours]);
+            }
+        }
+
+        private void Line(Vector3 from, Vector3 to)
+        {
+            Vector3 delta = to - from;
+            arrows[arrowCount++] = Matrix4x4.TRS((from + to) * .5f, Quaternion.LookRotation(delta), new Vector3(.075f, .025f, delta.magnitude));
+        }
+
+        private void Render(Matrix4x4[] matrices, int offset, int count, ref RenderParams render)
+        {
+            for (int start = 0; start < count; start += MatchDriver.InstancesPerDraw)
+                Graphics.RenderMeshInstanced(render, cube, 0, matrices, Mathf.Min(MatchDriver.InstancesPerDraw, count - start), offset + start);
+        }
+
+        public void Dispose()
+        {
+            foreach (Material material in materials)
+                if (Application.isPlaying) UnityEngine.Object.Destroy(material);
+                else UnityEngine.Object.DestroyImmediate(material);
+        }
+    }
+}
+#endif
