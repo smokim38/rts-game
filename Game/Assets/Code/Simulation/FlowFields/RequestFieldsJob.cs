@@ -15,18 +15,21 @@ namespace Northwatch.Simulation.FlowFields
         [ReadOnly] internal NativeArray<ushort> Regions;
         internal NativeArray<MovementUnit> Units;
         internal NativeArray<long> GoalMetrics;
+        internal NativeArray<long> Timestamps;
         internal NativeArray<FlowFieldPool.Entry> Entries;
         internal NativeArray<FlowFieldPool.Request> Requests;
         internal NativeArray<FlowFieldPool.Build> Builds;
-        internal NativeParallelHashMap<long, int> Orders;
+        internal NativeParallelHashMap<uint2, int> Orders;
         internal NativeArray<int> UnitFields;
         internal int Width, Height, Available;
         internal float2 Origin;
         internal ulong Tick;
         internal MovementParameters Settings;
 
-        private static long Key(int order, byte size, ushort region) => ((long)order << 17) | ((long)region << 1) | size;
-        private long UnitKey(int i) => Key(Units[i].OrderVersion, (byte)Sizes[i], Units[i].GoalRegion);
+        // uint2 hashes both words before bucket masking. A packed long leaves the
+        // order above bit 16, making separate orders collide in small hash tables.
+        private static uint2 Key(int order, byte size, ushort region) => new uint2((uint)order, ((uint)region << 1) | size);
+        private uint2 UnitKey(int i) => Key(Units[i].OrderVersion, (byte)Sizes[i], Units[i].GoalRegion);
 
         private int Cell(float2 position, byte size)
         {
@@ -36,6 +39,7 @@ namespace Northwatch.Simulation.FlowFields
 
         public void Execute()
         {
+            MovementTimestampJob.Write(Timestamps, 0);
             for (int i = 0; i < Entries.Length; i++)
             {
                 var entry = Entries[i]; entry.Users = 0; Entries[i] = entry;
@@ -66,6 +70,7 @@ namespace Northwatch.Simulation.FlowFields
                     var request = Requests[row]; request.Users++; Requests[row] = request;
                 }
             }
+            MovementTimestampJob.Write(Timestamps, 1);
             for (int i = 0; i < Requests.Length; i++)
                 if (Requests[i].Users == 0 && Orders.TryGetValue(Key(Requests[i].Order, Requests[i].Class, Requests[i].Region), out int mapped) && mapped == i)
                     Orders.Remove(Key(Requests[i].Order, Requests[i].Class, Requests[i].Region));
@@ -75,7 +80,7 @@ namespace Northwatch.Simulation.FlowFields
                 UnitFields[i] = FlowFieldReader.NoField;
                 if (Alive[i] == 0 || !Units[i].HasMoveOrder) continue;
                 byte size = (byte)Sizes[i];
-                long key = UnitKey(i);
+                uint2 key = UnitKey(i);
                 if (!Orders.TryGetValue(key, out int row))
                 {
                     while (Requests[free].Users != 0) free++;
@@ -86,6 +91,7 @@ namespace Northwatch.Simulation.FlowFields
                     Orders.Add(key, row);
                 }
             }
+            MovementTimestampJob.Write(Timestamps, 2);
             for (int i = 0; i < Requests.Length; i++)
                 if (Requests[i].Users != 0 && Requests[i].Resolved == 0) CorrectGoals(i);
             for (int i = 0; i < Alive.Length; i++)
@@ -114,6 +120,7 @@ namespace Northwatch.Simulation.FlowFields
                         }
                 }
             }
+            MovementTimestampJob.Write(Timestamps, 3);
             for (int i = 0; i < Requests.Length; i++)
             {
                 var row = Requests[i]; row.Users = 0; Requests[i] = row;
@@ -123,6 +130,7 @@ namespace Northwatch.Simulation.FlowFields
                 {
                     var request = Requests[row]; request.Users++; Requests[row] = request;
                 }
+            MovementTimestampJob.Write(Timestamps, 4);
             for (int i = 0; i < Requests.Length; i++)
             {
                 var request = Requests[i];
@@ -141,9 +149,11 @@ namespace Northwatch.Simulation.FlowFields
                 if (field < 0) continue;
                 var entry = Entries[field]; entry.Users += request.Users; entry.LastUsed = Tick; Entries[field] = entry;
             }
+            MovementTimestampJob.Write(Timestamps, 5);
             for (int i = 0; i < Alive.Length; i++)
                 if (Alive[i] != 0 && Units[i].HasMoveOrder && Orders.TryGetValue(UnitKey(i), out int row))
                     UnitFields[i] = Requests[row].NeedsField != 0 ? Requests[row].Field : -1;
+            MovementTimestampJob.Write(Timestamps, 6);
             for (int slot = 0; slot < Builds.Length; slot++)
             {
                 if ((Available & (1 << slot)) == 0) continue;
@@ -162,11 +172,13 @@ namespace Northwatch.Simulation.FlowFields
                 var entry = Entries[replacement]; entry.Replacing = 1; Entries[replacement] = entry;
                 Builds[slot] = new FlowFieldPool.Build { Field = replacement, Goal = Requests[head].Goal, Class = Requests[head].Class };
             }
+            MovementTimestampJob.Write(Timestamps, 7);
             for (int i = 0; i < Requests.Length; i++)
             {
                 var row = Requests[i];
                 if (row.Resolved == 1) { row.Resolved = 2; Requests[i] = row; }
             }
+            MovementTimestampJob.Write(Timestamps, 8);
         }
 
         private void CorrectGoals(int first)
