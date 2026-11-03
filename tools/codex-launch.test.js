@@ -803,11 +803,14 @@ test('runCodex: a failed or stuck Unity tree cleanup fails the run within a boun
       assert.ok(completed >= 0 && completed < events.findIndex((e) => e.event === 'end'));
     } finally {
       if (editor && editor.exitCode === null && editor.signalCode === null) {
+        // Bounded launcher shutdown unrefs the editor; keep this final exit wait alive.
+        editor.ref();
         const exited = new Promise((r) => editor.once('exit', r));
         editor.kill();
         await exited;
       }
     }
+    assert.ok(editor && (editor.exitCode !== null || editor.signalCode !== null), 'stand-in editor must exit before the next mode');
   }
 });
 
