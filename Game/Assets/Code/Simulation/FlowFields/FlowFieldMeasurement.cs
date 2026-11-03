@@ -17,6 +17,10 @@ namespace Northwatch.Simulation.FlowFields
         private readonly int mode;
         private readonly bool requestStress;
         private NativeArray<long> requestTimestamps;
+        private NativeArray<long> requestSteps;
+        private readonly double[][] stepSamples;
+        private static readonly string[] StepNames = { "retain_orders", "release_admit", "resolve_direct", "recount_users",
+            "match_fields", "assign_units", "queue_replace", "finish" };
         private readonly double[] requests = new double[1800];
         private int requestCount;
         private readonly int width, cells;
@@ -35,7 +39,13 @@ namespace Northwatch.Simulation.FlowFields
         {
             if (requestStress && mode != 2) throw new ArgumentException("Request stress uses mode 2.");
             this.requestStress = requestStress;
-            if (requestStress) requestTimestamps = new NativeArray<long>(2, Allocator.Persistent);
+            if (requestStress)
+            {
+                requestTimestamps = new NativeArray<long>(2, Allocator.Persistent);
+                requestSteps = new NativeArray<long>(StepNames.Length + 1, Allocator.Persistent);
+                stepSamples = new double[StepNames.Length][];
+                for (int i = 0; i < stepSamples.Length; i++) stepSamples[i] = new double[requests.Length];
+            }
             this.mode = mode; random = new Unity.Mathematics.Random(160);
             width = mode == 4 ? 295 : 256; cells = width * width;
             usedGoals = new bool[cells]; usedStarts = new bool[cells];
@@ -107,12 +117,17 @@ namespace Northwatch.Simulation.FlowFields
             else if (tick < 200) Order(0, (mode >= 7 ? 2000 : 0) + tick + 1);
             var chain = pool.Publish((ulong)tick, default);
             if (requestStress) chain = MovementTimestampJob.Stamp(requestTimestamps, 0, chain);
-            chain = pool.RequestFields(state, maps, (ulong)tick, chain);
+            chain = pool.RequestFields(state, maps, (ulong)tick, chain, requestSteps);
             if (requestStress) chain = MovementTimestampJob.Stamp(requestTimestamps, 1, chain);
             chain = pool.ScheduleBuilds(maps.Passable, (ulong)tick, chain);
             chain.Complete();
             if (requestStress && tick >= 300)
-                requests[requestCount++] = (requestTimestamps[1] - requestTimestamps[0]) * 1000.0 / MovementTimestampJob.Frequency;
+            {
+                double scale = 1000.0 / MovementTimestampJob.Frequency;
+                for (int i = 0; i < stepSamples.Length; i++)
+                    stepSamples[i][requestCount] = (requestSteps[i + 1] - requestSteps[i]) * scale;
+                requests[requestCount++] = (requestTimestamps[1] - requestTimestamps[0]) * scale;
+            }
             if (pool.GoalMetrics[0] > goalSearchCount)
                 goalSearches[goalSearchCount++] = pool.GoalMetrics[3] * 1000.0 / MovementTimestampJob.Frequency;
             for (int i = 0; i < state.Alive.Length; i++)
@@ -147,6 +162,14 @@ namespace Northwatch.Simulation.FlowFields
                     "request_samples={0}; request_rows={1}; field_requests={2}; request_median_ms={3:F6}; request_p95_ms={4:F6}; request_max_ms={5:F6}; active_field_rows={6}; request_warmup_ticks=300",
                     requestCount, state.Alive.Length, pool.GoalMetrics[2], Percentile(requests, requestCount, .5),
                     Percentile(requests, requestCount, .95), Percentile(requests, requestCount, 1), active));
+                for (int i = 0; i < stepSamples.Length; i++)
+                {
+                    Array.Sort(stepSamples[i], 0, requestCount);
+                    writer.WriteLine(string.Format(CultureInfo.InvariantCulture,
+                        "request_step={0}; median_ms={1:F6}; p95_ms={2:F6}; max_ms={3:F6}", StepNames[i],
+                        Percentile(stepSamples[i], requestCount, .5), Percentile(stepSamples[i], requestCount, .95),
+                        Percentile(stepSamples[i], requestCount, 1)));
+                }
             }
             Array.Sort(goalSearches, 0, goalSearchCount);
             writer.WriteLine(string.Format(CultureInfo.InvariantCulture,
@@ -175,6 +198,7 @@ namespace Northwatch.Simulation.FlowFields
         {
             pool.Dispose(); maps.Dispose(); state.Dispose();
             if (requestTimestamps.IsCreated) requestTimestamps.Dispose();
+            if (requestSteps.IsCreated) requestSteps.Dispose();
         }
     }
 }

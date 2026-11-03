@@ -175,6 +175,62 @@ namespace Northwatch.Tests.EditMode.Simulation.FlowFields
         }
 
         [Test]
+        public void TwoThousandSeparateOrdersKeepTheirIdentityThroughReissueAndAbandonment()
+        {
+            const int count = 2000, width = 64, height = 128;
+            var settings = Settings(8); settings.MinLease = .05f;
+            using var maps = new StaticMaps(width, height);
+            using var boxes = new NativeArray<StaticBox>(new[] {
+                new StaticBox { Min = new int2(32, 0), MaxExclusive = new int2(33, height) } }, Allocator.TempJob);
+            maps.ScheduleBuild(boxes).Complete();
+            using var state = new UnitState(count);
+            using var pool = new FlowFieldPool(width, height, 0, count, settings);
+            for (int i = 0; i < count; i++)
+            {
+                byte size = (byte)(i / 2 % 2);
+                int x = i % 2 == 0 ? 1 : 35;
+                Order(state, i, i + 1, new float2(x + i / 4 % 28 + .5f, 70.5f + i / 112) + size * .5f,
+                    new float2(x + .5f, 1.5f) + size * .5f, size);
+            }
+            Tick(pool, maps, state, 0).Complete();
+            Assert.That(pool.GoalMetrics[2], Is.EqualTo(count));
+            Assert.That(pool.Builds[0].Goal, Is.EqualTo(70 * width + 1));
+            Assert.That(pool.Builds[1].Goal, Is.EqualTo(70 * width + 35));
+            Tick(pool, maps, state, 1).Complete();
+            var alive = state.Alive; var units = state.Movement;
+            for (int i = 0; i < count; i++)
+            {
+                if (i % 5 == 0) alive[i] = 0;
+                else if (i % 2 == 0)
+                    Order(state, i, count + i + 1, units[i].Goal, state.Positions[i].xz, (byte)state.Sizes[i]);
+            }
+            for (ulong tick = 2; tick < 12; tick++) Tick(pool, maps, state, tick).Complete();
+
+            var seen = new bool[count];
+            foreach (var request in pool.Requests)
+            {
+                if (request.Users == 0) continue;
+                int index = (request.Order - 1) % count;
+                Assert.That(alive[index], Is.EqualTo(1));
+                Assert.That(seen[index], Is.False, "Each separate order keeps exactly one request.");
+                seen[index] = true;
+                Assert.That(request.Order, Is.EqualTo(units[index].OrderVersion));
+                Assert.That(request.Users, Is.EqualTo(1));
+                Assert.That(request.Class, Is.EqualTo((byte)state.Sizes[index]));
+                Assert.That(request.Region, Is.EqualTo(units[index].GoalRegion));
+                int2 goal = (int2)math.floor(units[index].Goal - request.Class * .5f);
+                Assert.That(request.Goal, Is.EqualTo(goal.y * width + goal.x));
+                int field = pool.UnitFields[index];
+                if (field < 0) continue;
+                Assert.That(pool.Entries[field].Valid, Is.EqualTo(1));
+                Assert.That(pool.Entries[field].Goal, Is.EqualTo(request.Goal));
+                Assert.That(pool.Entries[field].Class, Is.EqualTo(request.Class));
+            }
+            for (int i = 0; i < count; i++) Assert.That(seen[i], Is.EqualTo(alive[i] != 0));
+            Assert.That(pool.GoalMetrics[0], Is.Zero);
+        }
+
+        [Test]
         public void ClearShortOrderRequestsNothingAndAbandonedRequestsAreDropped()
         {
             using var maps = new StaticMaps(32, 32);
