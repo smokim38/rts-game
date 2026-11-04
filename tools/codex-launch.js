@@ -28,7 +28,7 @@ const REPO = 'smokim38/rts-game';
 const OWNER = 'smokim38';
 const ROOT = path.resolve(__dirname, '..');
 const STUDIO = path.join(ROOT, '.studio');
-const RUN_TIMEOUT_MS = 4 * 60 * 60 * 1000;
+const RUN_TIMEOUT_MS = 8 * 60 * 60 * 1000;
 const UNITY_TIMEOUT_MS = 30 * 60 * 1000;
 const STOP_GRACE_MS = 2000;
 const ROLES = {
@@ -1134,6 +1134,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  RUN_TIMEOUT_MS,
   Refused,
   parseArgs,
   ownerInstruction,
