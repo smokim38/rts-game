@@ -12,6 +12,10 @@ const os = require('node:os');
 const path = require('node:path');
 const L = require('./codex-launch.js');
 
+test('runCodex: default run limit is 8 hours', () => {
+  assert.strictEqual(L.RUN_TIMEOUT_MS, 8 * 60 * 60 * 1000);
+});
+
 const SHA = 'a'.repeat(40);
 const OTHER_SHA = 'b'.repeat(40);
 const UNITY_VERSION = '6000.3.23f1'; // stand-in for the launcher's main-branch lookup
@@ -842,7 +846,7 @@ test('runCodex: the whole app-server flow, failing closed', async () => {
     await assert.rejects(run('settings'), (err) => err instanceof L.Refused && /sandbox/.test(err.message));
     await assert.rejects(run('bad-settings'), (err) => err instanceof L.Refused && /approval policy/.test(err.message));
     await assert.rejects(run('exit'), (err) => err instanceof L.Refused && /exited \(3\) before the turn completed/.test(err.message));
-    await assert.rejects(run('hang', { timeoutMs: 300 }), (err) => err instanceof L.Refused && /time limit/.test(err.message));
+    await assert.rejects(run('hang', { timeoutMs: 300 }), (err) => err instanceof L.Refused && /time limit \(0 minutes\)/.test(err.message));
     const asked = await run('approval');
     assert.deepStrictEqual(asked.declined, ['item/commandExecution/requestApproval']);
     assert.deepStrictEqual(JSON.parse(asked.finalText), { decision: 'decline' });
