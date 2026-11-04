@@ -211,7 +211,7 @@ const COMMENTS_QUERY = `query($n: Int!, $endCursor: String) { repository(owner: 
     nodes { author { login } body createdAt lastEditedAt includesCreatedEdit url } } } } }`;
 const CONTEXT_SOURCE_QUERY = `query($n: Int!, $endCursor: String) { repository(owner: "smokim38", name: "rts-game") { issue(number: $n) {
   number body author { login } userContentEdits(first: 100) { totalCount nodes { editor { login } } }
-  comments(first: 100, after: $endCursor, orderBy: {field: CREATED_AT, direction: ASC}) {
+  comments(first: 100, after: $endCursor) {
     totalCount pageInfo { hasNextPage endCursor }
     nodes { author { login } body createdAt lastEditedAt includesCreatedEdit } } } } }`;
 

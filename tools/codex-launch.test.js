@@ -10,6 +10,7 @@ const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const vm = require('node:vm');
 const L = require('./codex-launch.js');
 
 test('runCodex: default run limit is 8 hours', () => {
@@ -1332,7 +1333,8 @@ const sourceApi = (pages, calls = []) => L.contextGitHub((args) => {
   assert.match(query, /issue\(number: \$n\)/);
   assert.match(query, /userContentEdits\(first: 100\)/);
   assert.match(query, /\$endCursor: String/);
-  assert.match(query, /after: \$endCursor, orderBy: \{field: CREATED_AT, direction: ASC\}/);
+  assert.match(query, /comments\(first: 100, after: \$endCursor\)/);
+  assert.doesNotMatch(query, /orderBy/);
   assert.match(query, /lastEditedAt includesCreatedEdit/);
   const n = Number(args.find((arg) => arg.startsWith('n=')).slice(2));
   assert.strictEqual(args[args.indexOf(`n=${n}`) - 1], '-F');
@@ -1479,7 +1481,7 @@ test('context sources: one untrusted block in all prompt kinds keeps text and im
   }
 });
 
-test('context sources: summary has one counts-only line and log data has the same numbers without source text', () => {
+test('context sources: summary has one counts-only line without source text', () => {
   const sources = L.contextSources(sourceSection([202, 200]), sourceApi({
     202: [sourcePage(sourceIssue({ number: 202, body: 'PLANTED-BODY' }), [sourceComment({ body: 'PLANTED-COMMENT' }), sourceComment({ author: null })])],
     200: [sourcePage(sourceIssue({ author: null }))],
@@ -1496,8 +1498,78 @@ test('context sources: summary has one counts-only line and log data has the sam
   ]);
   assert.strictEqual(L.contextSummary([]), 'Context sources: none');
   assert.deepStrictEqual(L.contextCounts([]), []);
-  assert.ok(!JSON.stringify({ event: 'context-sources', sources: counts }).includes('PLANTED'));
   assert.ok(!summary.includes('PLANTED'));
+});
+
+// Run the real main with side effects stubbed in an isolated context. No production test hooks.
+const contextMain = (assigned, api) => {
+  const events = [], logs = [], output = [], prompts = [];
+  const unexpected = () => assert.fail('unexpected external operation');
+  const modules = {
+    'node:child_process': { execFileSync: unexpected, spawn: unexpected },
+    'node:fs': { appendFileSync: (_file, line) => logs.push(JSON.parse(line)) },
+  };
+  const sandbox = {
+    __dirname, module: { exports: {} },
+    require: (name) => modules[name] ?? require(name),
+    process: { cwd: () => path.resolve(__dirname, '..'), stdout: { write: (text) => output.push(text) } },
+  };
+  const github = vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'codex-launch.js'), 'utf8') + '\ngithub;', sandbox);
+  Object.assign(github, {
+    issue: () => assigned,
+    source: (n) => { events.push(`source #${n}`); return api.source(n); },
+    roleFile: (role) => `name = "${role}"\nmodel = "gpt-6.1-sol"\nmodel_reasoning_effort = "high"\ndeveloper_instructions = "test"`,
+    unityVersion: () => UNITY_VERSION,
+  });
+  Object.assign(sandbox, {
+    ensureStudio: () => events.push('studio'),
+    acquire: () => { events.push('lock'); return () => events.push('unlock'); },
+    takeSlot: () => { events.push('slot'); return null; },
+    implementationWorktree: () => events.push('worktree'),
+    implementationFeedback: () => ({ pr: null, sha: null, records: [] }),
+    changedFiles: () => [],
+    runCodex: async ({ prompt }) => {
+      events.push('codex');
+      prompts.push(prompt);
+      return { turn: { status: 'completed' }, reviews: [], reroutes: [], tokens: {}, helpers: {}, declined: [],
+        finalText: JSON.stringify({ status: 'done', summary: 'Test complete.', tests: [], questions: [] }) };
+    },
+  });
+  return { run: () => sandbox.main(['gameplay-programmer', '42']), events, logs, output, prompts };
+};
+
+test('context sources: main resolves sources before startup and logs the summary counts once without text', async () => {
+  const api = sourceApi({
+    202: [sourcePage(sourceIssue({ number: 202, body: 'PLANTED-BODY' }),
+      [sourceComment({ body: 'PLANTED-COMMENT' }), sourceComment({ author: null })])],
+    200: [sourcePage(sourceIssue({ author: null }))],
+  });
+  for (const numbers of [[], [202, 200]]) {
+    const run = contextMain(issue({ body: issue().body + (numbers.length ? '\n' + sourceSection(numbers) : '') }), api);
+    await run.run();
+    assert.deepStrictEqual(run.events, [...numbers.map((n) => `source #${n}`), 'studio', 'lock', 'slot', 'worktree', 'codex', 'unlock']);
+    const entries = run.logs.filter((entry) => entry.event === 'context-sources');
+    assert.strictEqual(entries.length, 1);
+    assert.deepStrictEqual(entries[0].sources, numbers.length ? [
+      { number: 202, bodyIncluded: true, commentsIncluded: 1, commentsLeftOut: 1 },
+      { number: 200, bodyIncluded: false, commentsIncluded: 0, commentsLeftOut: 0 },
+    ] : []);
+    const expected = numbers.length ? 'Context sources: #202 body included, comments 1 included, 1 left out · #200 body left out, comments 0 included, 0 left out' : 'Context sources: none';
+    assert.deepStrictEqual(run.output.join('').split('\n').filter((line) => line.startsWith('Context sources:')), [expected]);
+    assert.ok(!JSON.stringify(run.logs).includes('PLANTED') && !run.output.join('').includes('PLANTED'));
+    assert.strictEqual(run.prompts[0].includes('PLANTED-BODY\nComment 1:\nPLANTED-COMMENT'), numbers.length > 0);
+  }
+});
+
+test('context sources: main refuses failed or incomplete lookups before studio, locks, worktree or Codex', async () => {
+  for (const pages of [[], [sourcePage(sourceIssue(), [sourceComment()], 2)]]) {
+    const run = contextMain(issue({ body: issue().body + '\n' + sourceSection() }), sourceApi({ 200: pages }));
+    await assert.rejects(run.run(), /GitHub lookup returned (no|incomplete) pages/);
+    assert.deepStrictEqual(run.events, ['source #200']);
+    assert.deepStrictEqual(run.logs, []);
+    assert.deepStrictEqual(run.output, []);
+    assert.deepStrictEqual(run.prompts, []);
+  }
 });
 
 test('every structured-output schema is strict', () => {
