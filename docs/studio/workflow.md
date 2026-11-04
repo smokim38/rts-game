@@ -126,6 +126,10 @@ An Issue moves to **Ready** only when it has all of these:
 - [ ] the Size field: S (under a day), M (one or two days) or L (bigger; consider splitting)
 - [ ] any protected path it touches named explicitly (AGENTS.md §6)
 
+When Codex needs text from other Issues, add an optional section with the exact heading `### Context sources`, followed by up to five exact `- #<n>` lines naming Issues in this repository. Blank lines are allowed; other non-empty lines, a second heading, or more than five sources refuse the run. The section ends at the next line starting `### `, a line starting `End of Issue`, or the end of the body.
+
+The launcher fetches open or closed sources and every comment page before Codex starts. Only bodies authored and edited solely by `smokim38` and unedited comments by `smokim38` are included, as untrusted reference material in implementation, QA and review prompts. Sources need no owner instruction and never authorise work; the assigned Issue still sets the scope. Failed or incomplete lookups, more than 100 body edits, or over 60,000 included characters refuse the run without truncation. The summary and log report inclusion counts. Codex stays offline. See [the launcher](claude-staff.md#the-codex-launcher).
+
 ## Definition of Done
 
 See [AGENTS.md §8](../../AGENTS.md#8-definition-of-done-templates). It isn't copied here, so the two can't drift apart.
