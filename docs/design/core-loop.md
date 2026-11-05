@@ -8,7 +8,7 @@ A match is one human player against 1 to 7 AI opponents on a skirmish map, as a 
 
 The first release has **two factions**. They play by the same rules and economy, and differ in their units. The AI opponent plays by exactly the same rules as the player. It sees only what its own and its allies' units see, gets no free resources, and gives the same orders a player can give.
 
-Before any art exists, we build all of this in a **grey-box sandbox**: flat ground, units as plain cubes and buildings as plain boxes. Movement comes first, because it has to work well before anything else is built on top of it. The [Grey-box sandbox](#grey-box-sandbox) part lists the systems in build order, with acceptance criteria for each.
+Before any art exists, we build all of this in a **grey-box sandbox**: flat ground, units as simple placeholder tanks and buildings as plain boxes. Movement comes first, because it has to work well before anything else is built on top of it. The [Grey-box sandbox](#grey-box-sandbox) part lists the systems in build order, with acceptance criteria for each.
 
 ## How to read this section
 
@@ -325,13 +325,13 @@ Faction themes, names, unit rosters and balance numbers are left to the factions
 
 ## Grey-box sandbox
 
-Everything here is built and tested with **plain ground and simple shapes**: a flat square map, units as cubes, buildings as boxes, Supply fields as flat tiles, and plain team colours so sides can be told apart. No art.
+Everything here is built and tested with **plain ground and simple shapes**: a flat square map, units as simple tanks (one test-placeholder mesh with a hull, turret and barrel, filling each unit's footprint and pointing along its heading), buildings as boxes, Supply fields as flat tiles, and plain team colours so sides can be told apart. No art.
 
 **Sandbox test units.** These values exist only for testing and are not balance numbers:
-- **Small cube:** half a cell wide, speed 4 cells per second, health 100, one weapon: 10 damage per shot, 1 shot per second, range 5 cells.
-- **Large cube:** 1 cell wide, speed 2.5 cells per second, health 300, the same weapon.
+- **Small tank:** half a cell wide, speed 4 cells per second, health 100, one weapon: 10 damage per shot, 1 shot per second, range 5 cells.
+- **Large tank:** 1 cell wide, speed 2.5 cells per second, health 300, the same weapon.
 
-Every system below must keep working with the sandbox spawn tool (place any number of cubes for either side) and an on-screen counter for units and frame rate. "Performance target" means the vision's target: 2,000 active units at 60 fps at 1080p on the reference PC, measured as settled by vision.md open question 3.
+Every system below must keep working with the sandbox spawn tool (place any number of small or large units for either side) and an on-screen counter for units and frame rate. "Performance target" means the vision's target: 2,000 active units at 60 fps at 1080p on the reference PC, measured as settled by vision.md open question 3.
 
 Suggested build order. Each system is one or more later Issues.
 
@@ -348,16 +348,16 @@ Suggested build order. Each system is one or more later Issues.
 ### S2. Moving a group
 
 1. A move order on ground with units selected (the move click of the active controls option, see [controls.md](controls.md)) shows a marker there, and every selected unit starts moving within 0.1 s.
-2. 100 small cubes sent to an open point stop with no two overlapping, packed into an area no larger than twice their combined footprint.
-3. A mixed group (50 small, 10 large cubes) sent 50 cells keeps together: the first and last units arrive within 3 s of each other.
+2. 100 small units sent to an open point stop with no two overlapping, packed into an area no larger than twice their combined footprint.
+3. A mixed group (50 small, 10 large units) sent 50 cells keeps together: the first and last units arrive within 3 s of each other.
 4. Two seconds after arriving, no unit is still moving (no jitter or sliding).
-5. 2,000 small cubes ordered across the map at once all arrive with no overlaps, and the game holds the performance target throughout.
+5. 2,000 small units ordered across the map at once all arrive with no overlaps, and the game holds the performance target throughout.
 
 ### S3. Paths around obstacles and through crowds
 
 1. A unit sent past box obstacles never passes through them, and its route is no more than 1.25 times the shortest possible route.
 2. A unit sent into an area it can't reach (inside a closed ring of boxes) moves to the nearest reachable point and stops, with no endless retrying.
-3. 200 small cubes sent through a 3-cell-wide gap all get through, and none stands still for more than 5 s while it still has somewhere to go.
+3. 200 small units sent through a 3-cell-wide gap all get through, and none stands still for more than 5 s while it still has somewhere to go.
 4. Two groups of 100 sent through each other in opposite directions on open ground both reach their targets, and no unit stands still for more than 5 s on the way.
 5. Idle friendly units in a moving unit's way step aside to let it pass, without a new order, and stay within 2 cells of where they were.
 
@@ -374,13 +374,13 @@ Suggested build order. Each system is one or more later Issues.
 2. Attack-target: the unit moves into range of the chosen enemy, attacks only it until it is destroyed, then goes back to auto-targeting.
 3. Attack-move: units head for the point, fight every enemy they meet, and carry on to the point once no enemy is in range.
 4. With a test damage table of 100%, 50% and 25% for three armour classes, a 10-damage shot deals exactly 10, 5 and 2.5 damage.
-5. A fight of 1,000 small cubes against 1,000 runs to the end with the game holding the performance target.
+5. A fight of 1,000 small units against 1,000 runs to the end with the game holding the performance target.
 
 ### S6. Unit behaviour
 
 1. In a 20 against 20 fight, a unit changes target only when its target dies or leaves range, or when it switches to an enemy that is attacking it.
 2. An idle unit that auto-engages chases at most 8 cells from where it stood, then returns there.
-3. With retreat allowed, a group of 10 small cubes meeting 40 pulls back towards its rally point before it loses half its units. Under hold position or a direct attack-target order, it doesn't retreat.
+3. With retreat allowed, a group of 10 small units meeting 40 pulls back towards its rally point before it loses half its units. Under hold position or a direct attack-target order, it doesn't retreat.
 4. A group of 30 on attack-move meets enemies with its units spread over no more than twice the depth it had when it set off.
 
 ### S7. Vision and fog of war
