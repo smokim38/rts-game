@@ -25,6 +25,14 @@ namespace Northwatch.EditorTools
         public const string MovementSettingsPath = "Assets/Data/MovementSettings.asset";
         public const string ObstaclesPath = "Assets/Data/SandboxObstacles.asset";
 
+        public static void BuildTankPresentation()
+        {
+            TankMeshBuilder.Build();
+            GameObject driver = PrefabRoot(DriverPath, "MatchDriver");
+            ComponentOrAdd<MatchDriver>(driver).ConfigureVehicle(AssetDatabase.LoadAssetAtPath<Mesh>(TankMeshBuilder.MeshPath));
+            SavePrefab(driver, DriverPath);
+        }
+
         public static void BuildMovement()
         {
             EnsureFolder("Data");
@@ -95,6 +103,7 @@ namespace Northwatch.EditorTools
         private static void BuildAssets()
         {
             BuildMovement();
+            BuildTankPresentation();
             EnsureFolder("Prefabs");
             EnsureFolder("Materials");
             Material first = SideMaterial("FirstSide", new Color(0.1f, 0.35f, 0.95f));
