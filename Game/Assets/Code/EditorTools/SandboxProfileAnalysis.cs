@@ -16,10 +16,16 @@ namespace Northwatch.EditorTools
             int index = Array.IndexOf(args, "-sandbox-capture");
             if (index < 0 || index + 1 >= args.Length)
                 throw new ArgumentException("Pass -sandbox-capture Logs/NAME.raw.");
-            string path = Path.GetFullPath(args[index + 1]);
+            string path = CheckCapturePath(args[index + 1]);
+            AnalyzeCaptures(new[] { path }, path + "-summary.txt");
+        }
+
+        private static string CheckCapturePath(string capture)
+        {
+            string path = Path.GetFullPath(capture);
             if (!path.StartsWith(Path.GetFullPath("Logs") + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
                 throw new ArgumentException("Capture must be inside this project's Logs folder.");
-            AnalyzeCaptures(new[] { path }, path + "-summary.txt");
+            return path;
         }
 
         public static void AnalyzeSelection()

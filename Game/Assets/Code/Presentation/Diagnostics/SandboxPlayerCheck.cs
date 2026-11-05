@@ -72,8 +72,7 @@ namespace Northwatch.Presentation.Diagnostics
             check.captureTarget = new RenderTexture(1920, 1080, 24);
             if (!check.captureTarget.Create()) throw new System.InvalidOperationException("Could not create validation render target.");
             check.captureCamera.aspect = 16f / 9f;
-            check.renderRequest = new UnityEngine.Rendering.Universal.UniversalRenderPipeline.SingleCameraRequest
-                { destination = check.captureTarget };
+            check.renderRequest = CreateRenderRequest(check.captureTarget);
             QueueUnits(check.driver.Simulation, count, check.selectionCheck);
         }
 
@@ -299,7 +298,7 @@ namespace Northwatch.Presentation.Diagnostics
             // Batch Players need an explicit pass. MatchDriver has now submitted this frame's vehicles.
             try
             {
-                UnityEngine.Rendering.RenderPipeline.SubmitRenderRequest(captureCamera, renderRequest);
+                RenderCamera(captureCamera, renderRequest);
                 CaptureFrame();
             }
             catch (System.Exception error) { FailSelection(error.Message); }
@@ -328,12 +327,57 @@ namespace Northwatch.Presentation.Diagnostics
             System.IO.File.WriteAllBytes(path, image.EncodeToPNG());
             if (!ImageValid(image, imageFirst, imageSecond, imageSelected))
                 throw new System.InvalidOperationException("Sandbox image has no vehicles in the expected colours: " + path);
+            if (unitCount > 0) CheckRaisedVehiclePixels(image, path);
             savedImages++;
         }
+
+        private void CheckRaisedVehiclePixels(Texture2D image, string path)
+        {
+            try
+            {
+                // Acknowledgement pads reach Y=.0225. Clip below Y=.05 so their yellow
+                // pixels cannot substitute for the vehicle bodies in this same frame.
+                captureCamera.projectionMatrix = VehicleProjection(captureCamera);
+                RenderCamera(captureCamera, renderRequest);
+                RenderTexture.active = captureTarget;
+                image.ReadPixels(new Rect(0, 0, image.width, image.height), 0, 0);
+                image.Apply();
+                System.IO.File.WriteAllBytes(path + "-vehicles.png", image.EncodeToPNG());
+                if (!VehicleColoursValid(image, imageFirst, imageSecond, imageSelected))
+                    throw new System.InvalidOperationException("Sandbox image has no raised vehicles in the expected colours: " + path);
+            }
+            // Assigning the old matrix would leave automatic zoom updates disabled.
+            finally { captureCamera.ResetProjectionMatrix(); }
+        }
+
+        private static Matrix4x4 VehicleProjection(Camera camera)
+        {
+            Matrix4x4 view = camera.worldToCameraMatrix;
+            Vector3 point = view.MultiplyPoint(new Vector3(0, .05f, 0));
+            Vector3 normal = view.MultiplyVector(Vector3.up).normalized;
+            Vector4 plane = new Vector4(normal.x, normal.y, normal.z, -Vector3.Dot(point, normal));
+            Matrix4x4 projection = camera.projectionMatrix;
+            // Map world heights .05..1000 to clip depth -1..1. Unlike the usual
+            // oblique far-corner formula, this keeps the upper half-space even
+            // when every far-plane corner of the downward-looking camera is underground.
+            projection.SetRow(2, plane * (2f / 999.95f) - projection.GetRow(3));
+            return projection;
+        }
+
+        private static UnityEngine.Rendering.Universal.UniversalRenderPipeline.SingleCameraRequest CreateRenderRequest(RenderTexture target)
+            => new UnityEngine.Rendering.Universal.UniversalRenderPipeline.SingleCameraRequest { destination = target };
+
+        private static void RenderCamera(Camera camera, UnityEngine.Rendering.Universal.UniversalRenderPipeline.SingleCameraRequest request)
+            => UnityEngine.Rendering.RenderPipeline.SubmitRenderRequest(camera, request);
 
         private static bool ImageValid(Texture2D image, int first, int second, int selected)
         {
             if (image.GetPixel(image.width / 2, image.height / 2).grayscale < .2f) return false;
+            return VehicleColoursValid(image, first, second, selected);
+        }
+
+        private static bool VehicleColoursValid(Texture2D image, int first, int second, int selected)
+        {
             int blue = 0, red = 0, yellow = 0;
             Color32[] pixels = image.GetPixels32();
             foreach (Color32 colour in pixels)

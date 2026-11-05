@@ -95,6 +95,23 @@ namespace Northwatch.Tests.EditMode.EditorTools
             Assert.That(error.InnerException, Is.TypeOf<System.InvalidOperationException>());
         }
 
+        [TestCase("Logs/check.raw", true)]
+        [TestCase("Logs/nested/check.raw", true)]
+        [TestCase("Logs/../check.raw", false)]
+        [TestCase("Logs-other/check.raw", false)]
+        [TestCase("Logs", false)]
+        [TestCase("Assets/check.raw", false)]
+        public void ProfileCheckOnlyReadsCapturesInsideProjectLogs(string capture, bool valid)
+        {
+            MethodInfo check = typeof(SandboxProfileAnalysis).GetMethod("CheckCapturePath", BindingFlags.NonPublic | BindingFlags.Static);
+            if (valid) Assert.That(check.Invoke(null, new object[] { capture }), Is.EqualTo(Path.GetFullPath(capture)));
+            else
+            {
+                var error = Assert.Throws<TargetInvocationException>(() => check.Invoke(null, new object[] { capture }));
+                Assert.That(error.InnerException, Is.TypeOf<System.ArgumentException>());
+            }
+        }
+
         [TestCase(0, false, 0, 0)]
         [TestCase(2000, false, 1000, 1000)]
         [TestCase(2000, true, 2000, 0)]
@@ -150,6 +167,58 @@ namespace Northwatch.Tests.EditMode.EditorTools
 
         private static object InvokePlayerCheck(string method, params object[] arguments)
             => typeof(SandboxPlayerCheck).GetMethod(method, BindingFlags.NonPublic | BindingFlags.Static).Invoke(null, arguments);
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void PlayerImageRejectsYellowPadsWithoutRaisedVehicles(bool vehicles)
+        {
+            var cameraObject = new GameObject("Vehicle image check camera");
+            var pad = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            var vehicle = new GameObject("Vehicle image check tank", typeof(MeshFilter), typeof(MeshRenderer));
+            var target = new RenderTexture(256, 256, 24);
+            var image = new Texture2D(256, 256, TextureFormat.RGB24, false);
+            var material = new Material(Shader.Find("Universal Render Pipeline/Unlit"));
+            RenderTexture previous = RenderTexture.active;
+            try
+            {
+                material.SetColor("_BaseColor", new Color(1, .85f, .05f));
+                pad.layer = vehicle.layer = 31;
+                pad.transform.position = new Vector3(0, .015f, 0);
+                pad.transform.localScale = new Vector3(1.3f, .015f, 1.3f);
+                pad.GetComponent<MeshRenderer>().sharedMaterial = material;
+                vehicle.GetComponent<MeshFilter>().sharedMesh = AssetDatabase.LoadAssetAtPath<Mesh>(TankMeshBuilder.MeshPath);
+                vehicle.GetComponent<MeshRenderer>().sharedMaterial = material;
+                vehicle.transform.position = Vector3.up * .5f;
+                vehicle.SetActive(vehicles);
+                Camera camera = cameraObject.AddComponent<Camera>();
+                camera.enabled = false;
+                camera.orthographic = true;
+                camera.orthographicSize = 2;
+                camera.transform.position = new Vector3(0, 5, -5);
+                camera.transform.LookAt(Vector3.zero);
+                camera.cullingMask = 1 << 31;
+                camera.clearFlags = CameraClearFlags.SolidColor;
+                camera.backgroundColor = Color.grey;
+                target.Create();
+                object request = InvokePlayerCheck("CreateRenderRequest", target);
+                for (int pass = 0; pass < 2; pass++)
+                {
+                    if (pass == 1) camera.projectionMatrix = (Matrix4x4)InvokePlayerCheck("VehicleProjection", camera);
+                    InvokePlayerCheck("RenderCamera", camera, request);
+                    RenderTexture.active = target;
+                    image.ReadPixels(new Rect(0, 0, 256, 256), 0, 0); image.Apply();
+                    Assert.That(InvokePlayerCheck("VehicleColoursValid", image, 0, 0, 2000),
+                        Is.EqualTo(pass == 0 || vehicles), "Only geometry above the pads may count as a vehicle.");
+                }
+            }
+            finally
+            {
+                RenderTexture.active = previous;
+                target.Release();
+                Object.DestroyImmediate(cameraObject); Object.DestroyImmediate(pad); Object.DestroyImmediate(vehicle);
+                Object.DestroyImmediate(target); Object.DestroyImmediate(image); Object.DestroyImmediate(material);
+            }
+        }
 
         [TestCase("\n", false, TestName = "BuilderPreservesLfCheckoutOnRepeatRun")]
         [TestCase("\r\n", false, TestName = "BuilderPreservesCrLfCheckoutOnRepeatRun")]
