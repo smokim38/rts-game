@@ -1,7 +1,5 @@
 # Dense Rigid-Vehicle Flow Through Corners
 
-Nov 4, 2026 · @Moe
-
 ## Bottom line
 
 No published method guarantees progress for exactly your setting: rigid squares, no sliding, a shared field, and decisions from start-of-tick poses only. Every guarantee I found adds one thing you lack — discrete slots on a graph, a per-vehicle path, or a single agreed order of passage. Each of those can be built locally and deterministically at a corner, so the honest answer is "nothing fits off the shelf, but three pieces adapt cheaply."
