@@ -263,14 +263,14 @@ These aren't designed yet. They are settled together with combat (core-loop S5),
 
 ## Checks
 
-Each check uses the grey-box sandbox (core-loop) with its spawn tool and on-screen frame counter. "Cubes" are the sandbox test units. Unless a check says otherwise, the marker settings are the defaults (green pulsing ring).
+Each check uses the grey-box sandbox (core-loop) with its spawn tool and on-screen frame counter. Small units and large units are the sandbox test units; [core-loop.md](core-loop.md#grey-box-sandbox) says what they are. Unless a check says otherwise, the marker settings are the defaults (green pulsing ring).
 
 ### C1. Classic and Modern (Now)
 
-1. **Classic, left button.** With 5 own small cubes selected: a left press and release on ground that moves the pointer 6 pixels gives a move order with a marker. A left press that moves 7 pixels or more draws a box, selects the own units inside it, and gives no move order. With nothing selected, a left-click on ground shows no marker and nothing moves.
+1. **Classic, left button.** With 5 own small units selected: a left press and release on ground that moves the pointer 6 pixels gives a move order with a marker. A left press that moves 7 pixels or more draws a box, selects the own units inside it, and gives no move order. With nothing selected, a left-click on ground shows no marker and nothing moves.
 2. **Classic, right button and Esc.** With units selected: a right press and release that moves the pointer 6 pixels or less clears the selection, and the camera doesn't move. A right press that moves more than 6 pixels pans the camera, and after release the selection is unchanged. With units selected, Esc clears the selection, and the camera doesn't move.
 3. **Modern.** A right-click on ground moves the selected units with a marker. A left-click on empty ground clears the selection, and so does Esc. A middle-drag pans. A right-drag of more than 6 pixels gives no order.
-4. **Double-click (both options).** With 10 own small cubes and 3 own large cubes on screen, 5 own small cubes off screen and enemy small cubes on screen: a double-left-click on an own small cube selects exactly the 10 on-screen own small cubes. Two clicks 0.4 s apart act as two single clicks.
+4. **Double-click (both options).** With 10 own small units and 3 own large units on screen, 5 own small units off screen and enemy small units on screen: a double-left-click on an own small unit selects exactly the 10 on-screen own small units. Two clicks 0.4 s apart act as two single clicks.
 5. **F10.** In Classic, Modern and Custom, F10 opens the menu and the match is paused: no unit moves while it is open.
 
 ### C2. Settings panel (Now)
@@ -291,11 +291,11 @@ Each check uses the grey-box sandbox (core-loop) with its spawn tool and on-scre
 
 ### C4. Selection extras (Now)
 
-1. **T.** With one own small cube selected, 10 own small cubes on screen (including it), 5 off screen, 3 own large cubes on screen and enemy small cubes on screen: T selects exactly the 10. A double-tap of T selects exactly the 15 own small cubes.
+1. **T.** With one own small unit selected, 10 own small units on screen (including it), 5 off screen, 3 own large units on screen and enemy small units on screen: T selects exactly the 10. A double-tap of T selects exactly the 15 own small units.
 2. **Shift+number.** With group 3 holding 4 units and 2 other units selected: Shift+3 leaves the selection as it was; pressing 3 then selects all 6. A unit added to group 3 that is also in group 4 stays in group 4.
-3. **Q.** With 10 own small cubes and 2 Collectors on screen (before core-loop S8 exists, 2 cubes marked as support), and 5 own small cubes off screen: Q selects exactly the 10 cubes. A double-tap of Q selects exactly the 15 cubes and never a Collector.
+3. **Q.** With 10 own small units and 2 Collectors on screen (before core-loop S8 exists, 2 units marked as support), and 5 own small units off screen: Q selects exactly the 10 units. A double-tap of Q selects exactly the 15 units and never a Collector.
 4. **No limit.** Box-selecting 2,000 own units selects all 2,000. Ctrl+1, then clearing the selection with the active option's deselect input, then 1, selects all 2,000 again.
-5. **Speed.** With 2,000 own small cubes on the map: a double-tap of T (with one cube selected) and a double-tap of Q each select all 2,000 on the next frame, and that frame takes no longer than **33 ms**. Q with as many of them on screen as fit at the farthest zoom meets the same limit.
+5. **Speed.** With 2,000 own small units on the map: a double-tap of T (with one unit selected) and a double-tap of Q each select all 2,000 on the next frame, and that frame takes no longer than **33 ms**. Q with as many of them on screen as fit at the farthest zoom meets the same limit.
 
 ### C5. Marker settings (Now, with the settings panel)
 
@@ -307,14 +307,14 @@ Each check uses the grey-box sandbox (core-loop) with its spawn tool and on-scre
 
 ### C6. Plain marker (Now)
 
-1. **One at a time.** With 5 own small cubes selected, two move orders to points 10 cells apart: after the second order, only the marker at the second point shows.
-2. **Goes on arrival.** 5 cubes sent 20 cells away: the marker shows while any of them is still on the way, and goes away on the frame the last one arrives.
-3. **No units left to go.** 5 cubes sent 20 cells: Stop with 3 of them selected leaves the marker; Hold position with the other 2 selected removes it. In a second run, destroying all 5 on the way removes the marker on the frame the last one is destroyed.
+1. **One at a time.** With 5 own small units selected, two move orders to points 10 cells apart: after the second order, only the marker at the second point shows.
+2. **Goes on arrival.** 5 units sent 20 cells away: the marker shows while any of them is still on the way, and goes away on the frame the last one arrives.
+3. **No units left to go.** 5 units sent 20 cells: Stop with 3 of them selected leaves the marker; Hold position with the other 2 selected removes it. In a second run, destroying all 5 on the way removes the marker on the frame the last one is destroyed.
 
 ### C7. Numbered markers (Later: after movement Issue 2)
 
-1. **Number shown.** Group 3 holds 10 own small cubes. Pressing 3 and giving a move order shows a marker with "3" in its middle, at least 16 pixels tall at both the nearest and the farthest zoom. Box-selecting exactly those 10 and ordering also shows "3". Removing one of them with Shift+click and then ordering shows a plain marker.
-2. **Arrival and losses.** Group 3 (10 cubes) sent 30 cells: the marker shows while any unit is still on the way. With 2 of them destroyed on the way, the marker goes away on the frame the 8th surviving unit arrives. In a second run, destroying all 10 removes it.
+1. **Number shown.** Group 3 holds 10 own small units. Pressing 3 and giving a move order shows a marker with "3" in its middle, at least 16 pixels tall at both the nearest and the farthest zoom. Box-selecting exactly those 10 and ordering also shows "3". Removing one of them with Shift+click and then ordering shows a plain marker.
+2. **Arrival and losses.** Group 3 (10 units) sent 30 cells: the marker shows while any unit is still on the way. With 2 of them destroyed on the way, the marker goes away on the frame the 8th surviving unit arrives. In a second run, destroying all 10 removes it.
 3. **New orders and re-saving.** While marker 3 shows: a new move with group 3 leaves exactly one marker 3, at the new point. Stop with group 3 selected removes marker 3. A plain move of 4 of the 10 leaves marker 3 showing until the other 6 arrive. Ctrl+3 with any selection removes marker 3 at once.
 4. **Shared unit.** A unit is in groups 1 and 2. Group 1 is sent east, then group 2 is sent west: the shared unit goes west, and marker 1 goes away when the other units of group 1 arrive.
 5. **Nine plus one.** Groups 1 to 9, each sent with its number key to its own point, show 9 numbered markers. A plain order then adds a 10th marker. The next plain order replaces only the plain marker, and all 9 numbered markers stay. With shape none, the same steps draw no marker.
@@ -332,7 +332,7 @@ Each check uses the grey-box sandbox (core-loop) with its spawn tool and on-scre
 1. **One arrow.** Marker 4 lies off screen to the right: one arrow shows at the right edge, pointing toward it, with "4" beside it, fully on screen and within 48 pixels of the edge. Panning until the marker's centre is in view removes the arrow on that frame.
 2. **Plain marker.** A plain marker off screen gets no arrow.
 3. **No overlap.** Markers 1 and 2 lie off screen in nearly the same direction: two arrows show, and they don't overlap. A click on an arrow acts on the map under it.
-4. **Scale.** 2,000 own small cubes in groups 1 to 8 (222 each) and group 9 (224). Each group is sent with its number key to its own point, all chosen so they are off screen. While the units move, 9 numbered markers are active, and before Space is pressed 9 arrows show with numbers 1 to 9 and none overlap. For 30 s, including 9 presses of Space, no frame takes longer than **33 ms** (core-loop S1.5), and the Profiler shows no memory allocated per frame by markers, arrows or marker counts.
+4. **Scale.** 2,000 own small units in groups 1 to 8 (222 each) and group 9 (224). Each group is sent with its number key to its own point, all chosen so they are off screen. While the units move, 9 numbered markers are active, and before Space is pressed 9 arrows show with numbers 1 to 9 and none overlap. For 30 s, including 9 presses of Space, no frame takes longer than **33 ms** (core-loop S1.5), and the Profiler shows no memory allocated per frame by markers, arrows or marker counts.
 5. **Shape none.** With shape none and marker 6 off screen, its arrow shows in the chosen colour, and Space still centres on marker 6.
 
 ## Open questions for the owner
