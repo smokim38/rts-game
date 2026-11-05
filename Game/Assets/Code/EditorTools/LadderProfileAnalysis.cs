@@ -55,6 +55,7 @@ namespace Northwatch.EditorTools
                 anyAllocation |= allocated != 0;
             }
             File.WriteAllText(summaryPath, output.ToString());
+            capture.Complete();
             if (anyAllocation) throw new InvalidOperationException("Ladder simulation/drawing allocated managed memory.");
         }
     }
@@ -63,9 +64,12 @@ namespace Northwatch.EditorTools
     // applies. Reject oversized captures before calling it; never sample fewer frames.
     internal sealed class ProfileCaptureSession : IDisposable
     {
-        private const long MaximumCaptureBytes = 128 * 1024 * 1024;
+        // Uncapped three-second sandbox captures reach 172 MB on the reference PC.
+        // Keep those intact while refusing multi-GB logs before native expansion.
+        private const long MaximumCaptureBytes = 192 * 1024 * 1024;
         private const ulong MaximumPeakBytes = 16_000_000_000;
         private readonly string path;
+        private bool completed;
 
         [StructLayout(LayoutKind.Sequential)]
         private struct MemoryCounters
@@ -94,13 +98,23 @@ namespace Northwatch.EditorTools
             catch { ProfilerDriver.ClearAllFrames(); throw; }
         }
 
+        internal void Complete()
+        {
+            MemoryCounters counters = ReportMemory("after_analysis");
+            completed = true;
+            if (counters.PeakWorkingSet.ToUInt64() >= MaximumPeakBytes || counters.PeakPagefile.ToUInt64() >= MaximumPeakBytes)
+                throw new InvalidOperationException("Profiler analysis exceeded the 16 GB process memory budget.");
+        }
+
         public void Dispose()
         {
-            try { ReportMemory("after_analysis"); }
+            // Cleanup must preserve the analysis error, even if its memory report fails.
+            try { if (!completed) ReportMemory("analysis_incomplete"); }
+            catch (Exception error) { UnityEngine.Debug.Log("PROFILE_MEMORY report failed: " + error.Message); }
             finally { ProfilerDriver.ClearAllFrames(); }
         }
 
-        private void ReportMemory(string stage)
+        private MemoryCounters ReportMemory(string stage)
         {
             using var process = System.Diagnostics.Process.GetCurrentProcess();
             if (!GetProcessMemoryInfo(process.Handle, out MemoryCounters counters, (uint)Marshal.SizeOf<MemoryCounters>()) ||
@@ -109,8 +123,9 @@ namespace Northwatch.EditorTools
             string result = $"stage={stage}; capture_bytes={new FileInfo(path).Length}; peak_working_set_bytes={counters.PeakWorkingSet}; peak_committed_bytes={counters.PeakPagefile}";
             File.AppendAllText(path + "-memory.txt", result + Environment.NewLine);
             UnityEngine.Debug.Log("PROFILE_MEMORY " + result);
-            if (counters.PeakWorkingSet.ToUInt64() >= MaximumPeakBytes || counters.PeakPagefile.ToUInt64() >= MaximumPeakBytes)
-                throw new InvalidOperationException("Profiler analysis exceeded the 16 GB process memory budget.");
+            // These are process-lifetime high-water marks, including earlier captures.
+            // Only Complete enforces them; before_load is context, not analysis work.
+            return counters;
         }
     }
 }

@@ -116,9 +116,6 @@ namespace Northwatch.EditorTools
             }
         }
 
-        public static void BuildDevelopmentWindows()
-            => BuildPlayer("PerformanceLadderDevelopment", BuildOptions.Development);
-
         private static void BuildPlayer(string folder, BuildOptions options)
         {
             if (PlayerSettings.GetScriptingBackend(UnityEditor.Build.NamedBuildTarget.Standalone) != ScriptingImplementation.Mono2x)

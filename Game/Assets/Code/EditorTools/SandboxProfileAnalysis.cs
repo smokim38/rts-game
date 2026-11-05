@@ -58,6 +58,7 @@ namespace Northwatch.EditorTools
                     output.AppendLine($"capture={path}; scope={scope}; samples={samples}; average_ms={total / samples:F6}; max_ms={maximum:F6}; GC_alloc_bytes={bytes}");
                     allocated |= bytes != 0;
                 }
+                capture.Complete();
             }
             File.WriteAllText(summaryPath, output.ToString());
             Debug.Log(output.ToString());
@@ -120,6 +121,7 @@ namespace Northwatch.EditorTools
                     foreach (var site in sites) output.AppendLine($"  GC_site={site.Key}; bytes={site.Value}");
                     anyAllocation |= allocated != 0;
                 }
+                capture.Complete();
             }
             File.WriteAllText(summaryPath, output.ToString());
             Debug.Log(output.ToString());

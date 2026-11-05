@@ -25,7 +25,7 @@ namespace Northwatch.Tests.EditMode.EditorTools
             const string path = "Logs/230-oversized-test.raw";
             try
             {
-                using (var file = File.Create(path)) file.SetLength(128L * 1024 * 1024 + 1);
+                using (var file = File.Create(path)) file.SetLength(192L * 1024 * 1024 + 1);
                 var error = Assert.Throws<InvalidOperationException>(() => MovementCoreProfileBuilder.AnalyzeCaptureFile(path));
                 StringAssert.Contains("no frames were analyzed", error.Message);
                 Assert.That(File.Exists(path + "-allocations.txt"), Is.False);
@@ -40,6 +40,7 @@ namespace Northwatch.Tests.EditMode.EditorTools
             bool wasEnabled = UnityEngine.Profiling.Profiler.enabled;
             bool wasBinary = UnityEngine.Profiling.Profiler.enableBinaryLog;
             bool wasEditor = ProfilerDriver.profileEditor;
+            bool wasDriverEnabled = ProfilerDriver.enabled;
             string previousLog = UnityEngine.Profiling.Profiler.logFile;
             try
             {
@@ -103,6 +104,20 @@ namespace Northwatch.Tests.EditMode.EditorTools
                         new object[] { new[] { mode.ToString() }, "Logs/230-allocation-test-", sandboxSummary }));
                     Assert.That(failure.InnerException, Is.TypeOf<InvalidOperationException>());
                     StringAssert.Contains("GC_alloc_bytes=" + ladderBytes, File.ReadAllText(sandboxSummary).Split('\n')[0]);
+                    if (mode == 0)
+                    {
+                        var session = typeof(LadderProfileAnalysis).Assembly.GetType("Northwatch.EditorTools.ProfileCaptureSession");
+                        var original = Assert.Throws<InvalidOperationException>(() =>
+                        {
+                            using var capture = (IDisposable)Activator.CreateInstance(session,
+                                BindingFlags.Instance | BindingFlags.NonPublic, null, new object[] { path }, null);
+                            File.Delete(path + "-memory.txt");
+                            Directory.CreateDirectory(path + "-memory.txt");
+                            throw new InvalidOperationException("Original analysis failure");
+                        });
+                        Assert.That(original.Message, Is.EqualTo("Original analysis failure"));
+                        Assert.That(ProfilerDriver.lastFrameIndex, Is.LessThan(0));
+                    }
                 }
             }
             finally
@@ -112,7 +127,14 @@ namespace Northwatch.Tests.EditMode.EditorTools
                 UnityEngine.Profiling.Profiler.logFile = previousLog;
                 ProfilerDriver.profileEditor = wasEditor;
                 ProfilerDriver.ClearAllFrames();
+                ProfilerDriver.enabled = wasDriverEnabled;
                 UnityEngine.Profiling.Profiler.enabled = wasEnabled;
+                for (int mode = 0; mode < 3; mode++)
+                {
+                    string path = "Logs/230-allocation-test-" + mode + ".raw";
+                    if (Directory.Exists(path + "-memory.txt")) Directory.Delete(path + "-memory.txt");
+                    foreach (string file in Directory.GetFiles("Logs", Path.GetFileName(path) + "*")) File.Delete(file);
+                }
             }
         }
 

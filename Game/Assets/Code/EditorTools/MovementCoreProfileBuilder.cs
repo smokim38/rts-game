@@ -88,6 +88,7 @@ namespace Northwatch.EditorTools
             output.AppendLine($"loaded_frames={frames}; simulation_bytes={simulationBytes}; drawing_bytes={drawingBytes}");
             foreach (var site in sites) output.AppendLine($"bytes={site.Value}; site={site.Key}");
             File.WriteAllText(path + "-allocations.txt", output.ToString());
+            capture.Complete();
             if (frames < 200 || simulationBytes != 0 || drawingBytes != 0)
                 throw new InvalidOperationException("Movement capture has insufficient frames or hot-path allocation.");
         }
