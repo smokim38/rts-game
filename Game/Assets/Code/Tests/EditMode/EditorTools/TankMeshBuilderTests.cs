@@ -80,7 +80,22 @@ namespace Northwatch.Tests.EditMode.EditorTools
                 Assert.That(Mathf.Abs(Vector3.Dot(world, sideways)), Is.LessThanOrEqualTo(half + 1e-6f));
                 Assert.That(world.y, Is.GreaterThanOrEqualTo(-1e-6f));
             }
-            Vector3 barrel = matrix.MultiplyVector(new Vector3(.5f - .12f, 0, 0)).normalized;
+            // The barrel is the narrow raised part. Read its endpoints from the mesh so
+            // reversing the geometry fails even when the draw matrix still faces +X.
+            var barrelBounds = new Bounds();
+            int barrelVertices = 0;
+            foreach (Vector3 vertex in vertices)
+            {
+                if (vertex.y <= 0 || Mathf.Abs(vertex.z) >= .1f) continue;
+                if (barrelVertices++ == 0) barrelBounds = new Bounds(vertex, Vector3.zero);
+                else barrelBounds.Encapsulate(vertex);
+            }
+            Assert.That(barrelVertices, Is.GreaterThanOrEqualTo(8), "Mesh must contain a raised barrel");
+            Vector3 root = barrelBounds.center, muzzle = barrelBounds.center;
+            bool pointsRight = Mathf.Abs(barrelBounds.max.x) > Mathf.Abs(barrelBounds.min.x);
+            root.x = pointsRight ? barrelBounds.min.x : barrelBounds.max.x;
+            muzzle.x = pointsRight ? barrelBounds.max.x : barrelBounds.min.x;
+            Vector3 barrel = matrix.MultiplyVector(muzzle - root).normalized;
             Assert.That(Vector3.Distance(barrel, forward), Is.LessThan(1e-6f));
             Assert.That(matrix.MultiplyVector(Vector3.right).magnitude, Is.EqualTo(half * 2).Within(1e-6f));
         }
@@ -135,14 +150,12 @@ namespace Northwatch.Tests.EditMode.EditorTools
             byte[] bytes = stream.ToArray();
             Assert.That((Vector3)simulation.State.Positions[0], Is.Not.EqualTo(initial), "Scenario exercises movement");
             using var hash = SHA256.Create();
-            // Captured with the cube renderer at c7cd0824cd520a80a5c9bb2726d6a0fb45b6e286.
+            // Issue #224 presentation-only baseline, captured with the cube renderer at
+            // c7cd0824cd520a80a5c9bb2726d6a0fb45b6e286. Re-pin this hash when an Issue
+            // intentionally changes simulation behavior, defaults, state fields or this scenario.
             Assert.That(BitConverter.ToString(hash.ComputeHash(bytes)).Replace("-", ""),
-                Is.EqualTo("FD42D6BE3F76ECB56AFE7A21DB980E33DA825C065A45547AB8D1744583E4AD8E"));
-            if (Array.IndexOf(Environment.GetCommandLineArgs(), "-tank-state-after") >= 0)
-            {
-                Assert.That(bytes, Is.EqualTo(File.ReadAllBytes("Logs/issue-224-simulation-before.bin")));
-                File.WriteAllBytes("Logs/issue-224-simulation-after.bin", bytes);
-            }
+                Is.EqualTo("FD42D6BE3F76ECB56AFE7A21DB980E33DA825C065A45547AB8D1744583E4AD8E"),
+                "Issue #224 baseline changed; intentional simulation changes must re-pin the documented hash.");
         }
 
         private static void WriteArray<T>(BinaryWriter writer, NativeArray<T> values) where T : struct
