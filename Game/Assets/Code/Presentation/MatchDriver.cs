@@ -11,6 +11,7 @@ namespace Northwatch.Presentation
         // Unity 6.3's default object-to-world and world-to-object data allows 511 instances.
         public const int InstancesPerDraw = 511;
         [SerializeField] private Mesh cube;
+        [SerializeField] private Mesh vehicle;
         [SerializeField] private Material firstSide;
         [SerializeField] private Material secondSide;
         [SerializeField] private Material selectedSide;
@@ -41,6 +42,7 @@ namespace Northwatch.Presentation
         }
 
         public void ConfigureSelection(Material selected) => selectedSide = selected;
+        public void ConfigureVehicle(Mesh mesh) => vehicle = mesh;
         public void ConfigureMovement(MovementSettings settings) => movementSettings = settings;
         public void ConfigureObstacles(SandboxObstacles layout) => obstacles = layout;
 
@@ -101,10 +103,10 @@ namespace Northwatch.Presentation
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
                 routeOverlay?.Draw(simulation);
 #endif
-                Draw(simulation.DrawCount(Side.First) - simulation.SelectedCount, 0, ref firstParameters);
-                Draw(simulation.DrawCount(Side.Second), UnitSimulation.Capacity, ref secondParameters);
-                Draw(simulation.SelectedCount, UnitSimulation.Capacity * 2, ref selectedParameters);
-                Draw(simulation.AcknowledgementCount, UnitSimulation.Capacity * 3, ref selectedParameters);
+                Draw(vehicle, simulation.DrawCount(Side.First) - simulation.SelectedCount, 0, ref firstParameters);
+                Draw(vehicle, simulation.DrawCount(Side.Second), UnitSimulation.Capacity, ref secondParameters);
+                Draw(vehicle, simulation.SelectedCount, UnitSimulation.Capacity * 2, ref selectedParameters);
+                Draw(cube, simulation.AcknowledgementCount, UnitSimulation.Capacity * 3, ref selectedParameters);
             }
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
             using (Diagnostics.MovementCoreProfile.TraceAllocations(false))
@@ -119,11 +121,11 @@ namespace Northwatch.Presentation
             }
         }
 
-        private void Draw(int count, int offset, ref RenderParams parameters)
+        private void Draw(Mesh mesh, int count, int offset, ref RenderParams parameters)
         {
             var matrices = simulation.DrawMatrices;
             for (int start = 0; start < count; start += InstancesPerDraw)
-                Graphics.RenderMeshInstanced(parameters, cube, 0, matrices,
+                Graphics.RenderMeshInstanced(parameters, mesh, 0, matrices,
                     Mathf.Min(InstancesPerDraw, count - start), offset + start);
         }
 
