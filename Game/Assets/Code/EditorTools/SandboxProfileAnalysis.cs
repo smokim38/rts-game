@@ -30,7 +30,7 @@ namespace Northwatch.EditorTools
             bool allocated = false;
             foreach (string path in captures)
             {
-                if (!ProfilerDriver.LoadProfile(path, false)) throw new InvalidOperationException("Could not load " + path);
+                using var capture = new ProfileCaptureSession(path);
                 foreach (string scope in new[] { "Northwatch.Simulation", "Northwatch.Drawing", "Northwatch.SelectionInput", "Northwatch.SandboxOverlay", "PlayerLoop", "Northwatch.MoveMarker" })
                 {
                     if (scope == "Northwatch.MoveMarker" && path != moveMarkerCapture) continue;
@@ -65,13 +65,15 @@ namespace Northwatch.EditorTools
         }
 
         public static void Analyze()
+            => AnalyzeVariants(new[] { "0", "2000", "2000-baseline" }, "Logs/sandbox-", "Logs/profile-summary.txt");
+
+        private static void AnalyzeVariants(string[] variants, string capturePrefix, string summaryPath)
         {
             var output = new StringBuilder();
             bool anyAllocation = false;
-            foreach (string variant in new[] { "0", "2000", "2000-baseline" })
+            foreach (string variant in variants)
             {
-                if (!ProfilerDriver.LoadProfile("Logs/sandbox-" + variant + ".raw", false))
-                    throw new InvalidOperationException("Could not load sandbox Player capture.");
+                using var capture = new ProfileCaptureSession(capturePrefix + variant + ".raw");
                 foreach (string scope in new[] { "Northwatch.Simulation", "Northwatch.Drawing", "Northwatch.SandboxOverlay", "PlayerLoop" })
                 {
                     if (variant.EndsWith("-baseline") && scope == "Northwatch.SandboxOverlay") continue;
@@ -119,7 +121,7 @@ namespace Northwatch.EditorTools
                     anyAllocation |= allocated != 0;
                 }
             }
-            File.WriteAllText("Logs/profile-summary.txt", output.ToString());
+            File.WriteAllText(summaryPath, output.ToString());
             Debug.Log(output.ToString());
             if (anyAllocation) throw new InvalidOperationException("Sandbox hot path allocated managed memory; see Logs/profile-summary.txt.");
         }

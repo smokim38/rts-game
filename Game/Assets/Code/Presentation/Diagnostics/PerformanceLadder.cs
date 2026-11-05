@@ -22,6 +22,7 @@ namespace Northwatch.Presentation.Diagnostics
         private ulong lastDelivered;
         private bool measuring, draining, finished, focusLost, paused, featureEnabled, profile;
         private bool activeUnitsValid = true;
+        private double profileSeconds = 60;
 
         [DllImport("kernel32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
@@ -83,6 +84,12 @@ namespace Northwatch.Presentation.Diagnostics
         private void Initialize()
         {
             string[] arguments = Environment.GetCommandLineArgs();
+#if DEVELOPMENT_BUILD
+            // Desktop automation starts an executable without command-line arguments.
+            string diagnosticArguments = Path.GetFullPath(Path.Combine(Application.dataPath, "../../../Logs/ladder-profile-arguments.txt"));
+            if (Array.IndexOf(arguments, "-ladder-units") < 0 && File.Exists(diagnosticArguments))
+                arguments = File.ReadAllLines(diagnosticArguments);
+#endif
             int countIndex = Array.IndexOf(arguments, "-ladder-units");
             int outputIndex = Array.IndexOf(arguments, "-ladder-output");
             if (countIndex < 0 || countIndex + 1 >= arguments.Length || !int.TryParse(arguments[countIndex + 1], out unitCount) ||
@@ -98,8 +105,15 @@ namespace Northwatch.Presentation.Diagnostics
             Directory.CreateDirectory(Path.GetDirectoryName(output));
             profile = Array.IndexOf(arguments, "-ladder-profile") >= 0;
             if (profile != Debug.isDebugBuild) throw new InvalidOperationException("Use the release Player for measurements and development Player for captures.");
+            int secondsIndex = Array.IndexOf(arguments, "-ladder-profile-seconds");
+            if (secondsIndex >= 0 && (!profile || secondsIndex + 1 >= arguments.Length ||
+                !double.TryParse(arguments[secondsIndex + 1], NumberStyles.Float, CultureInfo.InvariantCulture, out profileSeconds) ||
+                profileSeconds < 10 || profileSeconds > 60 || double.IsNaN(profileSeconds)))
+                throw new ArgumentException("Use -ladder-profile-seconds 10..60 only for diagnostic captures.");
             QualitySettings.vSyncCount = 0;
-            Application.targetFrameRate = -1;
+            // A 60-second unbounded-FPS raw capture can expand to over 100 GB in
+            // the Editor loader. 30 fps also keeps the full window below 2,000 frames.
+            Application.targetFrameRate = profile ? 30 : -1;
             Application.runInBackground = true;
             Screen.SetResolution(1920, 1080, FullScreenMode.FullScreenWindow);
             // Unity's native frame timestamps use QPC. Mono's Stopwatch can have a
@@ -140,6 +154,13 @@ namespace Northwatch.Presentation.Diagnostics
             }
             if (measuring)
             {
+#if DEVELOPMENT_BUILD
+                if (profile && now - windowStart >= profileSeconds)
+                {
+                    UnityEngine.Profiling.Profiler.enabled = false;
+                    UnityEngine.Profiling.Profiler.enableBinaryLog = false;
+                }
+#endif
                 if (now - windowStart >= scenario.WindowSeconds)
                 {
                     measuring = false; draining = true; windowEnd = now;
