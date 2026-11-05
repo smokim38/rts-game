@@ -10,6 +10,18 @@ namespace Northwatch.EditorTools
 {
     public static class SandboxProfileAnalysis
     {
+        public static void AnalyzeCheck()
+        {
+            string[] args = Environment.GetCommandLineArgs();
+            int index = Array.IndexOf(args, "-sandbox-capture");
+            if (index < 0 || index + 1 >= args.Length)
+                throw new ArgumentException("Pass -sandbox-capture Logs/NAME.raw.");
+            string path = Path.GetFullPath(args[index + 1]);
+            if (!path.StartsWith(Path.GetFullPath("Logs") + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("Capture must be inside this project's Logs folder.");
+            AnalyzeCaptures(new[] { path }, path + "-summary.txt");
+        }
+
         public static void AnalyzeSelection()
             => AnalyzeCaptures(new[] { "Logs/selection-before.raw", "Logs/sandbox-2000.raw", "Logs/sandbox-2000-selection.raw" },
                 "Logs/102-profile-summary.txt");

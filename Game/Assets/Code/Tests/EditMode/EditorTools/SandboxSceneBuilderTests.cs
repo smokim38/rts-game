@@ -95,6 +95,62 @@ namespace Northwatch.Tests.EditMode.EditorTools
             Assert.That(error.InnerException, Is.TypeOf<System.InvalidOperationException>());
         }
 
+        [TestCase(0, false, 0, 0)]
+        [TestCase(2000, false, 1000, 1000)]
+        [TestCase(2000, true, 2000, 0)]
+        public void PlayerCheckFixturesFitTheSandboxObstacles(int count, bool selection, int first, int second)
+        {
+            var layout = AssetDatabase.LoadAssetAtPath<SandboxObstacles>(SandboxSceneBuilder.ObstaclesPath);
+            var settings = AssetDatabase.LoadAssetAtPath<MovementSettings>(SandboxSceneBuilder.MovementSettingsPath);
+            using var simulation = layout.CreateSimulation(settings.Snapshot());
+            typeof(SandboxPlayerCheck).GetMethod("QueueUnits", BindingFlags.NonPublic | BindingFlags.Static)
+                .Invoke(null, new object[] { simulation, count, selection });
+            simulation.ScheduleFrame(1); simulation.CompleteFrame();
+            Assert.That(simulation.DrawCount(Side.First), Is.EqualTo(first));
+            Assert.That(simulation.DrawCount(Side.Second), Is.EqualTo(second));
+            Assert.That(simulation.Count, Is.EqualTo(count));
+        }
+
+        [TestCase(0, false, 0, 0, 0, true)]
+        [TestCase(2000, false, 1000, 1000, 2000, true)]
+        [TestCase(2000, true, 2000, 0, 2000, true)]
+        [TestCase(2000, false, 1000, 999, 1999, false)]
+        [TestCase(2000, false, 2000, 0, 2000, false)]
+        [TestCase(2000, true, 1000, 1000, 2000, false)]
+        public void PlayerCheckRequiresEachSideRatherThanOnlyTheTotal(int expected, bool selection,
+            int first, int second, int total, bool valid)
+        {
+            Assert.That(InvokePlayerCheck("CountersValid", expected, selection, first, second, total), Is.EqualTo(valid));
+        }
+
+        [TestCase(false, false, false, 1000, 1000, 0, false)]
+        [TestCase(true, false, false, 1000, 1000, 0, false)]
+        [TestCase(true, true, false, 1000, 1000, 0, true)]
+        [TestCase(false, false, false, 0, 0, 2000, false)]
+        [TestCase(false, false, true, 0, 0, 2000, true)]
+        [TestCase(false, false, false, 0, 0, 0, true)]
+        public void PlayerImageRequiresExpectedVehicleColoursBeyondTheMapOverlayAndRing(bool blue, bool red,
+            bool yellow, int first, int second, int selected, bool valid)
+        {
+            var image = new Texture2D(40, 40, TextureFormat.RGB24, false);
+            try
+            {
+                var pixels = Enumerable.Repeat(new Color32(127, 127, 127, 255), 1600).ToArray();
+                for (int i = 0; i < 100; i++)
+                {
+                    pixels[i] = blue ? new Color32(25, 89, 242, 255) : new Color32(32, 37, 48, 255);
+                    pixels[i + 100] = red ? new Color32(242, 51, 25, 255) : new Color32(255, 255, 255, 255);
+                    pixels[i + 200] = yellow ? new Color32(255, 217, 13, 255) : new Color32(0, 255, 0, 255);
+                }
+                image.SetPixels32(pixels); image.Apply();
+                Assert.That(InvokePlayerCheck("ImageValid", image, first, second, selected), Is.EqualTo(valid));
+            }
+            finally { Object.DestroyImmediate(image); }
+        }
+
+        private static object InvokePlayerCheck(string method, params object[] arguments)
+            => typeof(SandboxPlayerCheck).GetMethod(method, BindingFlags.NonPublic | BindingFlags.Static).Invoke(null, arguments);
+
         [TestCase("\n", false, TestName = "BuilderPreservesLfCheckoutOnRepeatRun")]
         [TestCase("\r\n", false, TestName = "BuilderPreservesCrLfCheckoutOnRepeatRun")]
         [TestCase("\n", true, TestName = "BuilderPreservesExistingSceneTemplateSettings")]
