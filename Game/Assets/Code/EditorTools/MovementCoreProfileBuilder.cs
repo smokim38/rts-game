@@ -49,7 +49,12 @@ namespace Northwatch.EditorTools
             string path = Path.GetFullPath(args[index + 1]);
             if (!path.StartsWith(Path.GetFullPath("Logs") + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
                 throw new ArgumentException("Capture must be inside this project's Logs folder.");
-            if (!ProfilerDriver.LoadProfile(path, false)) throw new InvalidOperationException("Could not load movement capture.");
+            AnalyzeCaptureFile(path);
+        }
+
+        public static void AnalyzeCaptureFile(string path)
+        {
+            using var capture = new ProfileCaptureSession(path);
             var output = new StringBuilder();
             var sites = new Dictionary<string, long>();
             long simulationBytes = 0, drawingBytes = 0;
@@ -83,6 +88,7 @@ namespace Northwatch.EditorTools
             output.AppendLine($"loaded_frames={frames}; simulation_bytes={simulationBytes}; drawing_bytes={drawingBytes}");
             foreach (var site in sites) output.AppendLine($"bytes={site.Value}; site={site.Key}");
             File.WriteAllText(path + "-allocations.txt", output.ToString());
+            capture.Complete();
             if (frames < 200 || simulationBytes != 0 || drawingBytes != 0)
                 throw new InvalidOperationException("Movement capture has insufficient frames or hot-path allocation.");
         }
