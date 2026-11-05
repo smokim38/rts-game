@@ -84,12 +84,6 @@ namespace Northwatch.Presentation.Diagnostics
         private void Initialize()
         {
             string[] arguments = Environment.GetCommandLineArgs();
-#if DEVELOPMENT_BUILD
-            // Desktop automation starts an executable without command-line arguments.
-            string diagnosticArguments = Path.GetFullPath(Path.Combine(Application.dataPath, "../../../Logs/ladder-profile-arguments.txt"));
-            if (Array.IndexOf(arguments, "-ladder-units") < 0 && File.Exists(diagnosticArguments))
-                arguments = File.ReadAllLines(diagnosticArguments);
-#endif
             int countIndex = Array.IndexOf(arguments, "-ladder-units");
             int outputIndex = Array.IndexOf(arguments, "-ladder-output");
             if (countIndex < 0 || countIndex + 1 >= arguments.Length || !int.TryParse(arguments[countIndex + 1], out unitCount) ||
@@ -112,8 +106,9 @@ namespace Northwatch.Presentation.Diagnostics
                 throw new ArgumentException("Use -ladder-profile-seconds 10..60 only for diagnostic captures.");
             QualitySettings.vSyncCount = 0;
             // A 60-second unbounded-FPS raw capture can expand to over 100 GB in
-            // the Editor loader. 30 fps also keeps the full window below 2,000 frames.
-            Application.targetFrameRate = profile ? 30 : -1;
+            // the Editor loader. 25 fps keeps the full tank capture below the
+            // loader's byte budget and its 2,000-frame retention limit.
+            Application.targetFrameRate = profile ? 25 : -1;
             Application.runInBackground = true;
             Screen.SetResolution(1920, 1080, FullScreenMode.FullScreenWindow);
             // Unity's native frame timestamps use QPC. Mono's Stopwatch can have a

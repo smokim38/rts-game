@@ -10,7 +10,20 @@ namespace Northwatch.EditorTools
     public static class LadderProfileAnalysis
     {
         public static void Analyze()
-            => AnalyzeCapture("Logs/unit-ladder/profile.raw", "Logs/unit-ladder/profile-summary.txt");
+        {
+            string[] args = Environment.GetCommandLineArgs();
+            int index = Array.IndexOf(args, "-ladder-capture-path");
+            if (index < 0)
+            {
+                AnalyzeCapture("Logs/unit-ladder/profile.raw", "Logs/unit-ladder/profile-summary.txt");
+                return;
+            }
+            if (index + 1 >= args.Length) throw new ArgumentException("Pass -ladder-capture-path Logs/NAME.raw.");
+            string path = Path.GetFullPath(args[index + 1]);
+            if (!path.StartsWith(Path.GetFullPath("Logs") + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("Capture must be inside this project's Logs folder.");
+            AnalyzeCapture(path, path + "-summary.txt");
+        }
 
         public static void AnalyzeCapture(string capturePath, string summaryPath)
         {
