@@ -47,7 +47,7 @@ Only these words of [ADR 0004](0004-unit-simulation-architecture.md#performance-
 
    > it has a current order and is drawn every frame. When the game's rules end a unit's order, it gets a new one within one simulation tick, before its next movement step
 
-Everything else in ADR 0004 stands, including the pass rule, the regression check and "any change bumps the version". This ADR adds one reason to its Invalid runs and one item to its Log entry (below). The "ladder scenario" of ADR 0008, 0011 and 0012 is `MovementCoreProfile`'s own synthetic scene, which keeps its layout.
+Everything else in ADR 0004 stands, including the pass rule, the regression check and "any change bumps the version". This ADR adds two reasons to its Invalid runs and one item to its Log entry (below). The "ladder scenario" of ADR 0008, 0011 and 0012 is `MovementCoreProfile`'s own synthetic scene, which keeps its layout.
 
 ### Layout
 
@@ -97,7 +97,10 @@ Why:
 - **In every ladder Player run,** so the numbers describe the run they sit beside, as the renewal counts do. An EditMode test can't stand in: at 2,000 units the Editor logs renewals of 1/0/7/1000 (the review's figure) and the Players 0/0/1/1000 (checked in the release and development run files).
 - **In the EditMode test too,** which reads the same counters at 10 and 2,000 units and replaces the lines named in Context.
 - **A run that misses the rule is invalid,** with that reason, as a run whose units aren't active is. It didn't run the scenario, so it is neither a pass nor a fail, and the frame-time conditions don't change. A later PR that makes a rung miss the rule has no evidence for that rung until movement is fixed or a superseding ADR says otherwise.
-- **A simulation that can't finish both cycles in the window** (below 15 fps, where ADR 0008's two-tick limit slows it) isn't checked, and the entry says so. Its frame times fail the pass rule anyway.
+- **A run whose window closes before both cycles finish can't show the rule.** The test is a `UnitSimulation.TickCount` of at least 1,800 when the window closes. It is recorded then, because the 2 s drain keeps ticking before `Finish`. At 30 Hz tick 1,800 comes 50 s into the window, so a run has 10 s to lose across warm-up and window. `TickClock` drops any backlog past two ticks, so a stall can spend that with healthy frame times: 48,000 frames of 1 ms and one of 12 s average 1.25 ms with a 1 ms 1% low, yet close near tick 1,742, and the drain would carry them past 1,800 (arithmetic). The test is the tick, not a frame rate: a steady 14 fps makes 28 ticks a second and gets there, and a steady 16.7 fps makes 25 and doesn't (arithmetic, from `TickClock`). Such a run:
+  - **Is invalid, with that reason,** if its own average and 1% low frame times are both 16.67 ms or less.
+  - **Stays valid but unchecked,** and the entry says so, if either is over. Its frame times stay in the medians. ADR 0004's medians can still pass a step with such a run among its three. If they do, the run becomes invalid with the same reason and is replaced, within the six attempts. So every run in a passing step has shown the rule, and the pass rule's conditions and medians don't change.
+  - **Isn't checked, and the cost table says so,** if it is one of the two development cost runs (Movement cost). They sit outside the medians and can't pass, and the capture's 40 ms frames are over 16.67 ms only because of its cap, so frame times say nothing about them. At 40 ms the clock still makes 30 ticks a second, six every five frames, so the capture normally reaches tick 1,800.
 
 These continue rules 1 to 17 and add to ADR 0004's rules:
 
@@ -216,11 +219,11 @@ This is #232's follow-up work. Its Notes already say it follows this ADR. No oth
 | File | Change |
 |---|---|
 | `Game/Assets/Code/Presentation/Diagnostics/LadderScenario.cs`, `Game/Assets/Data/PerformanceLadder.asset` | Version 3, the fields above with range checks, goal lines, the spread along x |
-| `Game/Assets/Code/Presentation/Diagnostics/PerformanceLadder.cs` | Spawn z from N, the uncapped wait mode, crossing counts in the metadata |
+| `Game/Assets/Code/Presentation/Diagnostics/PerformanceLadder.cs` | Spawn z from N, the uncapped wait mode, crossing counts and the tick at window close in the metadata |
 | `Game/Assets/Code/Simulation/` | The crossing jobs (rules 18 to 20) |
 | `Game/Assets/Code/EditorTools/LadderProfileAnalysis.cs` | Job time and a wait line in the summary |
 | `Game/Assets/Code/Tests/EditMode/Presentation/LadderFrameBufferTests.cs` | Lines 63, 64 and 88 become the crossing rule. The assertion on line 86 goes |
-| `tools/unit-ladder.js` and its tests | The invalid reason, crossing and cost in the entry, the fixed sentences at line 171 |
+| `tools/unit-ladder.js` and its tests | The invalid reasons and replacing an unchecked run in a passing step, crossing and cost in the entry, the fixed sentences at line 171 |
 | `docs/performance/unit-ladder/README.md` | The scenario text, version 3, the rule 2 statement, the new commands |
 | `docs/performance/unit-ladder/2026-11-06-4f80460.md` | Removed, with the version 3 entry added |
 
