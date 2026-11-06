@@ -22,6 +22,7 @@ namespace Northwatch.Presentation.Diagnostics
         private ulong lastDelivered;
         private bool measuring, draining, finished, focusLost, paused, featureEnabled, profile;
         private bool activeUnitsValid = true;
+        private readonly int[] warmupRenewals = new int[4], measuredRenewals = new int[4];
         private double profileSeconds = 60;
 
         [DllImport("kernel32.dll")]
@@ -139,6 +140,7 @@ namespace Northwatch.Presentation.Diagnostics
                 measuring = true; windowStart = now;
                 buffer.Begin(previousCallback);
                 renderedStart = Time.renderedFrameCount;
+                for (int rule = 1; rule <= 4; rule++) warmupRenewals[rule - 1] = driver.Simulation.RenewedOrderCount(rule);
 #if DEVELOPMENT_BUILD
                 if (profile)
                 {
@@ -150,6 +152,8 @@ namespace Northwatch.Presentation.Diagnostics
             }
             if (measuring)
             {
+                activeUnitsValid &= driver.Simulation.Count == unitCount && driver.Simulation.MovingOrdersValid &&
+                    driver.Simulation.DrawCount(Side.First) == unitCount / 2 && driver.Simulation.DrawCount(Side.Second) == unitCount / 2;
 #if DEVELOPMENT_BUILD
                 if (profile && now - windowStart >= profileSeconds)
                 {
@@ -162,15 +166,14 @@ namespace Northwatch.Presentation.Diagnostics
                     measuring = false; draining = true; windowEnd = now;
                     renderedEnd = Time.renderedFrameCount;
                     buffer.End();
+                    for (int rule = 1; rule <= 4; rule++)
+                        measuredRenewals[rule - 1] = driver.Simulation.RenewedOrderCount(rule) - warmupRenewals[rule - 1];
                 }
                 else
                 {
                     buffer.Rendered(callback);
                     focusLost |= !Application.isFocused;
                     featureEnabled &= FrameTimingManager.IsFeatureEnabled();
-                    activeUnitsValid &= driver.Simulation.Count == unitCount &&
-                        driver.Simulation.MovingOrderCount == unitCount &&
-                        driver.Simulation.DrawCount(Side.First) == unitCount / 2 && driver.Simulation.DrawCount(Side.Second) == unitCount / 2;
                 }
             }
             uint count = FrameTimingManager.GetLatestTimings((uint)latest.Length, latest);
@@ -219,6 +222,7 @@ namespace Northwatch.Presentation.Diagnostics
             {
                 units = unitCount, scenarioVersion = scenario.Version, seed = scenario.Seed,
                 featureEnabled = featureEnabled, focusLost = focusLost, paused = paused, activeUnitsValid = activeUnitsValid,
+                renewedOrdersByArrivalRule = measuredRenewals, warmupRenewedOrdersByArrivalRule = warmupRenewals,
                 bufferInvalid = buffer.Invalid, renderedFrames = renderedEnd - renderedStart,
                 matchedSamples = buffer.Matched, unmatchedSamples = buffer.Unmatched,
                 recordedFrames = buffer.Count, seconds = windowEnd - windowStart,
@@ -239,6 +243,7 @@ namespace Northwatch.Presentation.Diagnostics
         {
             public int units, scenarioVersion, seed, renderedFrames, recordedFrames, matchedSamples, unmatchedSamples, width, height, cores, threads, vramMb, ramMb, vsync, targetFrameRate;
             public bool featureEnabled, focusLost, paused, bufferInvalid, borderless, development, activeUnitsValid;
+            public int[] renewedOrdersByArrivalRule, warmupRenewedOrdersByArrivalRule;
             public double seconds, warmupSeconds;
             public string unity, api, quality, cpu, gpu, graphicsVersion;
         }

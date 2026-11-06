@@ -5,7 +5,8 @@ const L = require('./unit-ladder.js');
 
 const meta = { featureEnabled: true, focusLost: false, paused: false, bufferInvalid: false, development: false, activeUnitsValid: true,
   width: 1920, height: 1080, borderless: true, vsync: 0, targetFrameRate: -1, units: 10,
-  warmupSeconds: 10, seconds: 60, renderedFrames: 3, recordedFrames: 3, matchedSamples: 3, unmatchedSamples: 0 };
+  warmupSeconds: 10, seconds: 60, renderedFrames: 3, recordedFrames: 3, matchedSamples: 3, unmatchedSamples: 0,
+  renewedOrdersByArrivalRule: [0, 0, 0, 0] };
 const rows = [1, 2, 3].map((frameMs, i) => ({ callback: String(200 + i * 100), timestamp: String(150 + i * 100), samples: 1, frameMs, mainMs: 0.5, gpuMs: 0.7 }));
 const run = (frameMs = 10, lowMs = 12) => ({ valid: true, frameMs, lowMs, maxMs: 15, mainMs: 5, gpuMs: 3, fps: 1000 / frameMs });
 
@@ -35,6 +36,17 @@ test('all summary metrics and missing optional samples', () => {
   assert.equal(optional.gpuMs, null);
   assert.equal(optional.missingMain, 3);
   assert.equal(optional.missingGpu, 3);
+});
+test('renewal counts survive valid and failed runs and require all four ending rules', () => {
+  const counts = [1, 2, 3, 1000];
+  const result = L.summarizeRun({ ...meta, renewedOrdersByArrivalRule: counts }, rows, 10);
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.renewedOrdersByArrivalRule, counts);
+  const failed = L.summarizeRun({ ...meta, activeUnitsValid: false, renewedOrdersByArrivalRule: counts }, rows, 10);
+  assert.equal(failed.valid, false);
+  assert.deepEqual(failed.renewedOrdersByArrivalRule, counts);
+  for (const value of [undefined, [], [0, 0, 0], [0, 0, 0, -1], [0, 0, 0, 1.5]])
+    assert.equal(L.summarizeRun({ ...meta, renewedOrdersByArrivalRule: value }, rows, 10).valid, false);
 });
 test('invalid run detection covers unavailable timings, focus, pause, window, display and count', () => {
   for (const change of [{ featureEnabled: false }, { focusLost: true }, { paused: true }, { bufferInvalid: true }, { activeUnitsValid: false },

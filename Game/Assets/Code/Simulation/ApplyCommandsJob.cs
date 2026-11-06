@@ -10,6 +10,8 @@ namespace Northwatch.Simulation
     internal struct ApplyCommandsJob : IJob
     {
         internal NativeArray<UnitCommand> Commands;
+        internal NativeArray<UnitCommand> SideOrders;
+        internal bool RenewEndedOrders;
         internal NativeArray<int> CommandCount, QueuedMoves;
         internal UnitState State;
         internal ulong Tick;
@@ -41,6 +43,7 @@ namespace Northwatch.Simulation
                 {
                     if (command.AllOnSide)
                     {
+                        SideOrders[(int)command.Side] = command;
                         for (int member = 0; member < State.Alive.Length; member++)
                             if (State.Alive[member] != 0 && State.Sides[member] == command.Side)
                             {
@@ -71,6 +74,29 @@ namespace Northwatch.Simulation
                 }
             }
             if (!deferred) CommandCount[0] = 0;
+            if (RenewEndedOrders) RenewOrders();
+        }
+
+        private void RenewOrders()
+        {
+            // This runs before movement on every tick, including batched ticks. An
+            // order ended by the previous movement step must be replaced now.
+            for (int slot = 0; slot < State.Alive.Length; slot++)
+            {
+                if (State.Alive[slot] == 0) continue;
+                MovementUnit unit = State.Movement[slot];
+                if (unit.HasMoveOrder) continue;
+                UnitCommand order = SideOrders[(int)State.Sides[slot]];
+                if (!order.RenewEnded || unit.ArrivalRule < 1 || unit.ArrivalRule > 4)
+                {
+                    State.Summary[13] = 1;
+                    continue;
+                }
+                State.Summary[8 + unit.ArrivalRule]++;
+                unit.OrderVersion = (int)(Tick * 2 + (uint)order.Side);
+                State.Movement[slot] = unit;
+                Move(slot, order.Position.xz);
+            }
         }
 
         private void Move(int slot, float2 goal)

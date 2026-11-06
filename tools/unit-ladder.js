@@ -25,7 +25,10 @@ function summarizeRun(meta, rows, units) {
   if (meta.unmatchedSamples !== 0) reasons.push('unmatched frame timing samples');
   if (meta.matchedSamples !== rows.reduce((count, row) => count + row.samples, 0))
     reasons.push('frame timing sample count mismatch');
-  if (!meta.activeUnitsValid) reasons.push('active faction unit counts changed');
+  if (!meta.activeUnitsValid) reasons.push('active unit counts, drawing or order continuity failed');
+  if (!Array.isArray(meta.renewedOrdersByArrivalRule) || meta.renewedOrdersByArrivalRule.length !== 4 ||
+    !meta.renewedOrdersByArrivalRule.every(value => Number.isSafeInteger(value) && value >= 0))
+    reasons.push('missing or invalid order renewal counts');
   if (meta.development) reasons.push('development Player');
   if (meta.width !== 1920 || meta.height !== 1080 || !meta.borderless || meta.vsync !== 0 || meta.targetFrameRate !== -1)
     reasons.push('incorrect display settings');
@@ -48,14 +51,15 @@ function summarizeRun(meta, rows, units) {
     if (previous >= 0n && BigInt(row.timestamp) <= previous) reasons.push('sample belongs to another frame');
     previous = BigInt(row.callback);
   }
-  if (reasons.length) return { valid: false, reasons: [...new Set(reasons)] };
+  if (reasons.length) return { valid: false, reasons: [...new Set(reasons)], renewedOrdersByArrivalRule: meta.renewedOrdersByArrivalRule };
   const frameTimes = rows.map(row => row.frameMs);
   const main = rows.map(row => row.mainMs).filter(finitePositive);
   const gpu = rows.map(row => row.gpuMs).filter(finitePositive);
   const frameMs = average(frameTimes);
   return { valid: true, frames: rows.length, frameMs, lowMs: nearestRank(frameTimes), maxMs: frameTimes.reduce((a, b) => Math.max(a, b), 0),
     mainMs: average(main), gpuMs: average(gpu), fps: 1000 / frameMs,
-    missingMain: rows.length - main.length, missingGpu: rows.length - gpu.length };
+    missingMain: rows.length - main.length, missingGpu: rows.length - gpu.length,
+    renewedOrdersByArrivalRule: meta.renewedOrdersByArrivalRule };
 }
 function regressed(current, before) {
   return current > before * 1.1 && current > before + 0.5;
@@ -164,7 +168,7 @@ function renderEntry(data) {
   const number = value => value == null ? 'unavailable' : value.toFixed(3);
   return `# Unit performance ladder — ${data.date}\n\nContext: ${data.context}\n\nCommit: ${data.commit}\n\n` +
     `Reference-class: ${data.referenceClass}\n\nLadder height: ${data.height}\n\nComparison: ${data.comparison || 'none (new series)'}\n\n` +
-    'Both factions receive seeded move orders to alternating far ends every 20 simulation seconds. Systems: commands, spatial grid, flow fields and movement at 30 Hz; Burst draw-matrix fill and instanced drawing every frame. Targeting, combat and commander AI are not implemented. Scenario version 2 starts a new series; version 1 held position.\n\n' +
+    'Both factions receive seeded move orders to alternating far ends every 20 simulation seconds. Orders ended by the normal movement rules are renewed to the current cycle destination within one simulation tick; live orders are not renewed early. Systems: commands, spatial grid, flow fields and movement at 30 Hz; Burst draw-matrix fill and instanced drawing every frame. Targeting, combat and commander AI are not implemented. Scenario version 2 starts a new series; version 1 held position. The two versions are not a like-for-like series. Renewal counts per measurement window are in each attempt: arrival rules 1 (exact goal), 2 (contact with an arrived member), 3 (goal-disc congestion), 4 (six-second group stall).\n\n' +
     '| Units | Average ms | 1% low ms | Maximum ms | CPU main ms | GPU ms | FPS | Result |\n' +
     '| --- | --- | --- | --- | --- | --- | --- | --- |\n' + data.steps.map(step =>
       `| ${step.units} | ${number(step.frameMs)} | ${number(step.lowMs)} | ${number(step.maxMs)} | ${number(step.mainMs)} | ${number(step.gpuMs)} | ${number(step.fps)} | ${step.result}${step.regressed ? ', regressed' : ''}${step.previouslyPassing ? ', previously passing' : ''} |`).join('\n') +

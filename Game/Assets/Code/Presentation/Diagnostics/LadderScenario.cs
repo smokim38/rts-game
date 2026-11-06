@@ -47,7 +47,7 @@ namespace Northwatch.Presentation.Diagnostics
             for (int cycle = 0; cycle * cycleTicks <= endTicks; cycle++)
                 for (int side = 0; side < 2; side++)
                     if (!simulation.QueueSideMove((Side)side, OrderDestination(cycle, (Side)side),
-                        1 + (ulong)(cycle * cycleTicks)))
+                        1 + (ulong)(cycle * cycleTicks), renewEnded: true))
                         throw new System.InvalidOperationException("Ladder move orders could not be queued.");
         }
     }

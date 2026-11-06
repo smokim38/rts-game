@@ -16,32 +16,34 @@ namespace Northwatch.Tests.EditMode.Presentation
             var scenario = AssetDatabase.LoadAssetAtPath<LadderScenario>("Assets/Data/PerformanceLadder.asset");
             var settings = AssetDatabase.LoadAssetAtPath<MovementSettings>("Assets/Data/MovementSettings.asset");
             using var simulation = new UnitSimulation(settings.Snapshot());
+            using var batched = new UnitSimulation(settings.Snapshot());
             Assert.That(simulation.QueueBlock(Side.First, scenario.FirstSize, scenario.FirstSpawn, count / 2), Is.True);
             Assert.That(simulation.QueueBlock(Side.Second, scenario.SecondSize, scenario.SecondSpawn, count / 2), Is.True);
             scenario.QueueOrders(simulation);
+            batched.QueueBlock(Side.First, scenario.FirstSize, scenario.FirstSpawn, count / 2);
+            batched.QueueBlock(Side.Second, scenario.SecondSize, scenario.SecondSpawn, count / 2);
+            scenario.QueueOrders(batched);
             int warmup = (int)(scenario.WarmupSeconds / TickClock.TickDuration);
             int end = (int)((scenario.WarmupSeconds + scenario.WindowSeconds) / TickClock.TickDuration);
             int cycleTicks = (int)(scenario.OrderCycleSeconds / TickClock.TickDuration);
             bool firstCrossed = false, secondCrossed = false;
-            int firstMissingOrder = 0, minimumOrders = count;
+            int minimumOrders = count;
+            var lastOrderTick = new int[count];
+            var lastOrderVersion = new int[count];
+            var warmupRenewals = new int[4];
+            long allocated = 0;
             for (int tick = 1; tick <= end; tick++)
             {
+                long before = System.GC.GetAllocatedBytesForCurrentThread();
                 simulation.ScheduleFrame(1); simulation.CompleteFrame();
+                if (tick > warmup) allocated += System.GC.GetAllocatedBytesForCurrentThread() - before;
                 Assert.That(simulation.Count, Is.EqualTo(count));
+                Assert.That(simulation.MovingOrdersValid, Is.True, "Order was not renewed before the next movement step.");
+                if (tick == warmup)
+                    for (int rule = 1; rule <= 4; rule++) warmupRenewals[rule - 1] = simulation.RenewedOrderCount(rule);
                 if (tick >= warmup)
                 {
                     minimumOrders = System.Math.Min(minimumOrders, simulation.MovingOrderCount);
-                    if (simulation.MovingOrderCount != count && firstMissingOrder == 0)
-                    {
-                        firstMissingOrder = tick;
-                        for (int slot = 0; slot < count; slot++)
-                            if (!simulation.State.Movement[slot].HasMoveOrder)
-                            {
-                                TestContext.WriteLine("First missing order: tick=" + tick + "; side=" + simulation.State.Sides[slot] +
-                                    "; arrivalRule=" + simulation.State.Movement[slot].ArrivalRule);
-                                break;
-                            }
-                    }
                 }
                 if ((tick - 1) % cycleTicks == 0)
                     for (int slot = 0; slot < count; slot++)
@@ -53,15 +55,79 @@ namespace Northwatch.Tests.EditMode.Presentation
                     }
                 for (int slot = 0; slot < count; slot++)
                 {
+                    var unit = simulation.State.Movement[slot];
+                    if (unit.HasMoveOrder || unit.OrderVersion != lastOrderVersion[slot]) lastOrderTick[slot] = tick;
+                    lastOrderVersion[slot] = unit.OrderVersion;
+                    if (tick >= warmup && tick - lastOrderTick[slot] > 1)
+                        Assert.Fail("Order gap longer than one tick: tick=" + tick + "; slot=" + slot);
                     if (simulation.State.Sides[slot] == Side.First) firstCrossed |= simulation.State.Positions[slot].x > 0;
                     else secondCrossed |= simulation.State.Positions[slot].x < 0;
+                }
+                if (tick % 2 == 0)
+                {
+                    batched.ScheduleFrame(2); batched.CompleteFrame();
+                    Assert.That(batched.MovingOrdersValid, Is.True);
+                    for (int rule = 1; rule <= 4; rule++)
+                        Assert.That(batched.RenewedOrderCount(rule), Is.EqualTo(simulation.RenewedOrderCount(rule)));
+                    if (tick % cycleTicks == 0 || tick == end)
+                        for (int slot = 0; slot < count; slot++)
+                        {
+                            Assert.That(batched.State.Positions[slot], Is.EqualTo(simulation.State.Positions[slot]));
+                            Assert.That(batched.State.Movement[slot], Is.EqualTo(simulation.State.Movement[slot]));
+                        }
                 }
                 if (tick % cycleTicks == 0) TestContext.WriteLine("Tick=" + tick + "; orders=" + simulation.MovingOrderCount +
                     "; firstX=" + simulation.State.Positions[0].x + "; secondX=" + simulation.State.Positions[count / 2].x);
             }
             TestContext.WriteLine("Minimum orders=" + minimumOrders + "; firstCrossed=" + firstCrossed + "; secondCrossed=" + secondCrossed);
-            Assert.That(firstMissingOrder, Is.Zero, "Every unit must retain an order throughout measurement.");
+            for (int rule = 1; rule <= 4; rule++)
+                TestContext.WriteLine("Renewed: rule=" + rule + "; measured=" + (simulation.RenewedOrderCount(rule) - warmupRenewals[rule - 1]) +
+                    "; warmup=" + warmupRenewals[rule - 1]);
+            if (count == 2000) Assert.That(simulation.RenewedOrderCount(4), Is.GreaterThan(0), "Group stall must remain enabled.");
+            Assert.That(allocated, Is.Zero, "Order cycles and renewals must allocate no managed bytes after warmup.");
             Assert.That(firstCrossed && secondCrossed, Is.True, "Both factions must cross the middle.");
+        }
+
+        [TestCase(1)] [TestCase(2)] [TestCase(3)] [TestCase(4)]
+        public void RenewalWaitsUntilOrderEndsAndUsesCurrentCycleDestination(int rule)
+        {
+            using var simulation = new UnitSimulation();
+            simulation.QueueAdd(Side.First, UnitSize.Small, Vector3.zero);
+            simulation.QueueSideMove(Side.First, Vector3.right * 20, 1, renewEnded: true);
+            simulation.QueueSideMove(Side.First, Vector3.left * 20, 3, renewEnded: true);
+            simulation.ScheduleFrame(2); simulation.CompleteFrame();
+            Assert.That(simulation.State.Movement[0].OrderVersion, Is.EqualTo(2), "A live order must not be renewed early.");
+            Assert.That(simulation.RenewedOrderCount(rule), Is.Zero);
+            simulation.ScheduleFrame(1); simulation.CompleteFrame();
+            var unit = simulation.State.Movement[0];
+            unit.HasMoveOrder = false; unit.ArrivalRule = (byte)rule;
+            simulation.State.Movement[0] = unit;
+            simulation.ScheduleFrame(0); simulation.CompleteFrame();
+            Assert.That(simulation.MovingOrderCount, Is.Zero, "No renewal between simulation ticks.");
+            simulation.ScheduleFrame(1); simulation.CompleteFrame();
+            Assert.That(simulation.MovingOrderCount, Is.EqualTo(1));
+            Assert.That(simulation.MovingOrdersValid, Is.True);
+            Assert.That(simulation.State.Movement[0].OrderVersion, Is.EqualTo(8));
+            Assert.That(simulation.State.Movement[0].Goal.x, Is.EqualTo(-20));
+            Assert.That(simulation.State.Movement[0].ArrivalRule, Is.Zero);
+            Assert.That(simulation.RenewedOrderCount(rule), Is.EqualTo(1));
+        }
+
+        [Test]
+        public void ActiveOrderCheckLatchesAnUnrenewedGapInsideABatchedFrame()
+        {
+            var settings = AssetDatabase.LoadAssetAtPath<MovementSettings>("Assets/Data/MovementSettings.asset");
+            using var simulation = new UnitSimulation(settings.Snapshot());
+            simulation.QueueAdd(Side.First, UnitSize.Small, Vector3.zero);
+            simulation.QueueSideMove(Side.First, Vector3.zero, 1, renewEnded: true);
+            simulation.ScheduleFrame(1); simulation.CompleteFrame();
+            Assert.That(simulation.MovingOrderCount, Is.Zero);
+            Assert.That(simulation.MovingOrdersValid, Is.True, "An order may end on this tick.");
+            simulation.QueueSideMove(Side.First, Vector3.zero, 2);
+            simulation.QueueSideMove(Side.First, Vector3.left * 20, 4, renewEnded: true);
+            simulation.ScheduleFrame(3); simulation.CompleteFrame();
+            Assert.That(simulation.MovingOrderCount, Is.EqualTo(1), "The later cycle hides the gap from a render-only check.");
+            Assert.That(simulation.MovingOrdersValid, Is.False);
         }
 
         [Test]

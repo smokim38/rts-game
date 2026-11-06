@@ -19,7 +19,7 @@ namespace Northwatch.Simulation
         public double StaticMapBuildMilliseconds { get; private set; }
         public long StaticMapBytes => StaticMaps?.MapBytes ?? 0;
         public long StaticMapScratchBytes => StaticMaps?.ScratchBytes ?? 0;
-        private NativeArray<UnitCommand> commands;
+        private NativeArray<UnitCommand> commands, sideOrders;
         private NativeArray<int> commandCounts, queuedMoves;
         private NativeArray<Matrix4x4> matrices, nextMatrices;
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
@@ -88,7 +88,7 @@ namespace Northwatch.Simulation
         private int commandCount { get => commandCounts[0]; set => commandCounts[0] = value; }
         private int queuedAdds;
         private ulong commandBatch;
-        private bool scheduled, disposed;
+        private bool scheduled, disposed, renewEndedOrders;
         public ulong TickCount { get; private set; }
 
         public UnitSimulation()
@@ -96,6 +96,7 @@ namespace Northwatch.Simulation
             State = new UnitState(Capacity);
             emptyWalkable = new NativeArray<byte>(0, Allocator.Persistent);
             commands = new NativeArray<UnitCommand>(Capacity * 4, Allocator.Persistent);
+            sideOrders = new NativeArray<UnitCommand>(2, Allocator.Persistent);
             commandCounts = new NativeArray<int>(1, Allocator.Persistent);
             queuedMoves = new NativeArray<int>(Capacity, Allocator.Persistent);
             matrices = new NativeArray<Matrix4x4>(Capacity * 4, Allocator.Persistent);
@@ -154,6 +155,14 @@ namespace Northwatch.Simulation
 
         public int Count { get { RequireComplete(); return State.Summary[0]; } }
         public int MovingOrderCount { get { RequireComplete(); return State.Summary[8]; } }
+        public bool MovingOrdersValid { get { RequireComplete(); return State.Summary[13] == 0; } }
+
+        public int RenewedOrderCount(int arrivalRule)
+        {
+            RequireComplete();
+            if (arrivalRule < 1 || arrivalRule > 4) throw new ArgumentOutOfRangeException(nameof(arrivalRule));
+            return State.Summary[8 + arrivalRule];
+        }
         public int RemainingCapacity { get { RequireComplete(); return Capacity - Count - queuedAdds; } }
         public int PlacementResult { get { RequireComplete(); return State.Summary[5]; } }
         public int PlacementVersion { get { RequireComplete(); return State.Summary[6]; } }
@@ -170,14 +179,15 @@ namespace Northwatch.Simulation
             return true;
         }
 
-        public bool QueueSideMove(Side side, Vector3 destination, ulong executeTick)
+        public bool QueueSideMove(Side side, Vector3 destination, ulong executeTick, bool renewEnded = false)
         {
             RequireComplete();
             if ((byte)side > 1 || !math.all(math.isfinite((float3)destination)) ||
                 math.abs(destination.x) > MapHalfWidth || math.abs(destination.z) > MapHalfWidth ||
                 commandCount >= Capacity * 2) return false;
             commands[commandCount++] = new UnitCommand
-                { Move = true, AllOnSide = true, Side = side, Position = destination, ExecuteTick = executeTick };
+                { Move = true, AllOnSide = true, Side = side, Position = destination, ExecuteTick = executeTick, RenewEnded = renewEnded };
+            renewEndedOrders |= renewEnded;
             return true;
         }
 
@@ -265,6 +275,7 @@ namespace Northwatch.Simulation
         private JobHandle ApplyCommands(JobHandle dependency) => new ApplyCommandsJob
         {
             State = State, Commands = commands, CommandCount = commandCounts, QueuedMoves = queuedMoves, Tick = TickCount + 1,
+            SideOrders = sideOrders, RenewEndedOrders = renewEndedOrders,
             SlotSpacing = movement == null ? MovementParameters.DefaultSlotSpacing : movement.Settings.SlotSpacing,
             Walkable = StaticMaps == null ? emptyWalkable : StaticMaps.Walkable
         }.Schedule(dependency);
@@ -308,6 +319,7 @@ namespace Northwatch.Simulation
             Measurement?.Dispose();
 #endif
             commands.Dispose();
+            sideOrders.Dispose();
             emptyWalkable.Dispose();
             commandCounts.Dispose(); queuedMoves.Dispose();
             matrices.Dispose();
