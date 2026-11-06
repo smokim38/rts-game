@@ -6,6 +6,11 @@ const { execFileSync, spawn } = require('node:child_process');
 
 const STEPS = Object.freeze([10, 50, 100, 200, 300, 400, 500, 1000, 2000]);
 const LOW_REGRESSION_CUTOFF_MS = 3.0;
+const INCOMPLETE_CROSSING = 'window closed before both crossing cycles finished';
+const JOB_MARKERS = Object.freeze(['ApplyCommandsJob', 'SelectionJob', 'PublishFieldsJob', 'RequestFieldsJob',
+  'AssignFieldBuildJob', 'BuildFlowFieldJob', 'BucketUnitsJob', 'BuildSpatialGridJob', 'OrderProgressJob',
+  'PreferredVelocityJob', 'IntegrateMovementJob', 'OverlapMovementJob', 'MoveCheckPassJob', 'CommitMovementJob',
+  'FillDrawDataJob', 'LadderMeetJob', 'LadderPassJob']);
 const finitePositive = value => Number.isFinite(value) && value > 0;
 const average = values => values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
 function median(values) {
@@ -18,6 +23,13 @@ function nearestRank(values, percentile = 0.99) {
 }
 function summarizeRun(meta, rows, units) {
   const reasons = [];
+  const publicCounts = {
+    renewedOrdersByArrivalRule: Array.isArray(meta.renewedOrdersByArrivalRule) ?
+      meta.renewedOrdersByArrivalRule.slice(0, 4).map(value => Number.isSafeInteger(value) && value >= 0 ? value : null) : null,
+    windowCloseTick: Number.isSafeInteger(meta.windowCloseTick) && meta.windowCloseTick >= 0 ? meta.windowCloseTick : null,
+    crossing: Array.isArray(meta.crossing) ? meta.crossing.slice(0, 4).map(count => Object.fromEntries(
+      ['cycle', 'side', 'units', 'passed', 'met', 'travelShare'].map(key => [key, Number.isFinite(count?.[key]) ? count[key] : null]))) : null
+  };
   if (!meta.featureEnabled) reasons.push('FrameTimingManager unavailable or timer clocks differ');
   if (meta.focusLost) reasons.push('focus lost');
   if (meta.paused) reasons.push('paused');
@@ -51,15 +63,42 @@ function summarizeRun(meta, rows, units) {
     if (previous >= 0n && BigInt(row.timestamp) <= previous) reasons.push('sample belongs to another frame');
     previous = BigInt(row.callback);
   }
-  if (reasons.length) return { valid: false, reasons: [...new Set(reasons)], renewedOrdersByArrivalRule: meta.renewedOrdersByArrivalRule };
+  if (reasons.length) return { valid: false, reasons: [...new Set(reasons)], ...publicCounts,
+    crossingChecked: checkCrossing(meta, units).checked };
   const frameTimes = rows.map(row => row.frameMs);
   const main = rows.map(row => row.mainMs).filter(finitePositive);
   const gpu = rows.map(row => row.gpuMs).filter(finitePositive);
   const frameMs = average(frameTimes);
-  return { valid: true, frames: rows.length, frameMs, lowMs: nearestRank(frameTimes), maxMs: frameTimes.reduce((a, b) => Math.max(a, b), 0),
+  const result = { valid: true, frames: rows.length, frameMs, lowMs: nearestRank(frameTimes), maxMs: frameTimes.reduce((a, b) => Math.max(a, b), 0),
     mainMs: average(main), gpuMs: average(gpu), fps: 1000 / frameMs,
     missingMain: rows.length - main.length, missingGpu: rows.length - gpu.length,
-    renewedOrdersByArrivalRule: meta.renewedOrdersByArrivalRule };
+    ...publicCounts };
+  const crossing = checkCrossing(meta, units);
+  result.crossingChecked = crossing.checked;
+  if (crossing.reasons.length || (!crossing.checked && frameMs <= 16.67 && result.lowMs <= 16.67))
+    return { ...result, valid: false, reasons: crossing.reasons.length ? crossing.reasons : [INCOMPLETE_CROSSING] };
+  return result;
+}
+function checkCrossing(meta, units) {
+  if (!Number.isSafeInteger(meta.windowCloseTick) || meta.windowCloseTick < 0)
+    return { checked: false, reasons: ['missing or invalid window-close tick'] };
+  if (meta.windowCloseTick < 1800) return { checked: false, reasons: [] };
+  const half = units / 2, floor = Math.ceil(Math.sqrt(half));
+  if (meta.passShare !== 0.9 || meta.meetRows !== 1 || meta.meetDistance !== 2 ||
+      !Array.isArray(meta.crossing) || meta.crossing.length !== 4)
+    return { checked: false, reasons: ['missing or invalid crossing counters'] };
+  const reasons = [];
+  for (let i = 0; i < 4; i++) {
+    const count = meta.crossing[i];
+    if (!count || count.cycle !== 1 + Math.floor(i / 2) || count.side !== i % 2 || count.units !== half ||
+        !Number.isSafeInteger(count.passed) || count.passed < 0 || count.passed > half ||
+        !Number.isSafeInteger(count.met) || count.met < 0 || count.met > half ||
+        !Number.isFinite(count.travelShare) || count.travelShare < 0)
+      reasons.push('missing or invalid crossing counters');
+    else if (count.passed < Math.ceil(0.9 * half) || count.met < floor)
+      reasons.push(`crossing rule missed: cycle ${count.cycle}, side ${count.side}`);
+  }
+  return { checked: true, reasons: [...new Set(reasons)] };
 }
 function regressed(current, before) {
   return current > before * 1.1 && current > before + 0.5;
@@ -83,9 +122,14 @@ function summarizeStep(units, attempts, before) {
 }
 async function collectStep(units, run, before) {
   const attempts = [];
-  while (attempts.length < 6 && attempts.filter(item => item.valid).length < 3)
-    attempts.push(await run(units, attempts.length + 1));
-  return summarizeStep(units, attempts, before);
+  while (true) {
+    while (attempts.length < 6 && attempts.filter(item => item.valid).length < 3)
+      attempts.push(await run(units, attempts.length + 1));
+    const step = summarizeStep(units, attempts, before);
+    if (step.result !== 'pass' || !attempts.some(item => item.valid && item.crossingChecked === false)) return step;
+    for (const item of attempts)
+      if (item.valid && item.crossingChecked === false) { item.valid = false; item.reasons = [INCOMPLETE_CROSSING]; }
+  }
 }
 function ladderHeight(steps) {
   let height = 0;
@@ -168,11 +212,70 @@ function renderEntry(data) {
   const number = value => value == null ? 'unavailable' : value.toFixed(3);
   return `# Unit performance ladder — ${data.date}\n\nContext: ${data.context}\n\nCommit: ${data.commit}\n\n` +
     `Reference-class: ${data.referenceClass}\n\nLadder height: ${data.height}\n\nComparison: ${data.comparison || 'none (new series)'}\n\n` +
-    'Both factions receive seeded move orders to alternating far ends every 20 simulation seconds. Orders ended by the normal movement rules are renewed to the current cycle destination within one simulation tick; live orders are not renewed early. Systems: commands, spatial grid, flow fields and movement at 30 Hz; Burst draw-matrix fill and instanced drawing every frame. Targeting, combat and commander AI are not implemented. Scenario version 2 starts a new series; version 1 held position. The two versions are not a like-for-like series. Renewal counts per measurement window are in each attempt: arrival rules 1 (exact goal), 2 (contact with an arrived member), 3 (goal-disc congestion), 4 (six-second group stall).\n\n' +
+    'Scenario version 3: the two armies move along offset lanes to seeded alternating far ends every 20 simulation seconds (ADR 0017). In each judged cycle, at least 90% of each side passes the other army’s mean x, and one spawn row comes within 2 cells of it. The armies scrape along a seam; they do not mix. Commands, spatial grid, flow fields and movement run at 30 Hz; instanced drawing uses the current game mesh every frame (ADR 0016). Ended orders are renewed before the next movement step; live orders are never renewed early. All movement rules stay enabled, but rule 2 (contact with an arrived member) cannot fire because renewal removes idle members before its next check. Targeting, combat and commander AI are not implemented. Version 1 held position: versions 1 and 3 are not a like-for-like series. Each attempt reports renewals by arrival rules 1 (exact goal), 2, 3 (goal-disc congestion), 4 (six-second group stall), the window-close tick, and both judged cycles. Travel share is mean endpoint displacement divided by free travel.\n\n' +
     '| Units | Average ms | 1% low ms | Maximum ms | CPU main ms | GPU ms | FPS | Result |\n' +
     '| --- | --- | --- | --- | --- | --- | --- | --- |\n' + data.steps.map(step =>
       `| ${step.units} | ${number(step.frameMs)} | ${number(step.lowMs)} | ${number(step.maxMs)} | ${number(step.mainMs)} | ${number(step.gpuMs)} | ${number(step.fps)} | ${step.result}${step.regressed ? ', regressed' : ''}${step.previouslyPassing ? ', previously passing' : ''} |`).join('\n') +
-    '\n\nMachine-readable summary (includes all attempts, three-run averages/spread and missing optional samples):\n\n```json\n' + JSON.stringify(data, null, 2) + '\n```\n';
+    '\n\nCrossing shares (worst judged cycle across valid attempts; first / second side):\n\n' +
+    '| Units | Pass share | Meet share | Travel share |\n| --- | --- | --- | --- |\n' +
+    data.steps.map(step => {
+      const shares = key => [0, 1].map(side => {
+        const counts = step.attempts.filter(run => run.valid && run.crossingChecked).flatMap(run => run.crossing.filter(c => c.side === side));
+        return counts.length ? number(Math.min(...counts.map(c => key === 'travelShare' ? c[key] : c[key] / c.units))) : 'unchecked';
+      }).join(' / ');
+      return `| ${step.units} | ${shares('passed')} | ${shares('met')} | ${shares('travelShare')} |`;
+    }).join('\n') + '\n\n' + renderMovementCost(data.movementCost, number) +
+    '\nMachine-readable summary (includes all attempts, three-run averages/spread and missing optional samples):\n\n```json\n' + JSON.stringify(data, null, 2) + '\n```\n';
+}
+
+function renderMovementCost(cost, number) {
+  if (!cost) return '';
+  return 'Movement cost at 2,000 units (development Player; separate from release frame times):\n\n' +
+    '| Measurement | Value |\n| --- | --- |\n' +
+    `| Worker jobs, 25 fps, mean ms/tick | ${number(cost.worker.meanMs)} |\n` +
+    `| Worker jobs, one-tick-frame 99th percentile ms | ${number(cost.worker.p99Ms)} |\n` +
+    `| Wait, uncapped, median / 99th percentile / maximum ms | ${number(cost.wait.medianMs)} / ${number(cost.wait.p99Ms)} / ${number(cost.wait.maxMs)} |\n` +
+    `| Wait frames completing a tick | ${cost.wait.frames} |\n` +
+    `| Worker capture seconds / ticks / bytes | ${cost.worker.profileSeconds} / ${cost.worker.ticks} / ${cost.worker.captureBytes} |\n` +
+    `| Peak working set / committed bytes | ${cost.worker.peakWorkingSetBytes} / ${cost.worker.peakCommittedBytes} |\n` +
+    `| Crossing checked, worker / wait run | ${cost.worker.crossingChecked} / ${cost.wait.crossingChecked} |\n\n` +
+    'Per-job means and excluded drawing/crossing jobs are in JSON. These single development runs show trends on this hardware only; they do not measure reference-PC headroom or the future ORCA cost.\n';
+}
+
+function movementCost(worker, waitMeta, csv, commit) {
+  if (worker.commit !== commit || waitMeta.commit !== commit || worker.scenarioVersion !== 3 || waitMeta.scenarioVersion !== 3 ||
+      worker.frameRate !== 25 || !worker.ticks || !worker.oneTickFrames || !finitePositive(worker.meanMs) || !finitePositive(worker.p99Ms) ||
+      ![20, 40, 60].includes(worker.profileSeconds) || worker.gcAllocBytes !== 0 ||
+      typeof worker.crossingChecked !== 'boolean' || !worker.crossingValid ||
+      !(worker.captureBytes > 0 && worker.captureBytes <= 201326592) ||
+      ![worker.peakWorkingSetBytes, worker.peakCommittedBytes].every(value => value > 0 && value < 16000000000) ||
+      !Array.isArray(worker.jobs) || worker.jobs.length !== JOB_MARKERS.length ||
+      !waitMeta.development || !waitMeta.waitMode || waitMeta.profile || waitMeta.units !== 2000 || waitMeta.targetFrameRate !== -1 ||
+      waitMeta.focusLost || waitMeta.paused || !waitMeta.activeUnitsValid || !(waitMeta.seconds >= 60) || !(waitMeta.warmupSeconds >= 10))
+    throw Error('Missing, invalid or stale development movement cost; run both development modes for this commit.');
+  const check = checkCrossing(waitMeta, 2000);
+  if (check.reasons.length) throw Error('Development wait run missed crossing rule: ' + check.reasons.join(', '));
+  const lines = csv.trim().split(/\r?\n/);
+  if (lines.shift() !== 'waitMs' || !lines.length) throw Error('Missing wait samples.');
+  const values = lines.map(Number).sort((a, b) => a - b);
+  if (!values.every(value => Number.isFinite(value) && value >= 0)) throw Error('Invalid wait samples.');
+  const middle = Math.floor(values.length / 2);
+  const markers = new Set();
+  const jobs = worker.jobs.map(job => {
+    if (!JOB_MARKERS.includes(job.marker) || markers.has(job.marker) ||
+        !Number.isSafeInteger(job.samples) || job.samples < 0 ||
+        ![job.totalMs, job.meanMsPerTick].every(value => Number.isFinite(value) && value >= 0) ||
+        typeof job.includedInTotal !== 'boolean') throw Error('Invalid worker job summary.');
+    markers.add(job.marker);
+    return { marker: job.marker, samples: job.samples, totalMs: job.totalMs,
+      meanMsPerTick: job.meanMsPerTick, includedInTotal: job.includedInTotal };
+  });
+  const publicWorker = Object.fromEntries(['commit', 'scenarioVersion', 'ticks', 'oneTickFrames', 'frameRate',
+    'profileSeconds', 'meanMs', 'p99Ms', 'captureBytes', 'gcAllocBytes', 'peakWorkingSetBytes', 'peakCommittedBytes',
+    'crossingChecked', 'crossingValid'].map(key => [key, worker[key]]));
+  return { worker: { ...publicWorker, jobs }, wait: { development: true, frameRate: -1, frames: values.length,
+    medianMs: values.length % 2 ? values[middle] : (values[middle - 1] + values[middle]) / 2,
+    p99Ms: values[Math.ceil(.99 * values.length) - 1], maxMs: values.at(-1), crossingChecked: check.checked } };
 }
 function verifyBuildSources(root) {
   const lines = fs.readFileSync(path.join(root, 'Game/Builds/PerformanceLadder/sources.txt'), 'utf8').trim().split(/\r?\n/);
@@ -189,14 +292,16 @@ function verifyBuildSources(root) {
 }
 async function main(args) {
   const root = path.resolve(__dirname, '..');
-  if (args.length !== 2 || !/^(baseline|PR #\d+|re-run: .+)$/.test(args[0]) || !['yes', 'no'].includes(args[1]))
-    throw Error('Usage: node tools/unit-ladder.js "baseline|PR #n|re-run: reason" yes|no');
+  if (args.length !== 4 || !/^(baseline|PR #\d+|re-run: .+)$/.test(args[0]) || !['yes', 'no'].includes(args[1]))
+    throw Error('Usage: node tools/unit-ladder.js "baseline|PR #n|re-run: reason" yes|no WORKER_SUMMARY_JSON WAIT_OUTPUT_PREFIX');
   const context = safeText(args[0]);
   const commit = git(root, 'rev-parse', 'HEAD');
   if (git(root, 'status', '--porcelain')) throw Error('Commit the measured sources first; working tree must be clean.');
   if (fs.readFileSync(path.join(root, 'Game/Builds/PerformanceLadder/commit.txt'), 'utf8').trim() !== commit)
     throw Error('Rebuild both Players for HEAD.');
   verifyBuildSources(root);
+  const cost = movementCost(JSON.parse(fs.readFileSync(args[2], 'utf8')),
+    JSON.parse(fs.readFileSync(args[3] + '.json', 'utf8')), fs.readFileSync(args[3] + '-wait.csv', 'utf8'), commit);
   const hardware = windowsHardware(root);
   const logs = path.join(root, 'Game/Logs/unit-ladder', new Date().toISOString().replace(/[:.]/g, '-'));
   fs.mkdirSync(logs, { recursive: true });
@@ -211,6 +316,7 @@ async function main(args) {
     if (error) return { valid: false, reasons: [error] };
     if (!fs.existsSync(output + '.json') || !fs.existsSync(output + '.csv')) return { valid: false, reasons: ['missing Player output'] };
     const meta = JSON.parse(fs.readFileSync(output + '.json', 'utf8'));
+    if (meta.commit !== commit) return { valid: false, reasons: ['Player build commit mismatch'] };
     const currentHardware = hardwareInfo(meta, windowsHardware(root));
     const fingerprint = JSON.stringify([meta.scenarioVersion, meta.seed, currentHardware, meta.vramMb, meta.ramMb, meta.graphicsVersion, meta.unity, meta.api, meta.quality]);
     if (!firstMeta) {
@@ -236,7 +342,7 @@ async function main(args) {
     seed: firstMeta.meta.seed, tickHz: 30, referenceClass: args[1], hardware: summaryHardware,
     build: { unity: safeText(firstMeta.meta.unity), backend: 'Mono', api: safeText(firstMeta.meta.api),
       quality: safeText(firstMeta.meta.quality), resolution: '1920x1080 borderless', vsync: 'off', development: false },
-    comparison: comparison?.name || null, height: ladderHeight(steps), steps };
+    comparison: comparison?.name || null, height: ladderHeight(steps), steps, movementCost: cost };
   const directory = path.join(root, 'docs/performance/unit-ladder');
   fs.mkdirSync(directory, { recursive: true });
   const stem = `${data.date}-${commit.slice(0, 7)}`;
@@ -247,5 +353,5 @@ async function main(args) {
   if (steps.some(step => step.result === 'invalid' || step.regressed || step.previouslyPassing)) process.exitCode = 1;
 }
 
-module.exports = { STEPS, median, nearestRank, summarizeRun, summarizeStep, collectStep, regressed, ladderHeight, newestBaseline, parseCsv, renderEntry, safeText, hasPlayerLogFailure, windowsHardware, hardwareInfo };
+module.exports = { STEPS, median, nearestRank, summarizeRun, summarizeStep, collectStep, regressed, ladderHeight, newestBaseline, parseCsv, renderEntry, safeText, hasPlayerLogFailure, windowsHardware, hardwareInfo, checkCrossing, movementCost };
 if (require.main === module) main(process.argv.slice(2)).catch(error => { process.stderr.write(error.message + '\n'); process.exitCode = 1; });

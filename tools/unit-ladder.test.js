@@ -6,7 +6,9 @@ const L = require('./unit-ladder.js');
 const meta = { featureEnabled: true, focusLost: false, paused: false, bufferInvalid: false, development: false, activeUnitsValid: true,
   width: 1920, height: 1080, borderless: true, vsync: 0, targetFrameRate: -1, units: 10,
   warmupSeconds: 10, seconds: 60, renderedFrames: 3, recordedFrames: 3, matchedSamples: 3, unmatchedSamples: 0,
-  renewedOrdersByArrivalRule: [0, 0, 0, 0] };
+  renewedOrdersByArrivalRule: [0, 0, 0, 0], windowCloseTick: 2100, passShare: 0.9, meetRows: 1, meetDistance: 2,
+  crossing: Array.from({ length: 4 }, (_, i) => ({ cycle: 1 + Math.floor(i / 2), side: i % 2,
+    units: 5, passed: 5, met: 3, travelShare: 0.8 })) };
 const rows = [1, 2, 3].map((frameMs, i) => ({ callback: String(200 + i * 100), timestamp: String(150 + i * 100), samples: 1, frameMs, mainMs: 0.5, gpuMs: 0.7 }));
 const run = (frameMs = 10, lowMs = 12) => ({ valid: true, frameMs, lowMs, maxMs: 15, mainMs: 5, gpuMs: 3, fps: 1000 / frameMs });
 
@@ -47,6 +49,71 @@ test('renewal counts survive valid and failed runs and require all four ending r
   assert.deepEqual(failed.renewedOrdersByArrivalRule, counts);
   for (const value of [undefined, [], [0, 0, 0], [0, 0, 0, -1], [0, 0, 0, 1.5]])
     assert.equal(L.summarizeRun({ ...meta, renewedOrdersByArrivalRule: value }, rows, 10).valid, false);
+});
+test('whole-army crossing checks enforce both cycles, each side, and the row floor', () => {
+  assert.equal(L.checkCrossing(meta, 10).checked, true);
+  for (let i = 0; i < 4; i++) {
+    for (const change of [{ passed: 4 }, { met: 2 }, { units: 4 }, { side: 2 }, { travelShare: NaN }]) {
+      const crossing = meta.crossing.map((c, j) => j === i ? { ...c, ...change } : c);
+      assert.equal(L.summarizeRun({ ...meta, crossing }, rows, 10).valid, false);
+    }
+  }
+  assert.equal(L.summarizeRun({ ...meta, windowCloseTick: undefined }, rows, 10).valid, false);
+  assert.equal(L.summarizeRun({ ...meta, windowCloseTick: 1799 }, rows, 10).valid, false);
+  assert.equal(L.summarizeRun({ ...meta, windowCloseTick: 1800 }, rows, 10).valid, true);
+  const slow = rows.map(row => ({ ...row, frameMs: 20 }));
+  const unchecked = L.summarizeRun({ ...meta, windowCloseTick: 1799 }, slow, 10);
+  assert.equal(unchecked.valid, true);
+  assert.equal(unchecked.crossingChecked, false);
+});
+test('an unchecked slow run is retained in failing medians but replaced in passing medians', async () => {
+  const unchecked = () => ({ ...run(20, 20), crossingChecked: false });
+  const checked = () => ({ ...run(), crossingChecked: true });
+  const passing = await L.collectStep(10, async (_, n) => n === 1 ? unchecked() : checked());
+  assert.equal(passing.result, 'pass');
+  assert.equal(passing.attempts.length, 4);
+  assert.equal(passing.attempts[0].valid, false);
+  const failing = await L.collectStep(10, async () => unchecked());
+  assert.equal(failing.result, 'fail');
+  assert.equal(failing.attempts.length, 3);
+  const exhausted = await L.collectStep(10, async (_, n) => n % 3 === 1 ? unchecked() : checked());
+  assert.equal(exhausted.result, 'pass');
+});
+test('movement cost requires both development runs at the measured commit and allows zero waits', () => {
+  const commit = 'a'.repeat(40);
+  const worker = { commit, scenarioVersion: 3, frameRate: 25, ticks: 1798, oneTickFrames: 1200,
+    meanMs: 0.5, p99Ms: 0.8, profileSeconds: 60, gcAllocBytes: 0, captureBytes: 100000000, crossingChecked: true, crossingValid: true,
+    peakWorkingSetBytes: 3000000000, peakCommittedBytes: 4000000000,
+    jobs: ['ApplyCommandsJob', 'SelectionJob', 'PublishFieldsJob', 'RequestFieldsJob', 'AssignFieldBuildJob',
+      'BuildFlowFieldJob', 'BucketUnitsJob', 'BuildSpatialGridJob', 'OrderProgressJob', 'PreferredVelocityJob',
+      'IntegrateMovementJob', 'OverlapMovementJob', 'MoveCheckPassJob', 'CommitMovementJob', 'FillDrawDataJob',
+      'LadderMeetJob', 'LadderPassJob'].map(marker => ({ marker, samples: 100, totalMs: 1, meanMsPerTick: .1, includedInTotal: true })) };
+  const wait = { ...meta, commit, scenarioVersion: 3, development: true, waitMode: true,
+    profile: false, units: 2000, crossing: meta.crossing.map(c => ({ ...c, units: 1000, passed: 900, met: 32 })) };
+  const result = L.movementCost(worker, wait, 'waitMs\n0\n0.1\n0.2\n0.3\n', commit);
+  assert.equal(result.wait.frames, 4);
+  assert.equal(result.wait.medianMs, (0.1 + 0.2) / 2);
+  assert.equal(result.wait.p99Ms, 0.3);
+  for (const change of [{ commit: 'b'.repeat(40) }, { ticks: 0 }, { gcAllocBytes: 1 }, { profileSeconds: 10 },
+    { captureBytes: 201326593 }, { peakCommittedBytes: 16000000000 }])
+    assert.throws(() => L.movementCost({ ...worker, ...change }, wait, 'waitMs\n0\n', commit));
+  assert.throws(() => L.movementCost(worker, { ...wait, commit: 'b'.repeat(40) }, 'waitMs\n0\n', commit));
+  assert.equal(L.movementCost(worker, { ...wait, windowCloseTick: 1799 }, 'waitMs\n0\n', commit).wait.crossingChecked, false);
+  const publicResult = L.movementCost({ ...worker, privateField: 'omit',
+    jobs: worker.jobs.map(job => ({ ...job, privateField: 'omit' })) }, wait, 'waitMs\n0\n', commit);
+  assert.equal(JSON.stringify(publicResult).includes('privateField'), false);
+  assert.throws(() => L.movementCost({ ...worker, jobs: worker.jobs.slice(1) }, wait, 'waitMs\n0\n', commit));
+  assert.throws(() => L.movementCost({ ...worker, jobs: worker.jobs.map(job => ({ ...job, marker: 'unknown' })) }, wait, 'waitMs\n0\n', commit));
+});
+test('public crossing and renewal summaries include only finite numeric fields', () => {
+  const result = L.summarizeRun({ ...meta, privateField: 'omit',
+    crossing: meta.crossing.map(c => ({ ...c, privateField: 'omit' })) }, rows, 10);
+  assert.equal(result.valid, true);
+  assert.equal(JSON.stringify(result).includes('privateField'), false);
+  const invalid = L.summarizeRun({ ...meta, windowCloseTick: 'omit', renewedOrdersByArrivalRule: ['omit'],
+    crossing: [{ cycle: 'omit', privateField: 'omit' }] }, rows, 10);
+  assert.equal(invalid.valid, false);
+  assert.equal(JSON.stringify(invalid).includes('omit'), false);
 });
 test('invalid run detection covers unavailable timings, focus, pause, window, display and count', () => {
   for (const change of [{ featureEnabled: false }, { focusLost: true }, { paused: true }, { bufferInvalid: true }, { activeUnitsValid: false },

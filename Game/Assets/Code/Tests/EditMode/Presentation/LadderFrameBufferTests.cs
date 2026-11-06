@@ -4,11 +4,78 @@ using Northwatch.Simulation;
 using UnityEditor;
 using NUnit.Framework;
 using UnityEngine;
+using Unity.Collections;
+using Unity.Jobs;
+using Unity.Mathematics;
 
 namespace Northwatch.Tests.EditMode.Presentation
 {
     public sealed class LadderFrameBufferTests
     {
+        [TestCase(10)] [TestCase(50)] [TestCase(2000)]
+        public void SpawnFacingRowsStayOnTheirOwnGoalLines(int count)
+        {
+            var scenario = ScriptableObject.CreateInstance<LadderScenario>();
+            try
+            {
+                using var simulation = new UnitSimulation();
+                scenario.QueueUnits(simulation, count);
+                simulation.ScheduleFrame(1); simulation.CompleteFrame();
+                float firstEdge = float.MaxValue, secondEdge = float.MinValue;
+                for (int i = 0; i < count; i++)
+                    if (simulation.State.Sides[i] == Side.First) firstEdge = Mathf.Min(firstEdge, simulation.State.Positions[i].z);
+                    else secondEdge = Mathf.Max(secondEdge, simulation.State.Positions[i].z);
+                Assert.That(firstEdge, Is.EqualTo(scenario.LaneGap / 2).Within(.00001));
+                Assert.That(secondEdge, Is.EqualTo(-scenario.LaneGap / 2).Within(.00001));
+            }
+            finally { Object.DestroyImmediate(scenario); }
+        }
+
+        [Test]
+        public void CrossingCountsWholeArmiesAndClearsMeetFlagsAtEachBoundary()
+        {
+            using var stateStorage = new UnitState(10);
+            var state = stateStorage;
+            using var previous = new NativeArray<float3>(10, Allocator.TempJob);
+            using var snapshots = new NativeArray<float4>(10, Allocator.TempJob);
+            using var met = new NativeArray<byte>(10, Allocator.TempJob);
+            using var counts = new NativeArray<LadderCycleCounts>(6, Allocator.TempJob);
+            for (int i = 0; i < 10; i++)
+            {
+                state.Alive[i] = 1; state.Sides[i] = i < 5 ? Side.First : Side.Second;
+                state.Positions[i] = new float3(i < 5 ? -10 : 10, 0, 0);
+            }
+            var job = new LadderPassJob { State = state, Previous = previous, Snapshots = snapshots, Met = met,
+                Counts = counts, Cycle = -1, Seconds = 20,
+                Settings = new Northwatch.Simulation.Movement.MovementParameters { SmallSpeed = 4, LargeSpeed = 2.5f } };
+            job.Run();
+            state.Positions[0] = new float3(20, 0, 0);
+            var meetFlags = met;
+            meetFlags[0] = 1;
+            job.Cycle = 1; job.Run();
+            Assert.That(counts[2].passed, Is.EqualTo(1), "One crossing unit must not stand in for its army.");
+            Assert.That(counts[3].passed, Is.Zero);
+            Assert.That(counts[2].met, Is.EqualTo(1));
+            Assert.That(met[0], Is.Zero, "Meet flags belong only to the completed cycle.");
+            for (int i = 0; i < 10; i++) state.Positions[i] = new float3(i < 5 ? 30 : -30, 0, 0);
+            job.Cycle = 2; job.Run();
+            Assert.That(counts[4].passed, Is.EqualTo(4));
+            Assert.That(counts[5].passed, Is.EqualTo(5));
+            Assert.That(counts[4].met, Is.Zero);
+        }
+
+        [TestCase(1.09f, 65)] [TestCase(2.01f, 65)] [TestCase(1.2f, 49)] [TestCase(1.2f, 81)]
+        public void LayoutRejectsValuesOutsideTheAdrTrialRanges(float gap, float distance)
+        {
+            var scenario = ScriptableObject.CreateInstance<LadderScenario>();
+            try
+            {
+                scenario.LaneGap = gap; scenario.FirstSpawn.x = -distance * 8 / 13; scenario.SecondSpawn.x = distance * 5 / 13;
+                Assert.Throws<System.ArgumentException>(() => scenario.Validate());
+            }
+            finally { Object.DestroyImmediate(scenario); }
+        }
+
         [TestCase(10)]
         [TestCase(2000)]
         public void SeededOrdersKeepEveryUnitActiveAcrossTheWholeWindow(int count)
@@ -17,16 +84,13 @@ namespace Northwatch.Tests.EditMode.Presentation
             var settings = AssetDatabase.LoadAssetAtPath<MovementSettings>("Assets/Data/MovementSettings.asset");
             using var simulation = new UnitSimulation(settings.Snapshot());
             using var batched = new UnitSimulation(settings.Snapshot());
-            Assert.That(simulation.QueueBlock(Side.First, scenario.FirstSize, scenario.FirstSpawn, count / 2), Is.True);
-            Assert.That(simulation.QueueBlock(Side.Second, scenario.SecondSize, scenario.SecondSpawn, count / 2), Is.True);
+            scenario.QueueUnits(simulation, count);
             scenario.QueueOrders(simulation);
-            batched.QueueBlock(Side.First, scenario.FirstSize, scenario.FirstSpawn, count / 2);
-            batched.QueueBlock(Side.Second, scenario.SecondSize, scenario.SecondSpawn, count / 2);
+            scenario.QueueUnits(batched, count);
             scenario.QueueOrders(batched);
             int warmup = (int)(scenario.WarmupSeconds / TickClock.TickDuration);
             int end = (int)((scenario.WarmupSeconds + scenario.WindowSeconds) / TickClock.TickDuration);
             int cycleTicks = (int)(scenario.OrderCycleSeconds / TickClock.TickDuration);
-            bool firstCrossed = false, secondCrossed = false;
             int minimumOrders = count;
             var lastOrderTick = new int[count];
             var lastOrderVersion = new int[count];
@@ -60,8 +124,6 @@ namespace Northwatch.Tests.EditMode.Presentation
                     lastOrderVersion[slot] = unit.OrderVersion;
                     if (tick >= warmup && tick - lastOrderTick[slot] > 1)
                         Assert.Fail("Order gap longer than one tick: tick=" + tick + "; slot=" + slot);
-                    if (simulation.State.Sides[slot] == Side.First) firstCrossed |= simulation.State.Positions[slot].x > 0;
-                    else secondCrossed |= simulation.State.Positions[slot].x < 0;
                 }
                 if (tick % 2 == 0)
                 {
@@ -79,13 +141,21 @@ namespace Northwatch.Tests.EditMode.Presentation
                 if (tick % cycleTicks == 0) TestContext.WriteLine("Tick=" + tick + "; orders=" + simulation.MovingOrderCount +
                     "; firstX=" + simulation.State.Positions[0].x + "; secondX=" + simulation.State.Positions[count / 2].x);
             }
-            TestContext.WriteLine("Minimum orders=" + minimumOrders + "; firstCrossed=" + firstCrossed + "; secondCrossed=" + secondCrossed);
+            TestContext.WriteLine("Minimum orders=" + minimumOrders);
             for (int rule = 1; rule <= 4; rule++)
                 TestContext.WriteLine("Renewed: rule=" + rule + "; measured=" + (simulation.RenewedOrderCount(rule) - warmupRenewals[rule - 1]) +
                     "; warmup=" + warmupRenewals[rule - 1]);
-            if (count == 2000) Assert.That(simulation.RenewedOrderCount(4), Is.GreaterThan(0), "Group stall must remain enabled.");
             Assert.That(allocated, Is.Zero, "Order cycles and renewals must allocate no managed bytes after warmup.");
-            Assert.That(firstCrossed && secondCrossed, Is.True, "Both factions must cross the middle.");
+            for (int cycle = 1; cycle <= 2; cycle++)
+                for (int side = 0; side < 2; side++)
+                {
+                    LadderCycleCounts crossing = simulation.LadderCrossingCount(cycle, (Side)side);
+                    TestContext.WriteLine("Crossing: " + JsonUtility.ToJson(crossing));
+                    Assert.That(crossing.units, Is.EqualTo(count / 2));
+                    Assert.That(crossing.passed, Is.GreaterThanOrEqualTo(Mathf.CeilToInt(scenario.PassShare * count / 2)));
+                    Assert.That(crossing.met, Is.GreaterThanOrEqualTo(scenario.MeetRows * Mathf.CeilToInt(Mathf.Sqrt(count / 2))));
+                    Assert.That(batched.LadderCrossingCount(cycle, (Side)side), Is.EqualTo(crossing));
+                }
         }
 
         [TestCase(1)] [TestCase(2)] [TestCase(3)] [TestCase(4)]

@@ -14,6 +14,7 @@ namespace Northwatch.Simulation
         public const float MapHalfWidth = 128f;
         internal UnitState State;
         private MovementPipeline movement;
+        private LadderCrossing ladderCrossing;
         internal StaticMaps StaticMaps { get; private set; }
         private StaticMaps openFieldMaps;
         public double StaticMapBuildMilliseconds { get; private set; }
@@ -179,6 +180,27 @@ namespace Northwatch.Simulation
             return true;
         }
 
+        public bool QueueLaneBlock(Side side, UnitSize size, Vector3 centre, int count, float gap)
+        {
+            RequireComplete();
+            if (count < 1) return false;
+            centre.z = BlockPlacement.LaneCentre(count, size, gap,
+                movement == null ? MovementParameters.DefaultSlotSpacing : movement.Settings.SlotSpacing) * (side == Side.First ? 1 : -1);
+            return QueueBlock(side, size, centre, count);
+        }
+
+        public void MeasureLadderCrossing(int cycleTicks, int cycles, int sampleTicks, float distance)
+        {
+            RequireComplete();
+            if (TickCount != 0 || ladderCrossing != null || cycleTicks < 1 || cycles < 1 ||
+                sampleTicks < 1 || !math.isfinite(distance) || distance <= 0)
+                throw new ArgumentException("Enable ladder crossing counters once, before the first tick.");
+            ladderCrossing = new LadderCrossing(cycleTicks, cycles, sampleTicks, distance);
+        }
+
+        public LadderCycleCounts LadderCrossingCount(int cycle, Side side)
+        { RequireComplete(); return ladderCrossing.Count(cycle, side); }
+
         public bool QueueSideMove(Side side, Vector3 destination, ulong executeTick, bool renewEnded = false)
         {
             RequireComplete();
@@ -249,6 +271,7 @@ namespace Northwatch.Simulation
             for (int tick = 0; tick < ticks; tick++)
             {
                 pending = ApplyCommands(pending);
+                if (ladderCrossing != null) pending = ladderCrossing.Begin(State, TickCount + 1, pending);
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
                 if (Measurement != null)
                 {
@@ -259,6 +282,8 @@ namespace Northwatch.Simulation
                 else
 #endif
                 if (movement != null) pending = movement.Schedule(State, pending, tick: TickCount + 1);
+                if (ladderCrossing != null && movement != null)
+                    pending = ladderCrossing.End(State, movement, TickCount + 1, pending);
                 TickCount++;
             }
             if (ticks > 0) { queuedAdds = 0; commandBatch++; }
@@ -313,6 +338,7 @@ namespace Northwatch.Simulation
             CompleteFrame();
             State.Dispose();
             movement?.Dispose();
+            ladderCrossing?.Dispose();
             StaticMaps?.Dispose();
             openFieldMaps?.Dispose();
 #if UNITY_EDITOR || DEVELOPMENT_BUILD

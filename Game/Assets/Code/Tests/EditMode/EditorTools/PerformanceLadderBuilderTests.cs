@@ -159,7 +159,7 @@ namespace Northwatch.Tests.EditMode.EditorTools
             Assert.That(roots.SelectMany(root => root.GetComponentsInChildren<Canvas>()).Any(), Is.False);
             Camera camera = roots.Select(root => root.GetComponent<Camera>()).Single(value => value != null);
             var scenario = AssetDatabase.LoadAssetAtPath<LadderScenario>(PerformanceLadderBuilder.ScenarioPath);
-            Assert.That(scenario.Version, Is.EqualTo(2));
+            Assert.That(scenario.Version, Is.EqualTo(3));
             Assert.That(scenario.WarmupSeconds, Is.EqualTo(10));
             Assert.That(scenario.WindowSeconds, Is.EqualTo(60));
             camera.aspect = 16f / 9f;

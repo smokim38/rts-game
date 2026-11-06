@@ -43,6 +43,15 @@ namespace Northwatch.EditorTools
             var defaults = ScriptableObject.CreateInstance<LadderScenario>();
             EditorUtility.CopySerialized(defaults, scenario);
             UnityEngine.Object.DestroyImmediate(defaults);
+            string[] arguments = Environment.GetCommandLineArgs();
+            int gap = Array.IndexOf(arguments, "-ladder-lane-gap"), distance = Array.IndexOf(arguments, "-ladder-spawn-distance");
+            if (gap >= 0) scenario.LaneGap = float.Parse(arguments[gap + 1], System.Globalization.CultureInfo.InvariantCulture);
+            if (distance >= 0)
+            {
+                float cells = float.Parse(arguments[distance + 1], System.Globalization.CultureInfo.InvariantCulture);
+                scenario.FirstSpawn.x = -cells * 8 / 13; scenario.SecondSpawn.x = cells * 5 / 13;
+            }
+            scenario.Validate();
             scenario.name = "PerformanceLadder";
             AssetDatabase.SaveAssetIfDirty(scenario);
             Scene scene = File.Exists(ScenePath) ? EditorSceneManager.OpenScene(ScenePath) :
@@ -94,7 +103,8 @@ namespace Northwatch.EditorTools
             Build();
             WriteSourceHashes();
             BuildPlayer("PerformanceLadder", BuildOptions.None);
-            BuildPlayer("PerformanceLadderDevelopment", BuildOptions.Development);
+            if (Array.IndexOf(arguments, "-ladder-trial") < 0)
+                BuildPlayer("PerformanceLadderDevelopment", BuildOptions.Development);
             File.WriteAllText("Builds/PerformanceLadder/commit.txt", arguments[index + 1]);
         }
 
