@@ -4,7 +4,7 @@ using UnityEngine.InputSystem.LowLevel;
 
 namespace Northwatch.Presentation.Diagnostics
 {
-    [DefaultExecutionOrder(300)]
+    [DefaultExecutionOrder(3000)]
     public sealed class SandboxPlayerCheck : MonoBehaviour
     {
         private MatchDriver driver;
@@ -26,6 +26,7 @@ namespace Northwatch.Presentation.Diagnostics
         private bool moveMarkerCheck;
         private Keyboard checkKeyboard;
         private Vector2 moveClick;
+        private int imageFirst, imageSecond, imageSelected, savedImages, confirmedSelection;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void StartCheck()
@@ -71,16 +72,20 @@ namespace Northwatch.Presentation.Diagnostics
             check.captureTarget = new RenderTexture(1920, 1080, 24);
             if (!check.captureTarget.Create()) throw new System.InvalidOperationException("Could not create validation render target.");
             check.captureCamera.aspect = 16f / 9f;
-            check.renderRequest = new UnityEngine.Rendering.Universal.UniversalRenderPipeline.SingleCameraRequest
-                { destination = check.captureTarget };
-            if (count == 2000 && check.selectionCheck)
+            check.renderRequest = CreateRenderRequest(check.captureTarget);
+            QueueUnits(check.driver.Simulation, count, check.selectionCheck);
+        }
+
+        private static void QueueUnits(Simulation.UnitSimulation simulation, int count, bool selection)
+        {
+            if (count == 2000 && selection)
             {
-                if (!check.driver.Simulation.QueueBlock(Simulation.Side.First, Simulation.UnitSize.Small, Vector3.zero, count))
+                if (!simulation.QueueBlock(Simulation.Side.First, Simulation.UnitSize.Small, Vector3.zero, count))
                     throw new System.InvalidOperationException("Selection check could not queue 2000 own units.");
             }
-            else if (count == 2000 && (!check.driver.Simulation.QueueBlock(Simulation.Side.First, Simulation.UnitSize.Small,
-                    new Vector3(-40, 0, 0), 1000) || !check.driver.Simulation.QueueBlock(Simulation.Side.Second,
-                    Simulation.UnitSize.Large, new Vector3(40, 0, 0), 1000)))
+            else if (count == 2000 && (!simulation.QueueBlock(Simulation.Side.First, Simulation.UnitSize.Small,
+                    new Vector3(-40, 0, 0), 1000) || !simulation.QueueBlock(Simulation.Side.Second,
+                    Simulation.UnitSize.Large, new Vector3(-40, 0, 40), 1000)))
                 throw new System.InvalidOperationException("Sandbox check could not queue two blocks of 1000.");
         }
 
@@ -92,9 +97,8 @@ namespace Northwatch.Presentation.Diagnostics
             return System.IO.Path.Combine(project, "Logs", "sandbox-" + count);
         }
 
-        private void LateUpdate()
+        private void Update()
         {
-            // The unattended desktop has no back buffer. The single-camera request reuses URP's camera list.
             if ((!Application.isBatchMode && !UnityEngine.Rendering.SplashScreen.isFinished) ||
                 Time.realtimeSinceStartupAsDouble < 10.0) return;
             frames++;
@@ -102,23 +106,10 @@ namespace Northwatch.Presentation.Diagnostics
             // After the camera reset, resume on phase 0 so the first box starts with its press.
             else if (selectionCheck && (!moveMarkerCheck || frames >= 190)) CheckSelectionFrame();
             if (!enabled) return;
+            imageFirst = driver.Simulation.DrawCount(Simulation.Side.First) - driver.Simulation.SelectedCount;
+            imageSecond = driver.Simulation.DrawCount(Simulation.Side.Second);
+            imageSelected = driver.Simulation.SelectedCount;
             if (frames > 120) { measuredFrames++; measuredSeconds += Time.unscaledDeltaTime; }
-            UnityEngine.Rendering.RenderPipeline.SubmitRenderRequest(captureCamera, renderRequest);
-            if (moveMarkerCheck && (frames == 60 || frames == 80 || frames == 100 || frames == 120 || frames == 140 || frames == 160))
-                CaptureMoveMarker();
-            if (frames == (selectionCheck ? 63 : 60) || (selectionCheck && frames == 62))
-            {
-                RenderTexture previous = RenderTexture.active;
-                RenderTexture.active = captureTarget;
-                var image = new Texture2D(1920, 1080, TextureFormat.RGB24, false);
-                image.ReadPixels(new Rect(0, 0, 1920, 1080), 0, 0);
-                image.Apply();
-                if (image.GetPixel(960, 540).grayscale < 0.2f)
-                    throw new System.InvalidOperationException("Sandbox validation target was not rendered.");
-                System.IO.File.WriteAllBytes(output + (selectionCheck && frames == 62 ? "-drag.png" : ".png"), image.EncodeToPNG());
-                RenderTexture.active = previous;
-                Destroy(image);
-            }
             if (frames == (moveMarkerCheck ? 180 : 120))
             {
 #if DEVELOPMENT_BUILD
@@ -143,12 +134,18 @@ namespace Northwatch.Presentation.Diagnostics
                 "; measured_fps=" + (measuredFrames / measuredSeconds).ToString("F2", System.Globalization.CultureInfo.InvariantCulture) +
                 "; gpu=" + SystemInfo.graphicsDeviceName + "; cpu=" + SystemInfo.processorType);
             if (selectionCheck)
-                Debug.Log("Selection check: own_units=2000; samples=" + selectionSamples +
+                Debug.Log("Selection check: own_units=" + confirmedSelection + "; selected=" + confirmedSelection + "; samples=" + selectionSamples +
                     "; response_frames=1; selected_frame_average_ms=" + (selectionTotalMs / selectionSamples).ToString("F6", System.Globalization.CultureInfo.InvariantCulture) +
                     "; selected_frame_max_ms=" + selectionMaxMs.ToString("F6", System.Globalization.CultureInfo.InvariantCulture) +
                     "; resolution=" + Screen.width + "x" + Screen.height + "; focused=" + Application.isFocused);
-            Application.Quit(count == unitCount ? 0 : 1);
+            Application.Quit(CountersValid(unitCount, selectionCheck, driver.Simulation.DrawCount(Simulation.Side.First),
+                driver.Simulation.DrawCount(Simulation.Side.Second), count) && savedImages > 0 &&
+                (!selectionCheck || (confirmedSelection == 2000 && selectionSamples > 0)) ? 0 : 1);
         }
+
+        private static bool CountersValid(int expected, bool selection, int first, int second, int total)
+            => total == expected && first == (expected == 0 ? 0 : selection ? 2000 : 1000) &&
+                second == (expected == 0 || selection ? 0 : 1000);
 
         private void CheckSelectionFrame()
         {
@@ -164,9 +161,10 @@ namespace Northwatch.Presentation.Diagnostics
                     driver.Simulation.DrawMatrices[Simulation.UnitSimulation.Capacity * 3 - 1].m33 != 1f)
                 {
                     FailSelection("2000 selected units must have draw data on the next frame; selected=" +
-                        driver.Simulation.SelectedCount + "; focused=" + Application.isFocused);
+                        driver.Simulation.SelectedCount + "; frame=" + frames + "; focused=" + Application.isFocused);
                     return;
                 }
+                confirmedSelection = driver.Simulation.SelectedCount;
             }
             if (Time.frameCount == selectionResponseFrame + 1 && frames > 120)
             {
@@ -185,7 +183,8 @@ namespace Northwatch.Presentation.Diagnostics
                     position = doubleClickPoint,
                     buttons = phase == 0 || phase == 2 ? (ushort)1 : phase == 5 ? (ushort)2 : (ushort)0
                 });
-                if (phase == 3) selectionResponseFrame = Time.frameCount + 1;
+                // Queued events reach input next frame; check draw data one frame after that.
+                if (phase == 3) selectionResponseFrame = Time.frameCount + 2;
                 return;
             }
             if (phase == 3 || phase == 4 || phase == 8 || phase == 9) return;
@@ -196,7 +195,7 @@ namespace Northwatch.Presentation.Diagnostics
                 position = captureCamera.ViewportToScreenPoint(viewport),
                 buttons = phase == 2 || phase == 7 ? (ushort)0 : (ushort)1
             });
-            if (phase == 2) selectionResponseFrame = Time.frameCount + 1;
+            if (phase == 2) selectionResponseFrame = Time.frameCount + 2;
         }
 
         private void CheckMoveMarkerFrame()
@@ -204,13 +203,13 @@ namespace Northwatch.Presentation.Diagnostics
             if (frames < 50) return;
             if (frames == 180)
             {
-                // The following selection measurement must fit all 2,000 cubes in its box again.
+                // The following selection measurement must fit all 2,000 vehicles in its box again.
                 captureCamera.orthographicSize = 200f;
                 cameraController.CentreOn(Vector3.zero);
             }
             if (frames < 54)
             {
-                // Use the real box gesture before giving move orders to all 2,000 cubes.
+                // Use the real box gesture before giving move orders to all 2,000 vehicles.
                 Vector2 p = frames == 50 ? new Vector2(0.4f, 0.4f) : new Vector2(0.6f, 0.6f);
                 InputSystem.QueueStateEvent(selectionMouse, new MouseState
                     { position = captureCamera.ViewportToScreenPoint(p), buttons = frames < 52 ? (ushort)1 : (ushort)0 });
@@ -267,12 +266,12 @@ namespace Northwatch.Presentation.Diagnostics
                 }
             string option = frames <= 100 ? "classic" : "modern";
             string zoom = frames == 60 || frames == 120 ? "far" : frames == 80 || frames == 140 ? "near" : "pan";
-            System.IO.File.WriteAllBytes(output + "-" + option + "-" + zoom + ".png", image.EncodeToPNG());
+            try { SaveImage(image, "-" + option + "-" + zoom); }
+            finally { RenderTexture.active = previous; Destroy(image); }
             Debug.Log("Move marker: " + option + "; " + zoom + "; click=" + moveClick + "; pixels=" + pixels +
                 "; centre_error_px=" + (pixels == 0 ? -1f : Vector2.Distance(sum / pixels, moveClick)) +
                 "; diameter_px=" + (right - left + 1) + "; height_px=" + (top - bottom + 1) +
                 "; zoom=" + captureCamera.orthographicSize);
-            RenderTexture.active = previous; Destroy(image);
             if (pixels == 0 || Vector2.Distance(sum / pixels, moveClick) > 8f)
                 FailSelection("Move marker pixels must be within 8 pixels of the click.");
             else if (zoom == "far" && (right - left + 1 < 22 || right - left + 1 > 30))
@@ -291,6 +290,104 @@ namespace Northwatch.Presentation.Diagnostics
             if (captureTarget == null) return;
             captureTarget.Release();
             Destroy(captureTarget);
+        }
+
+        private void LateUpdate()
+        {
+            if (frames == 0) return;
+            // Batch Players need an explicit pass. MatchDriver has now submitted this frame's vehicles.
+            try
+            {
+                RenderCamera(captureCamera, renderRequest);
+                CaptureFrame();
+            }
+            catch (System.Exception error) { FailSelection(error.Message); }
+        }
+
+        private void CaptureFrame()
+        {
+            if (!enabled) return;
+            bool marker = moveMarkerCheck && (frames == 60 || frames == 80 || frames == 100 || frames == 120 || frames == 140 || frames == 160);
+            bool main = frames == (selectionCheck ? doubleClickCheck ? 65 : 64 : 60) || (selectionCheck && frames == 62);
+            if (!marker && !main) return;
+            if (marker) CaptureMoveMarker();
+            if (!main) return;
+            RenderTexture previous = RenderTexture.active;
+            RenderTexture.active = captureTarget;
+            var image = new Texture2D(1920, 1080, TextureFormat.RGB24, false);
+            image.ReadPixels(new Rect(0, 0, 1920, 1080), 0, 0);
+            image.Apply();
+            try { SaveImage(image, selectionCheck && frames == 62 ? "-drag" : ""); }
+            finally { RenderTexture.active = previous; Destroy(image); }
+        }
+
+        private void SaveImage(Texture2D image, string suffix)
+        {
+            string path = output + suffix + ".png";
+            System.IO.File.WriteAllBytes(path, image.EncodeToPNG());
+            if (!ImageValid(image, imageFirst, imageSecond, imageSelected))
+                throw new System.InvalidOperationException("Sandbox image has no vehicles in the expected colours: " + path);
+            if (unitCount > 0) CheckRaisedVehiclePixels(image, path);
+            savedImages++;
+        }
+
+        private void CheckRaisedVehiclePixels(Texture2D image, string path)
+        {
+            try
+            {
+                // Acknowledgement pads reach Y=.0225. Clip below Y=.05 so their yellow
+                // pixels cannot substitute for the vehicle bodies in this same frame.
+                captureCamera.projectionMatrix = VehicleProjection(captureCamera);
+                RenderCamera(captureCamera, renderRequest);
+                RenderTexture.active = captureTarget;
+                image.ReadPixels(new Rect(0, 0, image.width, image.height), 0, 0);
+                image.Apply();
+                System.IO.File.WriteAllBytes(path + "-vehicles.png", image.EncodeToPNG());
+                if (!VehicleColoursValid(image, imageFirst, imageSecond, imageSelected))
+                    throw new System.InvalidOperationException("Sandbox image has no raised vehicles in the expected colours: " + path);
+            }
+            // Assigning the old matrix would leave automatic zoom updates disabled.
+            finally { captureCamera.ResetProjectionMatrix(); }
+        }
+
+        private static Matrix4x4 VehicleProjection(Camera camera)
+        {
+            Matrix4x4 view = camera.worldToCameraMatrix;
+            Vector3 point = view.MultiplyPoint(new Vector3(0, .05f, 0));
+            Vector3 normal = view.MultiplyVector(Vector3.up).normalized;
+            Vector4 plane = new Vector4(normal.x, normal.y, normal.z, -Vector3.Dot(point, normal));
+            Matrix4x4 projection = camera.projectionMatrix;
+            // Map world heights .05..1000 to clip depth -1..1. Unlike the usual
+            // oblique far-corner formula, this keeps the upper half-space even
+            // when every far-plane corner of the downward-looking camera is underground.
+            projection.SetRow(2, plane * (2f / 999.95f) - projection.GetRow(3));
+            return projection;
+        }
+
+        private static UnityEngine.Rendering.Universal.UniversalRenderPipeline.SingleCameraRequest CreateRenderRequest(RenderTexture target)
+            => new UnityEngine.Rendering.Universal.UniversalRenderPipeline.SingleCameraRequest { destination = target };
+
+        private static void RenderCamera(Camera camera, UnityEngine.Rendering.Universal.UniversalRenderPipeline.SingleCameraRequest request)
+            => UnityEngine.Rendering.RenderPipeline.SubmitRenderRequest(camera, request);
+
+        private static bool ImageValid(Texture2D image, int first, int second, int selected)
+        {
+            if (image.GetPixel(image.width / 2, image.height / 2).grayscale < .2f) return false;
+            return VehicleColoursValid(image, first, second, selected);
+        }
+
+        private static bool VehicleColoursValid(Texture2D image, int first, int second, int selected)
+        {
+            int blue = 0, red = 0, yellow = 0;
+            Color32[] pixels = image.GetPixels32();
+            foreach (Color32 colour in pixels)
+            {
+                if (colour.b > 100 && colour.b > colour.r * 1.4f && colour.b > colour.g * 1.2f) blue++;
+                if (colour.r > 100 && colour.r > colour.g * 1.4f && colour.r > colour.b * 1.4f) red++;
+                if (colour.r > 128 && colour.g > 100 && Mathf.Min(colour.r, colour.g) > colour.b * 1.5f) yellow++;
+            }
+            // A grey map, white overlay or green move ring cannot stand in for vehicle pixels.
+            return blue >= Mathf.Min(first, 100) && red >= Mathf.Min(second, 100) && yellow >= Mathf.Min(selected, 100);
         }
     }
 }
