@@ -12,14 +12,17 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: fcca4d7ee1d1e1a45a5460633e7cdfd0, type: 3}
   m_Name: PerformanceLadder
   m_EditorClassIdentifier: Northwatch.Presentation::Northwatch.Presentation.Diagnostics.LadderScenario
-  Version: 1
+  Version: 2
   Seed: 103
   PlaneSize: 256
-  FirstSpawn: {x: -80, y: 0, z: 0}
-  SecondSpawn: {x: 80, y: 0, z: 0}
+  FirstSpawn: {x: -30, y: 0, z: 0}
+  SecondSpawn: {x: 30, y: 0, z: 0}
   FirstSize: 0
   SecondSize: 1
   OrderCycleSeconds: 20
+  FirstOrderEnd: {x: -120, y: 0, z: 0}
+  SecondOrderEnd: {x: 120, y: 0, z: 0}
+  OrderSpread: 8
   CameraAngles: {x: 35.26439, y: 45, z: 0}
   CameraDistance: 400
   CameraSize: 200

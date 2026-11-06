@@ -14,7 +14,7 @@ namespace Northwatch.Simulation
         internal NativeArray<byte> Alive;
         internal NativeArray<uint> Generations;
         internal NativeArray<int> FreeSlots;
-        // Count, next unused slot, free-slot count, two draw counts, placement result and version.
+        // Count, next unused slot, free-slot count, two draw counts, placement result/version, acknowledgements, move orders.
         internal NativeArray<int> Summary;
 
         internal UnitState(int capacity)
@@ -26,7 +26,7 @@ namespace Northwatch.Simulation
             Alive = new NativeArray<byte>(capacity, Allocator.Persistent);
             Generations = new NativeArray<uint>(capacity, Allocator.Persistent);
             FreeSlots = new NativeArray<int>(capacity, Allocator.Persistent);
-            Summary = new NativeArray<int>(8, Allocator.Persistent);
+            Summary = new NativeArray<int>(9, Allocator.Persistent);
         }
 
         public void Dispose()

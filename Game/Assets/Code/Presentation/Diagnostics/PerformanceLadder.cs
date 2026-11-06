@@ -121,6 +121,7 @@ namespace Northwatch.Presentation.Diagnostics
             if (!driver.Simulation.QueueBlock(Side.First, scenario.FirstSize, scenario.FirstSpawn, unitCount / 2) ||
                 !driver.Simulation.QueueBlock(Side.Second, scenario.SecondSize, scenario.SecondSpawn, unitCount / 2))
                 throw new InvalidOperationException("Ladder blocks could not be queued.");
+            scenario.QueueOrders(driver.Simulation);
             started = Time.realtimeSinceStartupAsDouble;
         }
 
@@ -168,6 +169,7 @@ namespace Northwatch.Presentation.Diagnostics
                     focusLost |= !Application.isFocused;
                     featureEnabled &= FrameTimingManager.IsFeatureEnabled();
                     activeUnitsValid &= driver.Simulation.Count == unitCount &&
+                        driver.Simulation.MovingOrderCount == unitCount &&
                         driver.Simulation.DrawCount(Side.First) == unitCount / 2 && driver.Simulation.DrawCount(Side.Second) == unitCount / 2;
                 }
             }

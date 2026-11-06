@@ -164,7 +164,7 @@ function renderEntry(data) {
   const number = value => value == null ? 'unavailable' : value.toFixed(3);
   return `# Unit performance ladder — ${data.date}\n\nContext: ${data.context}\n\nCommit: ${data.commit}\n\n` +
     `Reference-class: ${data.referenceClass}\n\nLadder height: ${data.height}\n\nComparison: ${data.comparison || 'none (new series)'}\n\n` +
-    'Units hold position. Systems: spawn/command application at 30 Hz; Burst draw-matrix fill and instanced drawing every frame. No movement, spatial grid, targeting, combat or commander AI exists in this build. Seed is fixed; no random work is present.\n\n' +
+    'Both factions receive seeded move orders to alternating far ends every 20 simulation seconds. Systems: commands, spatial grid, flow fields and movement at 30 Hz; Burst draw-matrix fill and instanced drawing every frame. Targeting, combat and commander AI are not implemented. Scenario version 2 starts a new series; version 1 held position.\n\n' +
     '| Units | Average ms | 1% low ms | Maximum ms | CPU main ms | GPU ms | FPS | Result |\n' +
     '| --- | --- | --- | --- | --- | --- | --- | --- |\n' + data.steps.map(step =>
       `| ${step.units} | ${number(step.frameMs)} | ${number(step.lowMs)} | ${number(step.maxMs)} | ${number(step.mainMs)} | ${number(step.gpuMs)} | ${number(step.fps)} | ${step.result}${step.regressed ? ', regressed' : ''}${step.previouslyPassing ? ', previously passing' : ''} |`).join('\n') +

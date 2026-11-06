@@ -18,9 +18,19 @@ namespace Northwatch.Simulation
 
         public void Execute()
         {
+            bool deferred = false;
             for (int i = 0; i < CommandCount[0]; i++)
             {
                 UnitCommand command = Commands[i];
+                if (command.Consumed) continue;
+                if (command.ExecuteTick > Tick)
+                {
+                    deferred = true;
+                    continue;
+                }
+                // Keep response slots stable while a future order is pending.
+                command.Consumed = true;
+                Commands[i] = command;
                 if (command.BlockCount > 0)
                 {
                     PlaceBlock(command);
@@ -29,19 +39,21 @@ namespace Northwatch.Simulation
                 int slot = command.Handle.Slot;
                 if (command.Move)
                 {
+                    if (command.AllOnSide)
+                    {
+                        for (int member = 0; member < State.Alive.Length; member++)
+                            if (State.Alive[member] != 0 && State.Sides[member] == command.Side)
+                            {
+                                var unit = State.Movement[member];
+                                unit.OrderVersion = (int)(Tick * 2 + (uint)command.Side);
+                                State.Movement[member] = unit;
+                                Move(member, command.Position.xz);
+                            }
+                        continue;
+                    }
                     QueuedMoves[slot] = 0;
                     if (State.Alive[slot] == 0 || State.Generations[slot] != command.Handle.Generation) continue;
-                    MovementUnit unit = State.Movement[slot];
-                    unit.Goal = command.Position.xz;
-                    unit.GoalResolved = false;
-                    unit.GoalRegion = 0;
-                    unit.HasMoveOrder = true;
-                    unit.Mode = MovementMode.Moving;
-                    unit.BestGoalDistance = math.distance(unit.Goal, State.Positions[slot].xz);
-                    unit.LastProgressTick = Tick;
-                    unit.ProgressField = -1;
-                    unit.ArrivalRule = 0;
-                    State.Movement[slot] = unit;
+                    Move(slot, command.Position.xz);
                     continue;
                 }
                 if (command.Remove)
@@ -58,7 +70,22 @@ namespace Northwatch.Simulation
                     Commands[i] = command;
                 }
             }
-            CommandCount[0] = 0;
+            if (!deferred) CommandCount[0] = 0;
+        }
+
+        private void Move(int slot, float2 goal)
+        {
+            MovementUnit unit = State.Movement[slot];
+            unit.Goal = goal;
+            unit.GoalResolved = false;
+            unit.GoalRegion = 0;
+            unit.HasMoveOrder = true;
+            unit.Mode = MovementMode.Moving;
+            unit.BestGoalDistance = math.distance(goal, State.Positions[slot].xz);
+            unit.LastProgressTick = Tick;
+            unit.ProgressField = -1;
+            unit.ArrivalRule = 0;
+            State.Movement[slot] = unit;
         }
 
         private void PlaceBlock(UnitCommand command)
