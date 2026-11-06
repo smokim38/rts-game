@@ -17,8 +17,6 @@ namespace Northwatch.Presentation.Diagnostics
         public Vector3 SecondOrderEnd = new Vector3(120, 0, 0);
         public float OrderSpread = 7;
         public float LaneGap = 1.2f;
-        public float PassShare = .9f;
-        public int MeetRows = 1;
         public float MeetDistance = 2;
         public int MeetSampleTicks = 15;
         public Vector3 CameraAngles = new Vector3(35.26439f, 45, 0);
@@ -52,17 +50,11 @@ namespace Northwatch.Presentation.Diagnostics
 
         public void Validate()
         {
-            float distance = SecondSpawn.x - FirstSpawn.x;
             if (Version != 3 || OrderCycleSeconds != 20 || OrderSpread != 7 ||
-                !float.IsFinite(LaneGap) || LaneGap < 1.1f || LaneGap > MeetDistance ||
-                !float.IsFinite(distance) || distance < 50 || distance > 80 ||
-                Mathf.Abs(FirstSpawn.x + distance * 8 / 13) > .001f ||
-                Mathf.Abs(SecondSpawn.x - distance * 5 / 13) > .001f ||
-                FirstSpawn.y != 0 || FirstSpawn.z != 0 || SecondSpawn.y != 0 || SecondSpawn.z != 0 ||
-                FirstOrderEnd != new Vector3(-120, 0, 0) || SecondOrderEnd != new Vector3(120, 0, 0) ||
-                FirstSize != UnitSize.Small || SecondSize != UnitSize.Large || PassShare != .9f ||
-                MeetRows != 1 || MeetDistance != 2 || MeetSampleTicks != 15)
-                throw new System.ArgumentException("Ladder layout violates ADR 0017.");
+                LaneGap != 1.2f || !FirstSpawn.Equals(new Vector3(-40, 0, 0)) || !SecondSpawn.Equals(new Vector3(25, 0, 0)) ||
+                !FirstOrderEnd.Equals(new Vector3(-120, 0, 0)) || !SecondOrderEnd.Equals(new Vector3(120, 0, 0)) ||
+                FirstSize != UnitSize.Small || SecondSize != UnitSize.Large || MeetDistance != 2 || MeetSampleTicks != 15)
+                throw new System.ArgumentException("Ladder layout violates ADR 0018.");
         }
 
         public void QueueOrders(UnitSimulation simulation)

@@ -24,8 +24,6 @@ MonoBehaviour:
   SecondOrderEnd: {x: 120, y: 0, z: 0}
   OrderSpread: 7
   LaneGap: 1.2
-  PassShare: 0.9
-  MeetRows: 1
   MeetDistance: 2
   MeetSampleTicks: 15
   CameraAngles: {x: 35.26439, y: 45, z: 0}

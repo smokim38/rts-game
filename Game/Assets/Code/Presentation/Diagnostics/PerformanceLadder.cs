@@ -233,6 +233,9 @@ namespace Northwatch.Presentation.Diagnostics
 #endif
             Directory.CreateDirectory(Path.GetDirectoryName(output));
             var crossing = new LadderCycleCounts[4];
+            var cycleZeroCrossing = new LadderCycleCounts[2];
+            for (int side = 0; side < 2; side++)
+                cycleZeroCrossing[side] = driver.Simulation.LadderCrossingCount(0, (Side)side);
             for (int cycle = 1; cycle <= 2; cycle++)
                 for (int side = 0; side < 2; side++)
                     crossing[(cycle - 1) * 2 + side] = driver.Simulation.LadderCrossingCount(cycle, (Side)side);
@@ -261,8 +264,8 @@ namespace Northwatch.Presentation.Diagnostics
                 units = unitCount, scenarioVersion = scenario.Version, seed = scenario.Seed, commit = commit,
                 featureEnabled = featureEnabled, focusLost = focusLost, paused = paused, activeUnitsValid = activeUnitsValid,
                 renewedOrdersByArrivalRule = measuredRenewals, warmupRenewedOrdersByArrivalRule = warmupRenewals,
-                windowCloseTick = windowCloseTick, crossing = crossing,
-                passShare = scenario.PassShare, meetRows = scenario.MeetRows, meetDistance = scenario.MeetDistance,
+                windowCloseTick = windowCloseTick, crossing = crossing, cycleZeroCrossing = cycleZeroCrossing,
+                meetDistance = scenario.MeetDistance,
                 laneGap = scenario.LaneGap, spawnDistance = scenario.SecondSpawn.x - scenario.FirstSpawn.x,
                 profile = profile, waitMode = waitMode, profileSeconds = profileSeconds,
                 bufferInvalid = buffer.Invalid, renderedFrames = renderedEnd - renderedStart,
@@ -287,9 +290,8 @@ namespace Northwatch.Presentation.Diagnostics
             public bool featureEnabled, focusLost, paused, bufferInvalid, borderless, development, activeUnitsValid;
             public int[] renewedOrdersByArrivalRule, warmupRenewedOrdersByArrivalRule;
             public ulong windowCloseTick;
-            public LadderCycleCounts[] crossing;
-            public float passShare, meetDistance, laneGap, spawnDistance;
-            public int meetRows;
+            public LadderCycleCounts[] crossing, cycleZeroCrossing;
+            public float meetDistance, laneGap, spawnDistance;
             public bool profile, waitMode;
             public double profileSeconds;
             public double seconds, warmupSeconds;

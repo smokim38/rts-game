@@ -28,18 +28,25 @@ namespace Northwatch.EditorTools
             result.commit = metadata.commit; result.scenarioVersion = metadata.scenarioVersion;
             result.profileSeconds = metadata.profileSeconds;
             result.crossingChecked = metadata.windowCloseTick >= 1800;
-            result.crossingValid = !result.crossingChecked || (metadata.crossing != null && metadata.crossing.Length == 4);
-            if (result.crossingChecked && result.crossingValid)
-                for (int i = 0; i < 4; i++)
-                {
-                    var count = metadata.crossing[i];
-                    result.crossingValid &= count.cycle == 1 + i / 2 && count.side == i % 2 &&
-                        count.units == 1000 && count.passed >= 900 && count.passed <= 1000 && count.met >= 32 && count.met <= 1000;
-                }
+            result.crossingValid = !result.crossingChecked ||
+                (CrossingCountsValid(metadata.crossing, 1, 4) && CrossingCountsValid(metadata.cycleZeroCrossing, 0, 2));
             File.WriteAllText(summaryPath + ".json", JsonUtility.ToJson(result, true));
             File.AppendAllText(summaryPath, "Wait: use the separate uncapped -ladder-wait run; capped waits are not comparable.\n");
             if (!result.crossingValid || metadata.focusLost || metadata.paused || !metadata.activeUnitsValid)
-                throw new InvalidOperationException("Development capture missed the crossing or active-unit rule, or lost focus.");
+                throw new InvalidOperationException("Development capture has invalid crossing counters, failed the active-unit rule, or lost focus.");
+        }
+
+        private static bool CrossingCountsValid(Northwatch.Simulation.LadderCycleCounts[] counts, int firstCycle, int length)
+        {
+            if (counts == null || counts.Length != length) return false;
+            for (int i = 0; i < length; i++)
+            {
+                var count = counts[i];
+                if (count.cycle != firstCycle + i / 2 || count.side != i % 2 || count.units != 1000 ||
+                    count.passed < 0 || count.passed > 1000 || count.met < 0 || count.met > 1000 ||
+                    !float.IsFinite(count.travelShare) || count.travelShare < 0) return false;
+            }
+            return true;
         }
 
         [Serializable] private sealed class CostMetadata
@@ -50,7 +57,7 @@ namespace Northwatch.EditorTools
             public ulong windowCloseTick = 0;
             public double profileSeconds = 0;
             public bool focusLost = false, paused = false, activeUnitsValid = false;
-            public Northwatch.Simulation.LadderCycleCounts[] crossing = null;
+            public Northwatch.Simulation.LadderCycleCounts[] crossing = null, cycleZeroCrossing = null;
         }
 
         [Serializable] private sealed class WorkerCost

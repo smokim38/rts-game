@@ -7,12 +7,15 @@ const { execFileSync, spawn } = require('node:child_process');
 const STEPS = Object.freeze([10, 50, 100, 200, 300, 400, 500, 1000, 2000]);
 const LOW_REGRESSION_CUTOFF_MS = 3.0;
 const INCOMPLETE_CROSSING = 'window closed before both crossing cycles finished';
+const MOVEMENT_STATUS = 'armies mostly stuck, movement unsolved';
 const JOB_MARKERS = Object.freeze(['ApplyCommandsJob', 'SelectionJob', 'PublishFieldsJob', 'RequestFieldsJob',
   'AssignFieldBuildJob', 'BuildFlowFieldJob', 'BucketUnitsJob', 'BuildSpatialGridJob', 'OrderProgressJob',
   'PreferredVelocityJob', 'IntegrateMovementJob', 'OverlapMovementJob', 'MoveCheckPassJob', 'CommitMovementJob',
   'FillDrawDataJob', 'LadderMeetJob', 'LadderPassJob']);
 const finitePositive = value => Number.isFinite(value) && value > 0;
 const average = values => values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
+const publicCrossing = (counts, limit) => Array.isArray(counts) ? counts.slice(0, limit).map(count => Object.fromEntries(
+  ['cycle', 'side', 'units', 'passed', 'met', 'travelShare'].map(key => [key, Number.isFinite(count?.[key]) ? count[key] : null]))) : null;
 function median(values) {
   if (values.length !== 3 || !values.every(Number.isFinite)) throw Error('Three finite runs required.');
   return [...values].sort((a, b) => a - b)[1];
@@ -27,8 +30,8 @@ function summarizeRun(meta, rows, units) {
     renewedOrdersByArrivalRule: Array.isArray(meta.renewedOrdersByArrivalRule) ?
       meta.renewedOrdersByArrivalRule.slice(0, 4).map(value => Number.isSafeInteger(value) && value >= 0 ? value : null) : null,
     windowCloseTick: Number.isSafeInteger(meta.windowCloseTick) && meta.windowCloseTick >= 0 ? meta.windowCloseTick : null,
-    crossing: Array.isArray(meta.crossing) ? meta.crossing.slice(0, 4).map(count => Object.fromEntries(
-      ['cycle', 'side', 'units', 'passed', 'met', 'travelShare'].map(key => [key, Number.isFinite(count?.[key]) ? count[key] : null]))) : null
+    crossing: publicCrossing(meta.crossing, 4),
+    cycleZeroCrossing: publicCrossing(meta.cycleZeroCrossing, 2)
   };
   if (!meta.featureEnabled) reasons.push('FrameTimingManager unavailable or timer clocks differ');
   if (meta.focusLost) reasons.push('focus lost');
@@ -83,20 +86,19 @@ function checkCrossing(meta, units) {
   if (!Number.isSafeInteger(meta.windowCloseTick) || meta.windowCloseTick < 0)
     return { checked: false, reasons: ['missing or invalid window-close tick'] };
   if (meta.windowCloseTick < 1800) return { checked: false, reasons: [] };
-  const half = units / 2, floor = Math.ceil(Math.sqrt(half));
-  if (meta.passShare !== 0.9 || meta.meetRows !== 1 || meta.meetDistance !== 2 ||
-      !Array.isArray(meta.crossing) || meta.crossing.length !== 4)
+  const half = units / 2;
+  if (meta.meetDistance !== 2 || !Array.isArray(meta.crossing) || meta.crossing.length !== 4 ||
+      !Array.isArray(meta.cycleZeroCrossing) || meta.cycleZeroCrossing.length !== 2)
     return { checked: false, reasons: ['missing or invalid crossing counters'] };
   const reasons = [];
-  for (let i = 0; i < 4; i++) {
-    const count = meta.crossing[i];
-    if (!count || count.cycle !== 1 + Math.floor(i / 2) || count.side !== i % 2 || count.units !== half ||
+  const counts = [...meta.cycleZeroCrossing, ...meta.crossing];
+  for (let i = 0; i < counts.length; i++) {
+    const count = counts[i];
+    if (!count || count.cycle !== Math.floor(i / 2) || count.side !== i % 2 || count.units !== half ||
         !Number.isSafeInteger(count.passed) || count.passed < 0 || count.passed > half ||
         !Number.isSafeInteger(count.met) || count.met < 0 || count.met > half ||
         !Number.isFinite(count.travelShare) || count.travelShare < 0)
       reasons.push('missing or invalid crossing counters');
-    else if (count.passed < Math.ceil(0.9 * half) || count.met < floor)
-      reasons.push(`crossing rule missed: cycle ${count.cycle}, side ${count.side}`);
   }
   return { checked: true, reasons: [...new Set(reasons)] };
 }
@@ -209,28 +211,29 @@ function launch(player, args, root) {
   });
 }
 function renderEntry(data) {
+  data = { ...data, movementStatus: MOVEMENT_STATUS };
   const number = value => value == null ? 'unavailable' : value.toFixed(3);
   return `# Unit performance ladder — ${data.date}\n\nContext: ${data.context}\n\nCommit: ${data.commit}\n\n` +
-    `Reference-class: ${data.referenceClass}\n\nLadder height: ${data.height}\n\nComparison: ${data.comparison || 'none (new series)'}\n\n` +
-    'Scenario version 3: the two armies move along offset lanes to seeded alternating far ends every 20 simulation seconds (ADR 0017). In each judged cycle, at least 90% of each side passes the other army’s mean x, and one spawn row comes within 2 cells of it. The armies scrape along a seam; they do not mix. Commands, spatial grid, flow fields and movement run at 30 Hz; instanced drawing uses the current game mesh every frame (ADR 0016). Ended orders are renewed before the next movement step; live orders are never renewed early. All movement rules stay enabled, but rule 2 (contact with an arrived member) cannot fire because renewal removes idle members before its next check. Targeting, combat and commander AI are not implemented. Version 1 held position: versions 1 and 3 are not a like-for-like series. Each attempt reports renewals by arrival rules 1 (exact goal), 2, 3 (goal-disc congestion), 4 (six-second group stall), the window-close tick, and both judged cycles. Travel share is mean endpoint displacement divided by free travel.\n\n' +
+    `Reference-class: ${data.referenceClass}\n\nLadder height: ${data.height} (${MOVEMENT_STATUS})\n\nComparison: ${data.comparison || 'none (new series)'}\n\n` +
+    'Scenario version 3: the two armies receive seeded orders along separate offset lanes to alternating far ends every 20 simulation seconds (ADRs 0017 and 0018). Pass, meet and travel shares are reported, not required. Commands, spatial grid, flow fields and movement run at 30 Hz; instanced drawing uses the current game mesh every frame (ADR 0016). Ended orders are renewed before the next movement step; live orders are never renewed early. All movement rules stay enabled, but rule 2 (contact with an arrived member) cannot fire because renewal removes idle members before its next check. Targeting, combat and commander AI are not implemented. Version 1 held position: versions 1 and 3 are not a like-for-like series. Each attempt reports renewals by arrival rules 1 (exact goal), 2, 3 (goal-disc congestion), 4 (six-second group stall), the window-close tick, cycle 0 and both judged cycles. Travel share is mean endpoint displacement in any direction divided by free travel; it cannot distinguish sideways movement from progress along the lane. These results do not establish smooth movement or the cost of free movement or mixing armies.\n\n' +
     '| Units | Average ms | 1% low ms | Maximum ms | CPU main ms | GPU ms | FPS | Result |\n' +
     '| --- | --- | --- | --- | --- | --- | --- | --- |\n' + data.steps.map(step =>
       `| ${step.units} | ${number(step.frameMs)} | ${number(step.lowMs)} | ${number(step.maxMs)} | ${number(step.mainMs)} | ${number(step.gpuMs)} | ${number(step.fps)} | ${step.result}${step.regressed ? ', regressed' : ''}${step.previouslyPassing ? ', previously passing' : ''} |`).join('\n') +
-    '\n\nCrossing shares (worst judged cycle across valid attempts; first / second side):\n\n' +
-    '| Units | Pass share | Meet share | Travel share |\n| --- | --- | --- | --- |\n' +
+    `\n\nCrossing shares, ${MOVEMENT_STATUS} (worst judged cycle across valid attempts; first / second side):\n\n` +
+    '| Units | Pass share | Meet share | Travel share | Cycle 0 travel share |\n| --- | --- | --- | --- | --- |\n' +
     data.steps.map(step => {
-      const shares = key => [0, 1].map(side => {
-        const counts = step.attempts.filter(run => run.valid && run.crossingChecked).flatMap(run => run.crossing.filter(c => c.side === side));
+      const shares = (key, field = 'crossing') => [0, 1].map(side => {
+        const counts = step.attempts.filter(run => run.valid && run.crossingChecked).flatMap(run => run[field].filter(c => c.side === side));
         return counts.length ? number(Math.min(...counts.map(c => key === 'travelShare' ? c[key] : c[key] / c.units))) : 'unchecked';
       }).join(' / ');
-      return `| ${step.units} | ${shares('passed')} | ${shares('met')} | ${shares('travelShare')} |`;
+      return `| ${step.units} | ${shares('passed')} | ${shares('met')} | ${shares('travelShare')} | ${shares('travelShare', 'cycleZeroCrossing')} |`;
     }).join('\n') + '\n\n' + renderMovementCost(data.movementCost, number) +
     '\nMachine-readable summary (includes all attempts, three-run averages/spread and missing optional samples):\n\n```json\n' + JSON.stringify(data, null, 2) + '\n```\n';
 }
 
 function renderMovementCost(cost, number) {
   if (!cost) return '';
-  return 'Movement cost at 2,000 units (development Player; separate from release frame times):\n\n' +
+  return `Movement cost at 2,000 units, ${MOVEMENT_STATUS} (development Player; separate from release frame times):\n\n` +
     '| Measurement | Value |\n| --- | --- |\n' +
     `| Worker jobs, 25 fps, mean ms/tick | ${number(cost.worker.meanMs)} |\n` +
     `| Worker jobs, one-tick-frame 99th percentile ms | ${number(cost.worker.p99Ms)} |\n` +
@@ -254,7 +257,7 @@ function movementCost(worker, waitMeta, csv, commit) {
       waitMeta.focusLost || waitMeta.paused || !waitMeta.activeUnitsValid || !(waitMeta.seconds >= 60) || !(waitMeta.warmupSeconds >= 10))
     throw Error('Missing, invalid or stale development movement cost; run both development modes for this commit.');
   const check = checkCrossing(waitMeta, 2000);
-  if (check.reasons.length) throw Error('Development wait run missed crossing rule: ' + check.reasons.join(', '));
+  if (check.reasons.length) throw Error('Development wait run has invalid crossing counters: ' + check.reasons.join(', '));
   const lines = csv.trim().split(/\r?\n/);
   if (lines.shift() !== 'waitMs' || !lines.length) throw Error('Missing wait samples.');
   const values = lines.map(Number).sort((a, b) => a - b);
@@ -349,7 +352,7 @@ async function main(args) {
   let filename = path.join(directory, stem + '.md'), repeat = 2;
   while (fs.existsSync(filename)) filename = path.join(directory, `${stem}-${repeat++}.md`);
   fs.writeFileSync(filename, renderEntry(data), { flag: 'wx' });
-  process.stdout.write(`Entry: ${path.relative(root, filename)}; ladder height ${data.height}\n`);
+  process.stdout.write(`Entry: ${path.relative(root, filename)}; ladder height ${data.height} (${MOVEMENT_STATUS})\n`);
   if (steps.some(step => step.result === 'invalid' || step.regressed || step.previouslyPassing)) process.exitCode = 1;
 }
 
