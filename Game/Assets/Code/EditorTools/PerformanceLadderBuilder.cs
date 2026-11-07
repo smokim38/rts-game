@@ -43,6 +43,7 @@ namespace Northwatch.EditorTools
             var defaults = ScriptableObject.CreateInstance<LadderScenario>();
             EditorUtility.CopySerialized(defaults, scenario);
             UnityEngine.Object.DestroyImmediate(defaults);
+            scenario.Validate();
             scenario.name = "PerformanceLadder";
             AssetDatabase.SaveAssetIfDirty(scenario);
             Scene scene = File.Exists(ScenePath) ? EditorSceneManager.OpenScene(ScenePath) :

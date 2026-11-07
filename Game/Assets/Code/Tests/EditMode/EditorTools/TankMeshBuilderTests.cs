@@ -144,7 +144,9 @@ namespace Northwatch.Tests.EditMode.EditorTools
                 WriteArray(writer, simulation.State.Positions); WriteArray(writer, simulation.State.Movement);
                 WriteArray(writer, simulation.State.Sides); WriteArray(writer, simulation.State.Sizes);
                 WriteArray(writer, simulation.State.Alive); WriteArray(writer, simulation.State.Generations);
-                WriteArray(writer, simulation.State.FreeSlots); WriteArray(writer, simulation.State.Summary);
+                WriteArray(writer, simulation.State.FreeSlots);
+                // Keep #224's movement baseline; #232's added diagnostic tally is tested by the ladder tests.
+                WriteArray(writer, simulation.State.Summary.GetSubArray(0, 8));
                 WriteArray(writer, simulation.DrawMatrices);
             }
             byte[] bytes = stream.ToArray();

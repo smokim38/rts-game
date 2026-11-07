@@ -83,8 +83,9 @@ namespace Northwatch.Tests.EditMode.Simulation
             using var count = new NativeArray<int>(new[] { 1 }, Allocator.Persistent);
             using var moves = new NativeArray<int>(UnitSimulation.Capacity, Allocator.Persistent);
             using var walkable = new NativeArray<byte>(0, Allocator.Persistent);
+            using var sideOrders = new NativeArray<UnitCommand>(2, Allocator.Persistent);
             new ApplyCommandsJob { State = simulation.State, Commands = commands, CommandCount = count,
-                QueuedMoves = moves, Walkable = walkable }.Schedule().Complete();
+                QueuedMoves = moves, Walkable = walkable, SideOrders = sideOrders }.Schedule().Complete();
             Assert.That(simulation.Count, Is.EqualTo(existingCount));
             Assert.That(simulation.PlacementVersion, Is.EqualTo(version + 1));
             Assert.That(simulation.PlacementResult, Is.EqualTo(-1));

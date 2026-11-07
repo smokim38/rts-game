@@ -42,5 +42,12 @@ namespace Northwatch.Simulation
             }
             return false;
         }
+
+        internal static float LaneCentre(int count, UnitSize size, float gap, float slotSpacing)
+        {
+            int columns = (int)math.ceil(math.sqrt(count));
+            int rows = (count + columns - 1) / math.max(1, columns);
+            return gap / 2 + (rows - 1) * (size == UnitSize.Small ? .5f : 1) * slotSpacing / 2;
+        }
     }
 }
