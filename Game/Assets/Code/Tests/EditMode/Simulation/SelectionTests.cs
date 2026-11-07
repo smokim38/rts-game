@@ -33,7 +33,7 @@ namespace Northwatch.Tests.EditMode.Simulation
                 new Vector3(2.0004f, 0, 0), new Vector3(0, 0, -2.0004f) };
             var handles = new UnitHandle[positions.Length];
             for (int i = 0; i < positions.Length; i++) handles[i] = Add(simulation, positions[i]);
-            UnitHandle enemy = Add(simulation, new Vector3(0, 0, 3), Side.Second);
+            UnitHandle enemy = Add(simulation, new Vector3(1, 0, 1), Side.Second);
             simulation.QueueSelection(SelectionRequest.Box(projection, Rect.MinMaxRect(.25f, .25f, .75f, .75f))); Frame(simulation);
             for (int i = 0; i < handles.Length; i++) Assert.That(simulation.IsSelected(handles[i]), Is.EqualTo(i < 5));
             Assert.That(simulation.IsSelected(enemy), Is.False);
@@ -147,12 +147,12 @@ namespace Northwatch.Tests.EditMode.Simulation
             UnitHandle second = Add(simulation, new Vector3(0.8f, 0, 0));
             UnitHandle offscreen = Add(simulation, new Vector3(1.6f, 0, 0));
             UnitHandle enemy = Add(simulation, new Vector3(-.8f, 0, 0), Side.Second);
-            simulation.QueueAdd(Side.First, UnitSize.Large, new Vector3(-.8f, 0, 2), out ulong request);
+            Assert.That(simulation.QueueAdd(Side.First, UnitSize.Large, new Vector3(-.4f, 0, 1), out ulong request), Is.True);
             Frame(simulation, 1);
-            simulation.TryGetAddedHandle(request, out UnitHandle large);
+            Assert.That(simulation.TryGetAddedHandle(request, out UnitHandle large), Is.True);
             void DoubleClick(bool shift) => simulation.QueueSelection(SelectionRequest.PointerClick(
                 new Ray(new Vector3(0, 10, 0), Vector3.down), Projection, true, true, false, shift, true));
-            simulation.QueueSelection(SelectionRequest.Click(new Ray(new Vector3(-.8f, 10, 2), Vector3.down))); Frame(simulation);
+            simulation.QueueSelection(SelectionRequest.Click(new Ray(new Vector3(-.4f, 10, 1), Vector3.down))); Frame(simulation);
             DoubleClick(true); Frame(simulation);
             Assert.That(simulation.SelectedCount, Is.EqualTo(3));
             Assert.That(simulation.IsSelected(large), Is.True);

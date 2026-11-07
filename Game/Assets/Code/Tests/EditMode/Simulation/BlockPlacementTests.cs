@@ -132,6 +132,25 @@ namespace Northwatch.Tests.EditMode.Simulation
             AssertPlacement(simulation);
         }
 
+        [TestCase(.5f, false)]
+        [TestCase(.9f, true)]
+        public void ReversedBlockChecksClearanceBesideItsPartialRow(float x, bool accepted)
+        {
+            using var simulation = new UnitSimulation();
+            Assert.That(simulation.QueueAdd(Side.First, UnitSize.Small, new Vector3(x, 0, -1.1f)), Is.True);
+            Assert.That(simulation.QueueBlock(Side.Second, UnitSize.Small, Vector3.zero, 7, reverseRows: true), Is.True);
+            Tick(simulation);
+            Assert.That(simulation.Count, Is.EqualTo(accepted ? 8 : 1));
+            Assert.That(simulation.PlacementResult, Is.EqualTo(accepted ? 7 : -1));
+            Assert.That(simulation.RemainingCapacity, Is.EqualTo(accepted ? 1992 : 1999));
+            if (accepted)
+            {
+                Assert.That(simulation.State.Positions[7].x, Is.Zero);
+                Assert.That(simulation.State.Positions[7].z, Is.EqualTo(-.71f).Within(1e-5));
+                AssertPlacement(simulation);
+            }
+        }
+
         [Test]
         public void RejectsInvalidCountsPositionsSidesAndSizesWithoutQueuing()
         {
