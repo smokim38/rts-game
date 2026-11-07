@@ -13,7 +13,7 @@ namespace Northwatch.Tests.EditMode.Presentation
     public sealed class LadderFrameBufferTests
     {
         [TestCase(10)] [TestCase(50)] [TestCase(2000)]
-        public void SpawnFacingRowsStayOnTheirOwnGoalLines(int count)
+        public void SpawnFacingRowsStayAtTheSeamWithFullRows(int count)
         {
             var scenario = ScriptableObject.CreateInstance<LadderScenario>();
             try
@@ -27,6 +27,14 @@ namespace Northwatch.Tests.EditMode.Presentation
                     else secondEdge = Mathf.Max(secondEdge, simulation.State.Positions[i].z);
                 Assert.That(firstEdge, Is.EqualTo(scenario.LaneGap / 2).Within(.00001));
                 Assert.That(secondEdge, Is.EqualTo(-scenario.LaneGap / 2).Within(.00001));
+                int firstRow = 0, secondRow = 0;
+                for (int i = 0; i < count; i++)
+                {
+                    if (Mathf.Abs(simulation.State.Positions[i].z - firstEdge) < .00001f) firstRow++;
+                    if (Mathf.Abs(simulation.State.Positions[i].z - secondEdge) < .00001f) secondRow++;
+                }
+                Assert.That(firstRow, Is.EqualTo(Mathf.CeilToInt(Mathf.Sqrt(count / 2))));
+                Assert.That(secondRow, Is.EqualTo(firstRow));
             }
             finally { Object.DestroyImmediate(scenario); }
         }
@@ -56,12 +64,16 @@ namespace Northwatch.Tests.EditMode.Presentation
             Assert.That(counts[2].passed, Is.EqualTo(1), "One crossing unit must not stand in for its army.");
             Assert.That(counts[3].passed, Is.Zero);
             Assert.That(counts[2].met, Is.EqualTo(1));
+            Assert.That(counts[2].minimumTravelShare, Is.Zero, "The minimum must expose vehicles hidden by the mean.");
+            Assert.That(counts[2].travelShare, Is.GreaterThan(0));
             Assert.That(met[0], Is.Zero, "Meet flags belong only to the completed cycle.");
             for (int i = 0; i < 10; i++) state.Positions[i] = new float3(i < 5 ? 30 : -30, 0, 0);
             job.Cycle = 2; job.Run();
             Assert.That(counts[4].passed, Is.EqualTo(4));
             Assert.That(counts[5].passed, Is.EqualTo(5));
             Assert.That(counts[4].met, Is.Zero);
+            Assert.That(counts[4].minimumTravelShare, Is.EqualTo(10f / 80f).Within(.000001));
+            Assert.That(counts[5].minimumTravelShare, Is.EqualTo(40f / 80f).Within(.000001));
         }
 
         [TestCase(1.09f, 65)] [TestCase(2.01f, 65)] [TestCase(1.2f, 49)] [TestCase(1.2f, 81)]
@@ -86,9 +98,9 @@ namespace Northwatch.Tests.EditMode.Presentation
             using var simulation = new UnitSimulation(settings.Snapshot());
             using var batched = new UnitSimulation(settings.Snapshot());
             scenario.QueueUnits(simulation, count);
-            scenario.QueueOrders(simulation);
+            scenario.QueueOrders(simulation, count);
             scenario.QueueUnits(batched, count);
-            scenario.QueueOrders(batched);
+            scenario.QueueOrders(batched, count);
             int warmup = (int)(scenario.WarmupSeconds / TickClock.TickDuration);
             int end = (int)((scenario.WarmupSeconds + scenario.WindowSeconds) / TickClock.TickDuration);
             int cycleTicks = (int)(scenario.OrderCycleSeconds / TickClock.TickDuration);
@@ -114,7 +126,7 @@ namespace Northwatch.Tests.EditMode.Presentation
                     for (int slot = 0; slot < count; slot++)
                     {
                         Side side = simulation.State.Sides[slot];
-                        Vector3 destination = scenario.OrderDestination((tick - 1) / cycleTicks, side);
+                        Vector3 destination = scenario.OrderDestination((tick - 1) / cycleTicks, side, simulation.LaneOrderZ(side, side == Side.First ? scenario.FirstSize : scenario.SecondSize, count / 2, scenario.LaneGap));
                         Assert.That(simulation.State.Movement[slot].Goal.x, Is.EqualTo(destination.x));
                         Assert.That(simulation.State.Movement[slot].Goal.y, Is.EqualTo(destination.z));
                     }
@@ -172,6 +184,7 @@ namespace Northwatch.Tests.EditMode.Presentation
             simulation.ScheduleFrame(1); simulation.CompleteFrame();
             var unit = simulation.State.Movement[0];
             unit.HasMoveOrder = false; unit.ArrivalRule = (byte)rule;
+            unit.SpotOffset = new float2(3, 4);
             simulation.State.Movement[0] = unit;
             simulation.ScheduleFrame(0); simulation.CompleteFrame();
             Assert.That(simulation.MovingOrderCount, Is.Zero, "No renewal between simulation ticks.");
@@ -180,6 +193,8 @@ namespace Northwatch.Tests.EditMode.Presentation
             Assert.That(simulation.MovingOrdersValid, Is.True);
             Assert.That(simulation.State.Movement[0].OrderVersion, Is.EqualTo(8));
             Assert.That(simulation.State.Movement[0].Goal.x, Is.EqualTo(-20));
+            Assert.That(simulation.State.Movement[0].SpotOffset, Is.EqualTo(new float2(3, 4)));
+            Assert.That(simulation.State.Movement[0].Spot, Is.EqualTo(new float2(-17, 4)));
             Assert.That(simulation.State.Movement[0].ArrivalRule, Is.Zero);
             Assert.That(simulation.RenewedOrderCount(rule), Is.EqualTo(1));
         }
@@ -213,7 +228,7 @@ namespace Northwatch.Tests.EditMode.Presentation
                 {
                     simulation.QueueBlock(Side.First, UnitSize.Small, scenario.FirstSpawn, 1);
                     simulation.QueueBlock(Side.Second, UnitSize.Large, scenario.SecondSpawn, 1);
-                    scenario.QueueOrders(simulation);
+                    scenario.QueueOrders(simulation, 2);
                 }
                 for (int frame = 0; frame < 1250; frame++)
                 {
@@ -226,9 +241,9 @@ namespace Northwatch.Tests.EditMode.Presentation
                         Assert.That(first.State.Movement[slot].OrderVersion, Is.EqualTo(second.State.Movement[slot].OrderVersion));
                     }
                 }
-                Vector3 previous = scenario.OrderDestination(0, Side.First);
+                Vector3 previous = scenario.OrderDestination(0, Side.First, 0);
                 scenario.Seed++;
-                Assert.That(scenario.OrderDestination(0, Side.First), Is.Not.EqualTo(previous));
+                Assert.That(scenario.OrderDestination(0, Side.First, 0), Is.Not.EqualTo(previous));
             }
             finally { Object.DestroyImmediate(scenario); }
         }

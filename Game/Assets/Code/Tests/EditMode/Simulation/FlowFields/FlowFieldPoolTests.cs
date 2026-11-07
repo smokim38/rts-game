@@ -33,6 +33,27 @@ namespace Northwatch.Tests.EditMode.Simulation.FlowFields
             return pool.ScheduleBuilds(maps.Passable, tick, handle);
         }
 
+        [TestCase(1f, 1f, true)]
+        [TestCase(5f, 0f, false)]
+        [TestCase(4.3f, 0f, false)]
+        [TestCase(8f, 0f, false)]
+        public void OwnSpotRequiresAClearDiscAndTheCorrectedGoalRegion(float x, float y, bool valid)
+        {
+            using var maps = new StaticMaps(32, 32);
+            using var boxes = new NativeArray<StaticBox>(new[] {
+                new StaticBox { Min = new int2(15, 0), MaxExclusive = new int2(16, 32) } }, Allocator.TempJob);
+            maps.ScheduleBuild(boxes).Complete();
+            using var ownedState = new UnitState(1);
+            var state = ownedState;
+            using var pool = new FlowFieldPool(32, 32, float2.zero, 1, Settings());
+            Order(state, 0, 1, new float2(10.5f, 8.5f), new float2(5.5f, 8.5f));
+            var unit = state.Movement[0]; unit.SpotOffset = new float2(x, y); state.Movement[0] = unit;
+            pool.RequestFields(state, maps, 1, default).Complete();
+            unit = state.Movement[0];
+            Assert.That(unit.HasOwnSpot, Is.EqualTo(valid));
+            Assert.That(unit.Spot, Is.EqualTo(valid ? unit.Goal + unit.SpotOffset : unit.Goal));
+        }
+
         [TestCase(0)] [TestCase(1)]
         public void OpenGroundHasExactOctileDistancesAndClassAnchors(byte size)
         {
@@ -519,7 +540,7 @@ namespace Northwatch.Tests.EditMode.Simulation.FlowFields
             using var pipeline = new MovementPipeline(100, Settings(), maps.Walkable, maps);
             var goal = new float2(15, 0);
             for (int i = 0; i < 100; i++)
-                Order(state, i, 1, goal, new float2(i % 10 - 4.5f, i / 10 - 4.5f) * .625f);
+                Order(state, i, 1, goal, new float2(i % 10 - 4.5f, i / 10 - 4.5f) * .71f);
             int checkedSamples = 0;
             for (int tick = 0; tick < 1200; tick++)
             {
@@ -583,7 +604,7 @@ namespace Northwatch.Tests.EditMode.Simulation.FlowFields
                 new StaticBox { Min = new int2(135, 124), MaxExclusive = new int2(137, 132) } }, Allocator.TempJob);
             using var simulation = new UnitSimulation(Settings(), boxes);
             for (int i = 0; i < 100; i++) simulation.QueueAdd(Side.First, UnitSize.Small,
-                new Vector3((i % 10 - 4.5f) * .625f, 0, (i / 10 - 4.5f) * .625f));
+                new Vector3((i % 10 - 4.5f) * .71f, 0, (i / 10 - 4.5f) * .71f));
             simulation.ScheduleFrame(1); simulation.CompleteFrame();
             var state = simulation.State;
             var starts = new float[100];

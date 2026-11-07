@@ -3,13 +3,13 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const L = require('./unit-ladder.js');
 
-const meta = { featureEnabled: true, focusLost: false, paused: false, bufferInvalid: false, development: false, activeUnitsValid: true,
+const meta = { featureEnabled: true, focusLost: false, paused: false, bufferInvalid: false, development: false, activeUnitsValid: true, scenarioVersion: 4,
   width: 1920, height: 1080, borderless: true, vsync: 0, targetFrameRate: -1, units: 10,
   warmupSeconds: 10, seconds: 60, renderedFrames: 3, recordedFrames: 3, matchedSamples: 3, unmatchedSamples: 0,
   renewedOrdersByArrivalRule: [0, 0, 0, 0], windowCloseTick: 2100, meetDistance: 2,
-  cycleZeroCrossing: [0, 1].map(side => ({ cycle: 0, side, units: 5, passed: 0, met: 0, travelShare: 0.0045 })),
+  cycleZeroCrossing: [0, 1].map(side => ({ cycle: 0, side, units: 5, passed: 0, met: 0, travelShare: 0.0045, minimumTravelShare: 0.002 })),
   crossing: Array.from({ length: 4 }, (_, i) => ({ cycle: 1 + Math.floor(i / 2), side: i % 2,
-    units: 5, passed: 5, met: 3, travelShare: 0.8 })) };
+    units: 5, passed: 5, met: 3, travelShare: 0.8, minimumTravelShare: 0.4 })) };
 const rows = [1, 2, 3].map((frameMs, i) => ({ callback: String(200 + i * 100), timestamp: String(150 + i * 100), samples: 1, frameMs, mainMs: 0.5, gpuMs: 0.7 }));
 const run = (frameMs = 10, lowMs = 12) => ({ valid: true, frameMs, lowMs, maxMs: 15, mainMs: 5, gpuMs: 3, fps: 1000 / frameMs });
 
@@ -58,7 +58,8 @@ test('crossing checks reject malformed counters for cycle zero and both judged c
       assert.equal(L.summarizeRun({ ...meta, [field]: value }, rows, 10).valid, false);
     for (let i = 0; i < meta[field].length; i++) {
       for (const change of [{ passed: -1 }, { passed: 6 }, { passed: 1.5 }, { met: -1 }, { met: 6 }, { met: 1.5 },
-        { units: 4 }, { side: 2 }, { cycle: 3 }, { travelShare: NaN }, { travelShare: -1 }]) {
+        { units: 4 }, { side: 2 }, { cycle: 3 }, { travelShare: NaN }, { travelShare: -1 }, { minimumTravelShare: undefined },
+        { minimumTravelShare: NaN }, { minimumTravelShare: -1 }, { minimumTravelShare: .81 }]) {
         const counts = meta[field].map((c, j) => j === i ? { ...c, ...change } : c);
         assert.equal(L.summarizeRun({ ...meta, [field]: counts }, rows, 10).valid, false);
       }
@@ -76,7 +77,7 @@ test('crossing checks reject malformed counters for cycle zero and both judged c
 });
 test('low crossing shares remain valid and every entry form carries the movement label', () => {
   const measured = L.summarizeRun({ ...meta,
-    crossing: meta.crossing.map(c => ({ ...c, passed: 1, met: 0, travelShare: .079 })) }, rows, 10);
+    crossing: meta.crossing.map(c => ({ ...c, passed: 1, met: 0, travelShare: .079, minimumTravelShare: .01 })) }, rows, 10);
   assert.equal(measured.valid, true);
   const steps = [L.summarizeStep(10, [measured, measured, measured])];
   const status = 'armies mostly stuck, movement unsolved';
@@ -86,6 +87,9 @@ test('low crossing shares remain valid and every entry form carries the movement
   assert.ok(entry.includes(`Crossing shares, ${status} (worst judged cycle across valid attempts; first / second side):`));
   assert.ok(entry.includes(`Movement cost at 2,000 units, ${status} (development Player; separate from release frame times):`));
   assert.ok(entry.includes('Cycle 0 travel share |'));
+  assert.ok(entry.includes('Armies pass side by side on separate lanes; head-on is not tested (S3.4).'));
+  assert.ok(entry.includes('versions 1, 3 and 4 are not a like-for-like series'));
+  assert.ok(entry.includes('| 10 | 0.002 / 0.002 | 0.010 / 0.010 | 0.010 / 0.010 |'));
   assert.ok(entry.includes('| 10 | 0.200 / 0.200 | 0.000 / 0.000 | 0.079 / 0.079 | 0.004 / 0.004 |'));
   const summary = JSON.parse(entry.match(/```json\n([\s\S]*?)\n```/)[1]);
   assert.equal(summary.movementStatus, status);
@@ -93,6 +97,16 @@ test('low crossing shares remain valid and every entry form carries the movement
   assert.equal(steps[0].result, 'pass');
   assert.equal(L.summarizeRun({ ...meta, crossing: meta.crossing.map(c => ({ ...c, passed: 0, met: 0 })) }, rows, 10).valid, true);
 });
+test('minimum vehicle travel stays separate by side and cycle and excludes invalid attempts', () => {
+  const measured = L.summarizeRun(meta, rows, 10);
+  const attempt = (shift, valid = true) => ({ ...measured, valid,
+    cycleZeroCrossing: measured.cycleZeroCrossing.map(c => ({ ...c, minimumTravelShare: c.side / 100 + shift })),
+    crossing: measured.crossing.map(c => ({ ...c, minimumTravelShare: c.cycle / 10 + c.side / 100 + shift })) });
+  const entry = L.renderEntry({ date: '2026-11-07', height: 10,
+    steps: [{ units: 10, attempts: [attempt(.002), attempt(.001), attempt(0, false)] }] });
+  assert.ok(entry.includes('| 10 | 0.001 / 0.011 | 0.101 / 0.111 | 0.201 / 0.211 |'));
+});
+
 test('an unchecked slow run is retained in failing medians but replaced in passing medians', async () => {
   const unchecked = () => ({ ...run(20, 20), crossingChecked: false });
   const checked = () => ({ ...run(), crossingChecked: true });
@@ -108,14 +122,14 @@ test('an unchecked slow run is retained in failing medians but replaced in passi
 });
 test('movement cost requires both development runs at the measured commit and allows zero waits', () => {
   const commit = 'a'.repeat(40);
-  const worker = { commit, scenarioVersion: 3, frameRate: 25, ticks: 1798, oneTickFrames: 1200,
+  const worker = { commit, scenarioVersion: 4, frameRate: 25, ticks: 1798, oneTickFrames: 1200,
     meanMs: 0.5, p99Ms: 0.8, profileSeconds: 60, gcAllocBytes: 0, captureBytes: 100000000, crossingChecked: true, crossingValid: true,
     peakWorkingSetBytes: 3000000000, peakCommittedBytes: 4000000000,
     jobs: ['ApplyCommandsJob', 'SelectionJob', 'PublishFieldsJob', 'RequestFieldsJob', 'AssignFieldBuildJob',
       'BuildFlowFieldJob', 'BucketUnitsJob', 'BuildSpatialGridJob', 'OrderProgressJob', 'PreferredVelocityJob',
       'IntegrateMovementJob', 'OverlapMovementJob', 'MoveCheckPassJob', 'CommitMovementJob', 'FillDrawDataJob',
       'LadderMeetJob', 'LadderPassJob'].map(marker => ({ marker, samples: 100, totalMs: 1, meanMsPerTick: .1, includedInTotal: true })) };
-  const wait = { ...meta, commit, scenarioVersion: 3, development: true, waitMode: true,
+  const wait = { ...meta, commit, scenarioVersion: 4, development: true, waitMode: true,
     profile: false, units: 2000, crossing: meta.crossing.map(c => ({ ...c, units: 1000, passed: 1, met: 0 })),
     cycleZeroCrossing: meta.cycleZeroCrossing.map(c => ({ ...c, units: 1000 })) };
   const result = L.movementCost(worker, wait, 'waitMs\n0\n0.1\n0.2\n0.3\n', commit);

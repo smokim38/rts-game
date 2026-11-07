@@ -35,7 +35,7 @@ namespace Northwatch.Simulation.Movement
             velocity *= math.min(1, speed / math.max(math.length(velocity), 1e-20f));
             if (unit.HasMoveOrder)
             {
-                float remaining = math.distance(unit.Goal, pose.Position.xz);
+                float remaining = math.distance(unit.HasOwnSpot ? unit.Spot : unit.Goal, pose.Position.xz);
                 velocity *= math.min(1, remaining / math.max(math.length(velocity) * MovementParameters.TickDuration, 1e-20f));
             }
             if (unit.Mode != MovementMode.Hold && math.any(velocity != 0))

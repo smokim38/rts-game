@@ -12,7 +12,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: fcca4d7ee1d1e1a45a5460633e7cdfd0, type: 3}
   m_Name: PerformanceLadder
   m_EditorClassIdentifier: Northwatch.Presentation::Northwatch.Presentation.Diagnostics.LadderScenario
-  Version: 3
+  Version: 4
   Seed: 103
   PlaneSize: 256
   FirstSpawn: {x: -40, y: 0, z: 0}

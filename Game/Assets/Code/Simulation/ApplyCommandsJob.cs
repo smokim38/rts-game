@@ -44,11 +44,18 @@ namespace Northwatch.Simulation
                     if (command.AllOnSide)
                     {
                         SideOrders[(int)command.Side] = command;
+                        float2 centre = 0;
+                        int members = 0;
+                        for (int member = 0; member < State.Alive.Length; member++)
+                            if (State.Alive[member] != 0 && State.Sides[member] == command.Side)
+                            { centre += State.Positions[member].xz; members++; }
+                        centre /= math.max(1, members);
                         for (int member = 0; member < State.Alive.Length; member++)
                             if (State.Alive[member] != 0 && State.Sides[member] == command.Side)
                             {
                                 var unit = State.Movement[member];
                                 unit.OrderVersion = (int)(Tick * 2 + (uint)command.Side);
+                                unit.SpotOffset = State.Positions[member].xz - centre;
                                 State.Movement[member] = unit;
                                 Move(member, command.Position.xz);
                             }
@@ -56,6 +63,9 @@ namespace Northwatch.Simulation
                     }
                     QueuedMoves[slot] = 0;
                     if (State.Alive[slot] == 0 || State.Generations[slot] != command.Handle.Generation) continue;
+                    var selected = State.Movement[slot];
+                    selected.SpotOffset = command.SpotOffset;
+                    State.Movement[slot] = selected;
                     Move(slot, command.Position.xz);
                     continue;
                 }
@@ -69,6 +79,7 @@ namespace Northwatch.Simulation
                 }
                 else if (State.Summary[0] < State.Alive.Length)
                 {
+                    if (!EntryClear(command)) continue;
                     AddUnit(ref command);
                     Commands[i] = command;
                 }
@@ -103,11 +114,14 @@ namespace Northwatch.Simulation
         {
             MovementUnit unit = State.Movement[slot];
             unit.Goal = goal;
+            float radius = Footprint.Radius(State.Sizes[slot]);
+            unit.Spot = math.clamp(goal + unit.SpotOffset, -UnitSimulation.MapHalfWidth + radius, UnitSimulation.MapHalfWidth - radius);
+            unit.HasOwnSpot = true;
             unit.GoalResolved = false;
             unit.GoalRegion = 0;
             unit.HasMoveOrder = true;
             unit.Mode = MovementMode.Moving;
-            unit.BestGoalDistance = math.distance(goal, State.Positions[slot].xz);
+            unit.BestGoalDistance = math.distance(unit.Spot, State.Positions[slot].xz);
             unit.LastProgressTick = Tick;
             unit.ProgressField = -1;
             unit.ArrivalRule = 0;
@@ -120,7 +134,7 @@ namespace Northwatch.Simulation
             State.Summary[5] = -1;
             if (command.BlockCount > State.Alive.Length - State.Summary[0]) return;
             var block = new BlockPlacement(command.BlockCount, command.Size, command.Position,
-                SlotSpacing > 0 ? SlotSpacing : MovementParameters.DefaultSlotSpacing);
+                SlotSpacing > 0 ? SlotSpacing : MovementParameters.DefaultSlotSpacing, command.ReverseRows);
             // One area query per spawn order, like selection; no per-unit neighbour searches.
             for (int slot = 0; slot < State.Alive.Length; slot++)
                 if (State.Alive[slot] != 0 && block.Overlaps(State.Positions[slot], State.Sizes[slot])) return;
@@ -132,6 +146,16 @@ namespace Northwatch.Simulation
                 AddUnit(ref command);
             }
             State.Summary[5] = command.BlockCount;
+        }
+
+        private bool EntryClear(UnitCommand command)
+        {
+            for (int slot = 0; slot < State.Alive.Length; slot++)
+            {
+                if (State.Alive[slot] == 0) continue;
+                if (Footprint.DiscsTooClose(command.Position.xz, command.Size, State.Positions[slot].xz, State.Sizes[slot])) return false;
+            }
+            return true;
         }
 
         private void AddUnit(ref UnitCommand command)

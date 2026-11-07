@@ -123,7 +123,7 @@ namespace Northwatch.Simulation.FlowFields
             int available = 0;
             for (int i = 0; i < scratch.Length; i++) if (scratch[i].Due == 0) available |= 1 << i;
             return new RequestFieldsJob { Positions = state.Positions, Alive = state.Alive, Sizes = state.Sizes,
-                Units = state.Movement, Passable = maps.Passable, Regions = maps.Regions,
+                Units = state.Movement, Passable = maps.Passable, Walkable = maps.Walkable, Regions = maps.Regions,
                 GoalMetrics = GoalMetrics, Timestamps = timestamps.IsCreated ? timestamps : emptyTimestamps,
                 Width = Width, Height = Height, Origin = Origin,
                 Tick = tick, Settings = settings, Entries = Entries, Requests = Requests, Orders = orders,

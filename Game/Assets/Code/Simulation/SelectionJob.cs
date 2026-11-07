@@ -65,9 +65,12 @@ namespace Northwatch.Simulation
                 if (own) return;
                 if (request.MoveGround)
                 {
-                    bool anySelected = false;
-                    for (int slot = 0; slot < Selected.Length; slot++) anySelected |= Selected[slot] != 0;
-                    if (anySelected && math.abs(request.Direction.y) > 1e-7f)
+                    float2 centre = 0;
+                    int members = 0;
+                    for (int slot = 0; slot < Selected.Length; slot++)
+                        if (Selected[slot] != 0) { centre += State.Positions[slot].xz; members++; }
+                    centre /= math.max(1, members);
+                    if (members > 0 && math.abs(request.Direction.y) > 1e-7f)
                     {
                         float distance = -request.Origin.y / request.Direction.y;
                         float3 ground = request.Origin + request.Direction * distance;
@@ -83,6 +86,7 @@ namespace Northwatch.Simulation
                                 int index = QueuedMoves[slot] - 1;
                                 if (index < 0) { index = CommandCount[0]++; QueuedMoves[slot] = index + 1; }
                                 Commands[index] = new UnitCommand { Move = true, Position = ground,
+                                    SpotOffset = State.Positions[slot].xz - centre,
                                     Handle = new UnitHandle(slot, State.Generations[slot]) };
                                 var unit = State.Movement[slot];
                                 unit.OrderVersion = (int)Summary[1].w;

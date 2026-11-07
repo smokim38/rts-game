@@ -10,7 +10,7 @@ namespace Northwatch.Simulation.FlowFields
     internal struct RequestFieldsJob : IJob
     {
         [ReadOnly] internal NativeArray<float3> Positions;
-        [ReadOnly] internal NativeArray<byte> Alive, Passable;
+        [ReadOnly] internal NativeArray<byte> Alive, Passable, Walkable;
         [ReadOnly] internal NativeArray<UnitSize> Sizes;
         [ReadOnly] internal NativeArray<ushort> Regions;
         internal NativeArray<MovementUnit> Units;
@@ -104,8 +104,13 @@ namespace Northwatch.Simulation.FlowFields
                 {
                     if (request.Corrected != 0)
                         unit.Goal = Origin + new float2(request.Goal % Width, request.Goal / Width) + (request.Class + 1) * .5f;
+                    float radius = Footprint.Radius(Sizes[i]);
+                    unit.Spot = math.clamp(unit.Goal + unit.SpotOffset, Origin + radius, Origin + new float2(Width, Height) - radius);
+                    unit.HasOwnSpot = Regions[request.Class * Width * Height + Cell(unit.Spot, request.Class)] == unit.GoalRegion &&
+                        SpotClear(unit.Spot, radius);
+                    if (!unit.HasOwnSpot) unit.Spot = unit.Goal;
                     unit.GoalResolved = true;
-                    unit.BestGoalDistance = math.distance(Positions[i].xz, unit.Goal);
+                    unit.BestGoalDistance = math.distance(Positions[i].xz, unit.Spot);
                     Units[i] = unit;
                 }
                 if (request.NeedsField == 0 && !ClearLine(Positions[i].xz, unit.Goal, request.Class))
@@ -179,6 +184,17 @@ namespace Northwatch.Simulation.FlowFields
                 if (row.Resolved == 1) { row.Resolved = 2; Requests[i] = row; }
             }
             MovementTimestampJob.Write(Timestamps, 8);
+        }
+
+        private bool SpotClear(float2 spot, float radius)
+        {
+            float2 local = spot - Origin;
+            int2 centre = (int2)math.floor(local);
+            for (int y = math.max(0, centre.y - 1); y <= math.min(Height - 1, centre.y + 1); y++)
+                for (int x = math.max(0, centre.x - 1); x <= math.min(Width - 1, centre.x + 1); x++)
+                    if (Walkable[y * Width + x] == 0 && math.distance(local, math.clamp(local, new float2(x, y), new float2(x + 1, y + 1))) < radius)
+                        return false;
+            return true;
         }
 
         private void CorrectGoals(int first)

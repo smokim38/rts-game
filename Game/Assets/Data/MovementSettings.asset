@@ -17,7 +17,7 @@ MonoBehaviour:
   acceleration: 16
   deceleration: 16
   turnSpeed: 6.2831855
-  slotSpacing: 1.25
+  slotSpacing: 1.42
   moveCheckPasses: 1
   fieldCapacity: 256
   buildSlots: 2

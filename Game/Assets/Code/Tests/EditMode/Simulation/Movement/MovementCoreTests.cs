@@ -329,8 +329,16 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
             Assert.Throws<ArgumentException>(() => new UnitSimulation(settings));
             settings = Settings(); settings.Deceleration = 7.99f;
             Assert.Throws<ArgumentException>(() => new UnitSimulation(settings));
-            settings = Settings(); settings.SlotSpacing = 1.31f;
-            Assert.Throws<ArgumentException>(() => new UnitSimulation(settings));
+            foreach (float spacing in new[] { 1.41999f, 1.43001f, float.NaN })
+            {
+                settings = Settings(); settings.SlotSpacing = spacing;
+                Assert.Throws<ArgumentException>(() => new UnitSimulation(settings));
+            }
+            foreach (float spacing in new[] { 1.42f, 1.43f })
+            {
+                settings = Settings(); settings.SlotSpacing = spacing;
+                Assert.DoesNotThrow(() => settings.Validate());
+            }
         }
 
         [Test]

@@ -107,7 +107,7 @@ namespace Northwatch.Tests.EditMode.Simulation
             Assert.That(simulation.TryGetAddedHandle(first, out UnitHandle firstHandle), Is.True);
             Assert.That(simulation.TryGetAddedHandle(second, out UnitHandle secondHandle), Is.True);
             Assert.That(firstHandle.Slot, Is.Not.EqualTo(secondHandle.Slot));
-            Assert.That(simulation.QueueAdd(Side.First, UnitSize.Small, Vector3.zero, out ulong third), Is.True);
+            Assert.That(simulation.QueueAdd(Side.First, UnitSize.Small, new Vector3(3, 0, 0), out ulong third), Is.True);
             Assert.That(simulation.TryGetAddedHandle(first, out _), Is.False);
             Assert.That(simulation.TryGetAddedHandle(third, out _), Is.False);
             Tick(simulation);
@@ -157,7 +157,8 @@ namespace Northwatch.Tests.EditMode.Simulation
         public void TwoThousandUnitTicksAllocateNoManagedBytesAfterWarmup()
         {
             using var simulation = new UnitSimulation();
-            for (int i = 0; i < UnitSimulation.Capacity; i++) simulation.QueueAdd((Side)(i % 2), UnitSize.Small, Vector3.zero);
+            for (int i = 0; i < UnitSimulation.Capacity; i++)
+                simulation.QueueAdd((Side)(i % 2), UnitSize.Small, new Vector3(i % 50, 0, i / 50));
             Tick(simulation);
             long start = GC.GetAllocatedBytesForCurrentThread();
             for (int i = 0; i < 30; i++) Tick(simulation);
