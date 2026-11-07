@@ -3,6 +3,7 @@ using System;
 using System.Globalization;
 using System.IO;
 using Northwatch.Simulation.Spatial;
+using Northwatch.Simulation.FlowFields;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
@@ -14,24 +15,48 @@ namespace Northwatch.Simulation.Movement
     public sealed class MovementMeasurement : IDisposable
     {
         public const int SampleCapacity = 8192;
-        public const int MetricCount = 19;
+        public const int MetricCount = 26;
+        public const int FloatMetricCount = 7;
+        public const float ClearanceFloor = .000025f;
+        public const int PhysicalTicks = 1800;
         public const int TimestampStride = 8;
+        private const int JamCandidateFlag = 1, FixtureResponseFlag = 2;
         internal NativeArray<byte> Walkable;
         internal NativeArray<long> Timestamps;
         private NativeArray<int> samples, stillTicks;
         private NativeArray<int2> violations;
         private NativeArray<float2> progress;
         private NativeArray<float3> initialPositions;
+        private NativeArray<float> floatSamples;
+        private NativeArray<float4> safety;
+        private NativeArray<int2> drawnViolations;
+        private NativeArray<float4> drawnSafety;
+        private NativeArray<ulong> hashes;
+        private NativeArray<int4> firstResponse;
+        private NativeArray<int> orderVersions, orderAges;
+        private NativeArray<float4> sightTransitions;
+        private NativeArray<int2> sightState;
+        private NativeArray<double> shortLateral;
+        private NativeArray<int4> fixtureFacts;
+        private NativeArray<int> blockers, lastMoved;
         private readonly int scene;
         private readonly UnitState state;
+        private readonly float startHeading;
+        private readonly int sizeSet;
+        public int BatchSize { get; }
+        internal int RemainingTicks => scene == 7 ? PhysicalTicks - TickCount : int.MaxValue;
         public int TickCount { get; private set; }
+        public int InnerMarginFirings { get; private set; } = -1;
 
-        internal MovementMeasurement(UnitState state, int scene, int count)
+        internal MovementMeasurement(UnitState state, int scene, int count, float startHeading = 0, int batchSize = 64, int sizeSet = 0)
         {
-            if (scene < 0 || scene > 6 || count < 2 || count > state.Alive.Length)
+            if (scene < 0 || scene > 10 || count < 2 || count > state.Alive.Length)
                 throw new ArgumentOutOfRangeException(nameof(scene));
             this.scene = scene;
             this.state = state;
+            this.startHeading = startHeading;
+            this.sizeSet = sizeSet;
+            BatchSize = batchSize;
             Walkable = new NativeArray<byte>(256 * 256, Allocator.Persistent);
             Timestamps = new NativeArray<long>(SampleCapacity * TimestampStride, Allocator.Persistent);
             samples = new NativeArray<int>(SampleCapacity * MetricCount, Allocator.Persistent);
@@ -39,12 +64,28 @@ namespace Northwatch.Simulation.Movement
             violations = new NativeArray<int2>(state.Alive.Length, Allocator.Persistent);
             progress = new NativeArray<float2>(SampleCapacity, Allocator.Persistent);
             initialPositions = new NativeArray<float3>(state.Alive.Length, Allocator.Persistent);
+            floatSamples = new NativeArray<float>(SampleCapacity * FloatMetricCount, Allocator.Persistent);
+            safety = new NativeArray<float4>(state.Alive.Length, Allocator.Persistent);
+            drawnSafety = new NativeArray<float4>(state.Alive.Length, Allocator.Persistent);
+            drawnViolations = new NativeArray<int2>(state.Alive.Length, Allocator.Persistent);
+            hashes = new NativeArray<ulong>(SampleCapacity, Allocator.Persistent);
+            firstResponse = new NativeArray<int4>(state.Alive.Length, Allocator.Persistent);
+            orderVersions = new NativeArray<int>(state.Alive.Length, Allocator.Persistent);
+            orderAges = new NativeArray<int>(state.Alive.Length, Allocator.Persistent);
+            sightTransitions = new NativeArray<float4>(state.Alive.Length, Allocator.Persistent);
+            sightState = new NativeArray<int2>(state.Alive.Length, Allocator.Persistent);
+            shortLateral = new NativeArray<double>(state.Alive.Length, Allocator.Persistent);
+            fixtureFacts = new NativeArray<int4>(state.Alive.Length, Allocator.Persistent);
+            blockers = new NativeArray<int>(state.Alive.Length, Allocator.Persistent);
+            lastMoved = new NativeArray<int>(state.Alive.Length, Allocator.Persistent);
             new SetupJob { State = state, Map = Walkable, Scene = scene, Count = count }.Schedule().Complete();
         }
 
         internal JobHandle Input(UnitState state, JobHandle dependency)
         {
             if (TickCount == SampleCapacity) throw new InvalidOperationException("Movement sample capacity exhausted.");
+            if (TickCount == 0)
+                dependency = new InitialHeadingJob { State = state, Heading = startHeading, Scene = scene, SizeSet = sizeSet }.Schedule(dependency);
             if (scene >= 4) return dependency; // Real commands supply the sandbox order.
             return new InputJob { Positions = state.Positions, Sizes = state.Sizes, Alive = state.Alive,
                 Units = state.Movement, Scene = scene }.Schedule(state.Alive.Length, 64, dependency);
@@ -52,18 +93,198 @@ namespace Northwatch.Simulation.Movement
 
         internal JobHandle Record(UnitState state, MovementPipeline pipeline, JobHandle dependency)
         {
+            InnerMarginFirings = pipeline.InnerMarginFirings;
             // Validation follows the final chain timestamp, so it is outside stage timings.
+            if (pipeline.Fields != null)
+                dependency = new SightTransitionJob { State = state, Fields = pipeline.Fields.Reader,
+                    UnitFields = pipeline.Fields.UnitFields, SightState = sightState, Facts = sightTransitions,
+                    Tick = TickCount + 1 }.Schedule(state.Alive.Length, 64, dependency);
             var handle = new ValidateJob { State = state, Map = Walkable, Grid = pipeline.Grid,
-                StepBound = pipeline.Settings.StepBound, Violations = violations }
+                StepBound = pipeline.Settings.StepBound, Violations = violations, Safety = safety,
+                DrawnSafety = drawnSafety, DrawnViolations = drawnViolations }
                 .Schedule(state.Alive.Length, 64, dependency);
             return new RecordJob { State = state, Levels = pipeline.Levels, Samples = samples, StillTicks = stillTicks,
                 Violations = violations, Progress = progress, InitialPositions = initialPositions,
-                Scene = scene, Tick = TickCount++ }.Schedule(handle);
+                FloatSamples = floatSamples, Safety = safety, DrawnSafety = drawnSafety, DrawnViolations = drawnViolations,
+                Hashes = hashes, FirstResponse = firstResponse, OrderVersions = orderVersions, OrderAges = orderAges,
+                ShortLateral = shortLateral, FixtureFacts = fixtureFacts, Blockers = blockers, LastMoved = lastMoved,
+                Proposed = pipeline.Corrected, Grid = pipeline.Grid,
+                Settings = pipeline.Settings, Scene = scene, Tick = TickCount++ }.Schedule(handle);
         }
 
         public long Timestamp(int tick, int boundary) => Timestamps[tick * TimestampStride + boundary];
         public int Metric(int tick, int metric) => samples[tick * MetricCount + metric];
         public float2 Progress(int tick) => progress[tick];
+        // minimum tick clearance, minimum drawn clearance, deepest small/large blocked-cell graze,
+        // maximum drawn angle against the tick's whole displacement (degrees).
+        public float SafetyValue(int tick, int metric) => floatSamples[tick * FloatMetricCount + metric];
+        public ulong StateHash(int tick) => hashes[tick];
+        public int3 FirstResponse(int unit) => firstResponse[unit].xyz;
+
+        public bool WritePhysicalSummary(TextWriter writer)
+        {
+            float slide = 0, lateral = 0, drawnSlide = 0;
+            float clearance = float.PositiveInfinity, drawnClearance = float.PositiveInfinity;
+            long overlaps = 0, staticErrors = 0, underFloor = 0, drawnOverlaps = 0, insideDiscs = 0;
+            for (int t = 0; t < TickCount; t++)
+            {
+                slide = math.max(slide, SafetyValue(t, 5)); lateral = math.max(lateral, SafetyValue(t, 6));
+                drawnSlide = math.max(drawnSlide, SafetyValue(t, 4));
+                clearance = math.min(clearance, SafetyValue(t, 0)); drawnClearance = math.min(drawnClearance, SafetyValue(t, 1));
+                overlaps += Metric(t, 6); staticErrors += Metric(t, 7); underFloor += Metric(t, 19);
+                drawnOverlaps += Metric(t, 20); insideDiscs += Metric(t, 21);
+            }
+            bool complete = TickCount == PhysicalTicks;
+            bool gate3 = complete && slide <= 1 && lateral <= .01f && overlaps == 0 && staticErrors == 0 && underFloor == 0;
+            bool gate13 = complete && drawnSlide <= 1 && drawnOverlaps == 0 && insideDiscs == 0;
+            writer.WriteLine($"ticks={TickCount}; expected_ticks={PhysicalTicks}; complete={complete}");
+            writer.WriteLine(FormattableString.Invariant($"slide_degrees={slide:R}; short_lateral_max={lateral:R}; footprint_overlaps={overlaps}; static_errors={staticErrors}; pairs_under_clearance_floor={underFloor}; lowest_clearance={clearance:R}"));
+            writer.WriteLine(FormattableString.Invariant($"drawn_slide_degrees={drawnSlide:R}; drawn_footprint_overlaps={drawnOverlaps}; drawn_pairs_inside_discs={insideDiscs}; lowest_drawn_clearance={drawnClearance:R}"));
+            writer.WriteLine("inner_margin_firings=" + (InnerMarginFirings < 0 ? "unavailable" : InnerMarginFirings.ToString(CultureInfo.InvariantCulture)));
+            writer.WriteLine($"gate_3_pass={gate3}; gate_13b_pass={gate13}; pass={gate3 && gate13}");
+            return gate3 && gate13;
+        }
+
+        // #220 measures distance to the whole heading arc (including its reverse arc).
+        // Long steps contribute angles; sub-.01 steps contribute unsigned lateral distance.
+        internal static float SlidingAngle(float2 step, float start, float end)
+        {
+            float direction = math.atan2(step.y, step.x);
+            return math.degrees(math.min(ArcDistance(direction, start, end), ArcDistance(direction + math.PI, start, end)));
+        }
+
+        private static float ArcDistance(float direction, float start, float end)
+        {
+            float turn = Wrap(end - start), relative = Wrap(direction - start);
+            if (relative >= math.min(0, turn) && relative <= math.max(0, turn)) return 0;
+            return math.min(math.abs(relative), math.abs(Wrap(direction - end)));
+        }
+
+        private static float Wrap(float angle) => math.atan2(math.sin(angle), math.cos(angle));
+
+        public void WriteResponseSummary(TextWriter writer)
+        {
+            writer.WriteLine("metric,lowest,median,highest,never");
+            for (int metric = 0; metric < 3; metric++)
+            {
+                var values = new int[state.Alive.Length]; int n = 0, never = 0;
+                for (int i = 0; i < state.Alive.Length; i++)
+                    if (state.Alive[i] != 0 && orderVersions[i] != 0)
+                    { int value = firstResponse[i][metric]; if (value == 0) never++; else values[n++] = value; }
+                Array.Sort(values, 0, n);
+                writer.WriteLine($"{(metric == 0 ? "first_pose_tick" : metric == 1 ? "first_step_tick" : "first_half_speed_tick")},{ResponseQuantile(values, n, 0)},{ResponseQuantile(values, n, math.max(0, (n + never - 1) / 2))},{ResponseQuantile(values, n, math.max(0, n + never - 1))},{never}");
+            }
+            int creep = 0;
+            for (int i = 0; i < state.Alive.Length; i++) if (state.Alive[i] != 0 && firstResponse[i].w == 1) creep++;
+            writer.WriteLine($"only_creep_by_third_tick,{creep}; report_only=True; S2.1=unresolved");
+        }
+
+        private static string ResponseQuantile(int[] values, int observed, int index)
+            => index < observed ? values[index].ToString(CultureInfo.InvariantCulture) : "never";
+
+        public static void WriteDrawnResponseSummary(TextWriter writer, double[] times)
+        {
+            var values = (double[])times.Clone(); int never = 0;
+            for (int i = 0; i < values.Length; i++)
+                if (values[i] < 0) { values[i] = double.PositiveInfinity; never++; }
+            Array.Sort(values);
+            string Quantile(int index) => values.Length == 0 || double.IsPositiveInfinity(values[index])
+                ? "never" : values[index].ToString("R", CultureInfo.InvariantCulture);
+            writer.WriteLine($"release_to_first_drawn_pose_seconds,{Quantile(0)},{Quantile(Math.Max(0, (values.Length - 1) / 2))},{Quantile(Math.Max(0, values.Length - 1))},{never}");
+            writer.WriteLine("drawn_response_report_only=True; S2.1=unresolved; never_sorts_after_observed=True");
+        }
+
+        private bool Delivered(int i)
+        {
+            MovementUnit unit = state.Movement[i];
+            bool arrived = unit.ArrivalRule >= 1 && unit.ArrivalRule <= 3;
+            if (scene == 6) return arrived;
+            bool past = state.Positions[i].x > 21 + Footprint.Radius(state.Sizes[i]);
+            return past || arrived && (scene == 5 || scene == 9 || scene == 10);
+        }
+
+        public void WriteFixtureUnits(TextWriter writer)
+        {
+            writer.WriteLine("unit,short_step_lateral_total,first_forward_tick,delivered,group_stall,max_still_after_forward,still6_after_forward,jam_chain_candidate,blocker,220_pose_changed_by_third_tick");
+            for (int i = 0; i < state.Alive.Length; i++)
+            {
+                if (state.Alive[i] == 0) continue;
+                int4 facts = fixtureFacts[i]; MovementUnit unit = state.Movement[i];
+                bool delivered = Delivered(i);
+                writer.WriteLine(FormattableString.Invariant($"{i},{shortLateral[i]:R},{facts.x},{delivered},{unit.ArrivalRule == 4},{facts.z},{facts.z > 180},{(facts.w & JamCandidateFlag) != 0},{blockers[i]},{(facts.w & FixtureResponseFlag) != 0}"));
+            }
+        }
+
+        public void WriteFixtureSummary(TextWriter writer)
+        {
+            int delivered = 0, stalls = 0, late = 0, neverForward = 0, lastForward = 0, still6 = 0, jams = 0, longest = 0;
+            for (int i = 0; i < state.Alive.Length; i++)
+            {
+                if (state.Alive[i] == 0) continue;
+                MovementUnit unit = state.Movement[i]; int4 facts = fixtureFacts[i];
+                if (Delivered(i)) delivered++;
+                if (unit.ArrivalRule == 4) stalls++;
+                if ((facts.w & FixtureResponseFlag) == 0) late++;
+                if (facts.x == 0) neverForward++; else lastForward = math.max(lastForward, facts.x);
+                if (facts.z > 180) still6++;
+                if ((facts.w & JamCandidateFlag) != 0) jams++;
+                longest = math.max(longest, facts.z);
+            }
+            float slide = 0, lateral = 0, smallGraze = 0, largeGraze = 0;
+            long overlaps = 0, staticErrors = 0, reverse = 0;
+            for (int t = 0; t < TickCount; t++)
+            {
+                slide = math.max(slide, SafetyValue(t, 5)); lateral = math.max(lateral, SafetyValue(t, 6));
+                smallGraze = math.max(smallGraze, SafetyValue(t, 2)); largeGraze = math.max(largeGraze, SafetyValue(t, 3));
+                overlaps += Metric(t, 6); staticErrors += Metric(t, 7); reverse += Metric(t, 23);
+            }
+            writer.WriteLine("source,delivered,group_stalls,pose_after_third_or_never,last_first_forward_tick,never_forward,still6_after_forward,jam_chain,longest_still_after_forward");
+            writer.WriteLine($"today,{delivered},{stalls},{late},{lastForward},{neverForward},{still6},{jams},{longest}");
+            writer.WriteLine("delivered_definition=" + (scene == 6 ? "arrival_rule_1_2_or_3" :
+                scene == 8 ? "past_wall" : "past_wall_or_arrival_rule_1_2_or_3"));
+            // Retained #220 step2, variant 10 with front_first=True (R+F). Its S2.3
+            // ran both 1.25 and 1.3; report both rather than choose the easier column.
+            string[] reference = sizeSet == 0 ? new[] { "56,54,0,45,0,54,54,1455", "100,0,0,58,0,0,0,73", "60,0,0,32,0,0,0,41", "56,54,0,138,0,54,54,1390", "55,55,0,106,0,55,55,1482" } :
+                sizeSet == 1 ? new[] { "110,0,0,45,0,0,0,158", "100,0,0,58,0,0,0,73", "60,0,0,37,0,0,0,35", "110,0,0,138,0,0,0,161", "58,52,0,106,0,52,52,1561" } :
+                new[] { "110,0,0,49,0,0,0,158", "64,36,0,45,0,36,36,245", "60,0,0,27,0,0,0,45", "110,0,0,156,0,26,0,184", "110,0,0,118,0,31,0,218" };
+            int row = scene == 5 ? 0 : scene == 6 ? 1 : scene == 8 ? 2 : scene == 9 ? 3 : 4;
+            writer.WriteLine("220_R+F," + reference[row]);
+            if (scene == 8) writer.WriteLine("220_R+F_spacing1.3," + (sizeSet == 0 ? "60,0,0,15,0,0,0,42" : sizeSet == 1 ? "58,2,0,1,0,2,2,1205" : "6,54,0,1,0,54,54,851"));
+            writer.WriteLine(FormattableString.Invariant($"slide_degrees={slide:R}; short_lateral_max={lateral:R}; footprint_overlaps={overlaps}; static_errors={staticErrors}; reverse_ticks={reverse}; small_drawn_graze={smallGraze:R}; large_drawn_graze={largeGraze:R}"));
+            writer.WriteLine($"S={slide <= 1 && lateral <= .01f}; O={overlaps == 0 && staticErrors == 0}; V={reverse == 0}; drawn_graze={smallGraze <= .0064f && largeGraze <= .0013f}; R={late == 0}; D={neverForward == 0 && lastForward <= (scene == 9 || scene == 10 ? 240 : 90)}; C={delivered == state.Summary[0]}; G={stalls == 0}; J_candidate={jams == 0}");
+            string[] comparison = reference[row].Split(',');
+            int[] today = { delivered, stalls, late, lastForward, neverForward, still6, jams, longest };
+            writer.Write("worse_than_220_R+F=");
+            bool worse = false;
+            string[] names = { "delivered", "group_stalls", "pose_after_third_or_never", "last_first_forward_tick", "never_forward", "still6_after_forward", "jam_chain_candidate", "longest_still_after_forward" };
+            for (int i = 0; i < today.Length; i++)
+            {
+                int baseline = int.Parse(comparison[i], CultureInfo.InvariantCulture);
+                if (i == 0 ? today[i] >= baseline : today[i] <= baseline) continue;
+                if (worse) writer.Write(',');
+                writer.Write(names[i]); worse = true;
+            }
+            writer.WriteLine(worse ? "; flow_comparison_report_only=True" : "none; flow_comparison_report_only=True");
+            int sightSwitchStalls = 0;
+            for (int i = 0; i < state.Alive.Length; i++)
+                if (state.Alive[i] != 0 && sightTransitions[i].w != 0) sightSwitchStalls++;
+            writer.WriteLine($"rule4_while_moving_after_sight_switch_candidates={sightSwitchStalls}; details=orders.csv");
+            writer.WriteLine("jam_chain_today=reconstructed_final_proposal_candidate; 220=instrumented_first_failed_forward_candidate; flow_lines=report_only; scene5_historical_delivered=26/110; scene6_historical_delivered=15/100");
+        }
+
+        public void WriteResponse(TextWriter writer)
+        {
+            writer.WriteLine("unit,order_version,first_pose_tick,first_step_tick,first_half_speed_tick,only_creep_by_third_tick");
+            for (int i = 0; i < state.Alive.Length; i++)
+                if (state.Alive[i] != 0)
+                    writer.WriteLine($"{i},{orderVersions[i]},{firstResponse[i].x},{firstResponse[i].y},{firstResponse[i].z},{firstResponse[i].w == 1}");
+        }
+
+        public bool SandboxWallPassed(out int small, out int large)
+        {
+            CountPastSandboxWall(out small, out large);
+            return (sizeSet == 2 || small > 0) && (sizeSet == 1 || large > 0);
+        }
 
         public void CountPastSandboxWall(out int small, out int large)
         {
@@ -79,18 +300,93 @@ namespace Northwatch.Simulation.Movement
         public void WriteOrderState(TextWriter writer)
         {
             // Called only after the driver's final completion, outside the measured window.
-            writer.WriteLine("unit,x,z,heading,goal_x,goal_z,velocity_x,velocity_z,has_order,arrival_rule,best_distance,last_progress_tick,size");
+            writer.WriteLine("unit,x,z,heading,goal_x,goal_z,velocity_x,velocity_z,has_order,arrival_rule,best_distance,last_progress_tick,size,last_sight_entry_tick,straight_minus_best_at_sight_entry,rule4_tick,rule4_while_moving_after_sight_switch_candidate");
             for (int i = 0; i < state.Alive.Length; i++)
             {
                 if (state.Alive[i] == 0) continue;
                 MovementUnit unit = state.Movement[i];
-                writer.WriteLine(string.Format(CultureInfo.InvariantCulture, "{0},{1:R},{2:R},{3:R},{4:R},{5:R},{6:R},{7:R},{8},{9},{10:R},{11},{12}",
+                writer.WriteLine(string.Format(CultureInfo.InvariantCulture, "{0},{1:R},{2:R},{3:R},{4:R},{5:R},{6:R},{7:R},{8},{9},{10:R},{11},{12},{13:R},{14:R},{15:R},{16:R}",
                     i, state.Positions[i].x, state.Positions[i].z, unit.Heading, unit.Goal.x, unit.Goal.y,
-                    unit.Velocity.x, unit.Velocity.y, unit.HasMoveOrder, unit.ArrivalRule, unit.BestGoalDistance, unit.LastProgressTick, state.Sizes[i]));
+                    unit.Velocity.x, unit.Velocity.y, unit.HasMoveOrder, unit.ArrivalRule, unit.BestGoalDistance, unit.LastProgressTick, state.Sizes[i],
+                    sightTransitions[i].x, sightTransitions[i].y, sightTransitions[i].z, sightTransitions[i].w));
             }
         }
 
-        public void Dispose() { Walkable.Dispose(); Timestamps.Dispose(); samples.Dispose(); stillTicks.Dispose(); violations.Dispose(); progress.Dispose(); initialPositions.Dispose(); }
+        public void Dispose()
+        {
+            Walkable.Dispose(); Timestamps.Dispose(); samples.Dispose(); stillTicks.Dispose(); violations.Dispose();
+            progress.Dispose(); initialPositions.Dispose(); floatSamples.Dispose(); safety.Dispose();
+            drawnSafety.Dispose(); drawnViolations.Dispose(); hashes.Dispose(); firstResponse.Dispose();
+            orderVersions.Dispose(); orderAges.Dispose();
+            sightTransitions.Dispose(); sightState.Dispose();
+            shortLateral.Dispose(); fixtureFacts.Dispose(); blockers.Dispose(); lastMoved.Dispose();
+        }
+
+        [BurstCompile]
+        private struct SightTransitionJob : IJobParallelFor
+        {
+            [ReadOnly] internal UnitState State;
+            [ReadOnly] internal NativeArray<int> UnitFields;
+            internal FlowFieldReader Fields;
+            internal NativeArray<int2> SightState;
+            internal NativeArray<float4> Facts;
+            internal int Tick;
+            public void Execute(int i)
+            {
+                if (State.Alive[i] == 0) return;
+                MovementUnit unit = State.Movement[i];
+                int2 old = SightState[i]; float4 facts = Facts[i];
+                if (old.y != unit.OrderVersion) { old = new int2(0, unit.OrderVersion); facts = 0; }
+                // PreferredVelocity samples the start pose. Sampling the committed endpoint
+                // instead would attribute a sight switch one tick before the planner sees it.
+                bool inSight = Fields.Sample(UnitFields[i], unit.Previous.Position.xz, out var sample) == FlowSampleStatus.Ready && sample.InSight;
+                float2 target = unit.HasOwnSpot ? unit.Spot : unit.Goal;
+                if (inSight && (old.x & 1) == 0 && (unit.HasMoveOrder || unit.ArrivalRule == 4))
+                {
+                    facts.x = Tick;
+                    facts.y = math.distance(target, unit.Previous.Position.xz) - unit.BestGoalDistance;
+                }
+                if (unit.ArrivalRule == 4 && facts.z == 0)
+                {
+                    facts.z = Tick;
+                    // A diagnostic candidate, not a new arrival rule: the previous tick
+                    // advanced while straight distance still exceeded the saved field best.
+                    bool moving = (old.x & 2) != 0;
+                    facts.w = facts.x > 0 && facts.y > .1f && moving &&
+                        math.distance(target, State.Positions[i].xz) > unit.BestGoalDistance ? 1 : 0;
+                }
+                SightState[i] = new int2((inSight ? 1 : 0) | (math.any(unit.Previous.Position != State.Positions[i]) ? 2 : 0), unit.OrderVersion);
+                Facts[i] = facts;
+            }
+        }
+
+        [BurstCompile]
+        private struct InitialHeadingJob : IJob
+        {
+            internal UnitState State;
+            internal float Heading;
+            internal int Scene, SizeSet;
+            public void Execute()
+            {
+                for (int i = 0; i < State.Alive.Length; i++)
+                {
+                    if (State.Alive[i] == 0) continue;
+                    MovementUnit unit = State.Movement[i];
+                    if (Scene == 8)
+                    {
+                        float spacing = MovementParameters.DefaultSlotSpacing;
+                        float width = SizeSet == 2 ? 1 : .5f;
+                        float3 position;
+                        if (i < 50) position = new float3((2 - i / 10) * width * spacing, 0, (i % 10 - 4.5f) * width * spacing);
+                        else if (SizeSet == 0) position = new float3(-spacing - .94f * spacing / 1.25f - (i - 50) / 5 * spacing, 0, ((i - 50) % 5 - 2) * spacing);
+                        else position = new float3(-2 * width * spacing - .94f * spacing / 1.25f * width / .75f - (i - 50) / 5 * width * spacing, 0, ((i - 50) % 5 - 2) * width * spacing);
+                        State.Positions[i] = position; unit.Home = position.xz; unit.Previous.Position = position;
+                    }
+                    unit.Heading = Heading; unit.Previous.Heading = Heading;
+                    State.Movement[i] = unit;
+                }
+            }
+        }
 
         [BurstCompile]
         private struct SetupJob : IJob
@@ -152,25 +448,76 @@ namespace Northwatch.Simulation.Movement
             [ReadOnly] internal SpatialGrid Grid;
             internal float StepBound;
             internal NativeArray<int2> Violations;
+            internal NativeArray<float4> Safety, DrawnSafety;
+            internal NativeArray<int2> DrawnViolations;
             public void Execute(int i)
             {
                 int2 errors = 0;
+                float4 facts = new float4(float.PositiveInfinity, 0, 0, 0);
+                float4 drawn = new float4(float.PositiveInfinity, 0, 0, 0);
+                int2 drawnErrors = 0;
                 if (State.Alive[i] != 0)
                 {
                     var pose = new MovementPose { Position = State.Positions[i], Heading = State.Movement[i].Heading };
                     float radius = Footprint.Radius(State.Sizes[i]);
                     if (!StaticClamp.IsClear(pose.Position.xz, radius, Map)) errors.y++;
-                    // The grid contains start-of-tick poses. The other unit may have
-                    // moved by StepBound since then; do not miss a pair across a bucket.
-                    var query = new SpatialQuery(Grid, pose.Position.xz, radius + Footprint.LargeRadius + StepBound);
+                    // Seed an upper bound from a live pair, then query every pair that could
+                    // improve it. The grid holds start poses, so include the other unit's step.
+                    // This also finds the true minimum in sparse scenes, not just contacts.
+                    float bound = float.PositiveInfinity;
+                    for (int j = i + 1; j < State.Alive.Length; j++)
+                        if (State.Alive[j] != 0)
+                        {
+                            bound = math.distance(pose.Position.xz, State.Positions[j].xz) - radius - Footprint.Radius(State.Sizes[j]);
+                            break;
+                        }
+                    var query = new SpatialQuery(Grid, pose.Position.xz,
+                        math.isfinite(bound) ? radius + Footprint.LargeRadius + math.max(0, bound) + StepBound : 0);
                     while (query.Next(out int other))
                     {
                         if (other <= i) continue;
                         var neighbour = new MovementPose { Position = State.Positions[other], Heading = State.Movement[other].Heading };
                         if (Footprint.Overlap(pose, State.Sizes[i], neighbour, State.Sizes[other]) > 0) errors.x++;
+                        float clearance = math.distance(pose.Position.xz, neighbour.Position.xz) - radius - Footprint.Radius(State.Sizes[other]);
+                        facts.x = math.min(facts.x, clearance);
+                        if (clearance < ClearanceFloor) facts.y++;
+                    }
+                    // Sample against the whole displacement, never between tiny drawn steps.
+                    for (int sample = 1; sample <= 4; sample++)
+                    {
+                        MovementUnit unit = State.Movement[i];
+                        MovementPose frame = DrawnPose.Sample(unit.Previous, pose.Position, pose.Heading, sample * .25f);
+                        float2 step = pose.Position.xz - unit.Previous.Position.xz;
+                        if (math.any(step != 0))
+                        {
+                            float2 heading = new float2(math.cos(frame.Heading), math.sin(frame.Heading));
+                            drawn.y = math.max(drawn.y, math.degrees(math.atan2(math.abs(heading.x * step.y - heading.y * step.x), math.dot(heading, step))));
+                        }
+                        float penetration = 0;
+                        int2 centre = (int2)math.floor(frame.Position.xz + UnitSimulation.MapHalfWidth);
+                        for (int y = centre.y - 1; y <= centre.y + 1; y++)
+                            for (int x = centre.x - 1; x <= centre.x + 1; x++)
+                                if ((uint)x < 256 && (uint)y < 256 && Map[y * 256 + x] == 0)
+                                    penetration = math.max(penetration, StaticClamp.Penetration(frame.Position.xz, radius, new int2(x, y)));
+                        if (State.Sizes[i] == UnitSize.Small) drawn.z = math.max(drawn.z, penetration);
+                        else drawn.w = math.max(drawn.w, penetration);
+                        // Endpoint bound plus two step lengths covers every interpolated pair.
+                        var frames = new SpatialQuery(Grid, frame.Position.xz,
+                            math.isfinite(bound) ? radius + Footprint.LargeRadius + math.max(0, bound) + 3 * StepBound : 0);
+                        while (frames.Next(out int other))
+                        {
+                            if (other <= i) continue;
+                            MovementUnit neighbour = State.Movement[other];
+                            MovementPose otherFrame = DrawnPose.Sample(neighbour.Previous, State.Positions[other], neighbour.Heading, sample * .25f);
+                            float clearance = math.distance(frame.Position.xz, otherFrame.Position.xz) - radius - Footprint.Radius(State.Sizes[other]);
+                            drawn.x = math.min(drawn.x, clearance);
+                            if (clearance < 0) drawnErrors.y++;
+                            if (Footprint.Overlap(frame, State.Sizes[i], otherFrame, State.Sizes[other]) > 0) drawnErrors.x++;
+                        }
                     }
                 }
                 Violations[i] = errors;
+                Safety[i] = facts; DrawnSafety[i] = drawn; DrawnViolations[i] = drawnErrors;
             }
         }
 
@@ -183,6 +530,18 @@ namespace Northwatch.Simulation.Movement
             internal NativeArray<int> Samples, StillTicks;
             internal NativeArray<float2> Progress;
             internal NativeArray<float3> InitialPositions;
+            [ReadOnly] internal NativeArray<float4> Safety, DrawnSafety;
+            [ReadOnly] internal NativeArray<int2> DrawnViolations;
+            internal NativeArray<float> FloatSamples;
+            internal NativeArray<ulong> Hashes;
+            internal NativeArray<int4> FirstResponse;
+            internal NativeArray<int> OrderVersions, OrderAges;
+            internal NativeArray<double> ShortLateral;
+            internal NativeArray<int4> FixtureFacts;
+            internal NativeArray<int> Blockers, LastMoved;
+            [ReadOnly] internal NativeArray<MovementPose> Proposed;
+            [ReadOnly] internal SpatialGrid Grid;
+            internal MovementParameters Settings;
             internal int Tick, Scene;
             public void Execute()
             {
@@ -193,11 +552,64 @@ namespace Northwatch.Simulation.Movement
                 int2 errors = 0;
                 int moving = 0, preferred = 0, orders = 0, exact = 0, contact = 0, congestion = 0, restWithOrder = 0, underOneCell = 0;
                 int groupStall = 0, poseChanges = 0;
+                float minimum = float.PositiveInfinity, drawnMinimum = float.PositiveInfinity;
+                float3 drawnMaxima = 0;
+                int underFloor = 0, creepOnly = 0;
+                int reverse = 0, overOne = 0, overTen = 0;
+                float angleMax = 0; double lateralMax = 0;
+                int2 drawnErrors = 0;
+                var hash = new PhysicalHash();
                 for (int i = 0; i < State.Alive.Length; i++)
                 {
+                    hash.Add(State.Alive[i]); hash.Add(State.Generations[i]);
                     if (State.Alive[i] == 0) continue;
                     alive++;
                     MovementUnit unit = State.Movement[i];
+                    if (unit.OrderVersion != OrderVersions[i])
+                    {
+                        OrderVersions[i] = unit.OrderVersion; OrderAges[i] = 0; FirstResponse[i] = 0;
+                        FixtureFacts[i] = 0;
+                    }
+                    float2 displacement = State.Positions[i].xz - unit.Previous.Position.xz;
+                    float length = math.length(displacement);
+                    float angle = SlidingAngle(displacement, unit.Previous.Heading, unit.Heading);
+                    if (length >= .01f)
+                    { angleMax = math.max(angleMax, angle); if (angle > 1) overOne++; if (angle > 10) overTen++; }
+                    else if (length > 0) ShortLateral[i] += length * math.sin(math.radians(angle));
+                    lateralMax = math.max(lateralMax, ShortLateral[i]);
+                    bool moved = math.lengthsq(displacement) > 1e-10f;
+                    bool reversing = moved && math.dot(displacement, Footprint.Axis(unit.Heading)) < -1e-7f;
+                    if (reversing) reverse++;
+                    if (math.lengthsq(displacement) >= 1e-12f) LastMoved[i] = Tick + 1;
+                    int4 fixture = FixtureFacts[i];
+                    // Row 14 counts any bitwise pose change; #220's fixture response
+                    // uses its measured-drive / wrapped-turn tolerances instead.
+                    if (unit.OrderVersion != 0 && OrderAges[i] < 3 &&
+                        (moved || math.abs(Wrap(unit.Heading - unit.Previous.Heading)) > 1e-5f)) fixture.w |= FixtureResponseFlag;
+                    if (fixture.x == 0 && moved && !reversing && unit.OrderVersion != 0) fixture.x = OrderAges[i] + 1;
+                    fixture.y = fixture.x > 0 && unit.HasMoveOrder && math.lengthsq(displacement) < 1e-12f ? fixture.y + 1 : 0;
+                    fixture.z = math.max(fixture.z, fixture.y); FixtureFacts[i] = fixture;
+                    Blockers[i] = FirstProposedBlocker(i);
+                    hash.Add(State.Positions[i]); hash.Add((uint)State.Sizes[i]); hash.Add((uint)State.Sides[i]); hash.Add(unit);
+                    minimum = math.min(minimum, Safety[i].x);
+                    underFloor += (int)Safety[i].y;
+                    drawnMinimum = math.min(drawnMinimum, DrawnSafety[i].x);
+                    drawnMaxima = math.max(drawnMaxima, DrawnSafety[i].yzw);
+                    drawnErrors += DrawnViolations[i];
+                    if (unit.OrderVersion != 0)
+                    {
+                        int age = OrderAges[i] + 1; OrderAges[i] = age;
+                        int4 response = FirstResponse[i];
+                        float step = math.distance(State.Positions[i].xz, unit.Previous.Position.xz);
+                        bool turned = unit.Heading != unit.Previous.Heading;
+                        if (response.x == 0 && (step > 0 || turned)) response.x = age;
+                        if (response.y == 0 && step > 0) response.y = age;
+                        if (response.z == 0 && step >= Settings.Speed(State.Sizes[i]) * MovementParameters.TickDuration * .5f) response.z = age;
+                        if (age <= 3 && (turned || response.z != 0)) response.w = -1;
+                        if (age == 3 && response.w == 0 && response.y > 0) response.w = 1;
+                        FirstResponse[i] = response;
+                        if (response.w == 1) creepOnly++;
+                    }
                     if (Tick == 0) InitialPositions[i] = unit.Previous.Position;
                     bool hasVelocity = math.any(unit.Velocity != 0);
                     if (hasVelocity) moving++;
@@ -234,7 +646,64 @@ namespace Northwatch.Simulation.Movement
                 Samples[offset + 12] = exact; Samples[offset + 13] = contact; Samples[offset + 14] = congestion;
                 Samples[offset + 15] = restWithOrder; Samples[offset + 16] = underOneCell;
                 Samples[offset + 17] = groupStall; Samples[offset + 18] = poseChanges;
+                Samples[offset + 19] = underFloor; Samples[offset + 20] = drawnErrors.x;
+                Samples[offset + 21] = drawnErrors.y; Samples[offset + 22] = creepOnly;
+                Samples[offset + 23] = reverse; Samples[offset + 24] = overOne; Samples[offset + 25] = overTen;
+                int floatOffset = Tick * FloatMetricCount;
+                FloatSamples[floatOffset] = minimum; FloatSamples[floatOffset + 1] = drawnMinimum;
+                FloatSamples[floatOffset + 2] = drawnMaxima.y; FloatSamples[floatOffset + 3] = drawnMaxima.z;
+                FloatSamples[floatOffset + 4] = drawnMaxima.x;
+                FloatSamples[floatOffset + 5] = angleMax; FloatSamples[floatOffset + 6] = (float)lateralMax;
+                for (int i = 0; i < State.Alive.Length; i++)
+                {
+                    if (State.Alive[i] == 0) continue;
+                    int latest = 0, next = Blockers[i];
+                    for (int n = 0; n < State.Alive.Length && next >= 0; n++)
+                    { latest = math.max(latest, LastMoved[next]); next = Blockers[next]; }
+                    int4 facts = FixtureFacts[i];
+                    if (facts.x > 0 && facts.y > 180 && Tick + 1 - latest > 180) facts.w |= JamCandidateFlag;
+                    FixtureFacts[i] = facts;
+                }
+                Hashes[Tick] = hash.Value;
                 Progress[Tick] = advance / math.max(sides, 1);
+            }
+
+            // Today's motor has no #220 spike trace. Reconstruct the first rejecting
+            // neighbour of its final proposed pose; label the resulting jam a candidate.
+            private int FirstProposedBlocker(int i)
+            {
+                if (math.distancesq(State.Positions[i], State.Movement[i].Previous.Position) > 1e-10f) return -1;
+                MovementPose mine = Proposed[i], start = State.Movement[i].Previous;
+                var query = new SpatialQuery(Grid, start.Position.xz, Footprint.Radius(State.Sizes[i]) + Footprint.LargeRadius + 2 * Settings.StepBound);
+                while (query.Next(out int j))
+                {
+                    if (i == j) continue;
+                    MovementPose other = State.Movement[j].Previous;
+                    float limit = Footprint.Overlap(start, State.Sizes[i], other, State.Sizes[j]);
+                    if (Footprint.Overlap(mine, State.Sizes[i], other, State.Sizes[j]) > limit ||
+                        Footprint.Overlap(mine, State.Sizes[i], Proposed[j], State.Sizes[j]) > limit) return j;
+                }
+                return -1;
+            }
+        }
+
+        // Hash named fields, never native struct padding. Float bits and unit order are retained.
+        private struct PhysicalHash
+        {
+            internal ulong Value;
+            internal void Add(uint value) { Value = unchecked((Value ^ value) * 1099511628211UL); }
+            internal void Add(float value) => Add(math.asuint(value));
+            internal void Add(float2 value) { Add(value.x); Add(value.y); }
+            internal void Add(float3 value) { Add(value.x); Add(value.y); Add(value.z); }
+            internal void Add(MovementUnit unit)
+            {
+                Add(unit.Previous.Position); Add(unit.Previous.Heading); Add(unit.Heading);
+                Add(unit.Velocity); Add(unit.PreferredVelocity); Add(unit.NewVelocity); Add(unit.Home);
+                Add(unit.Goal); Add(unit.Spot); Add(unit.SpotOffset); Add(unit.HasOwnSpot ? 1u : 0u);
+                Add(unit.HasMoveOrder ? 1u : 0u); Add((uint)unit.OrderVersion); Add(unit.GoalRegion);
+                Add(unit.GoalResolved ? 1u : 0u); Add((uint)unit.ProgressField); Add(unit.BestGoalDistance);
+                Add((uint)unit.LastProgressTick); Add((uint)(unit.LastProgressTick >> 32));
+                Add(unit.ArrivalRule); Add((uint)unit.Mode); Add(unit.StalledTime); Add(unit.HomeBlockedTime); Add(unit.ProgressTime);
             }
         }
     }

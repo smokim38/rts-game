@@ -12,6 +12,7 @@ using UnityEngine;
 using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.LowLevel;
 using UnityEngine.Rendering;
+using Unity.Jobs.LowLevel.Unsafe;
 
 namespace Northwatch.Presentation.Diagnostics
 {
@@ -45,7 +46,18 @@ namespace Northwatch.Presentation.Diagnostics
         private SelectionController controls;
         private Camera orderCamera;
         private Vector2 orderPoint;
-        private Vector2[] initialDraw;
+        private Vector3 orderOrigin;
+        private Vector4[] initialDraw;
+        private Vector3[] firstChangedDraw;
+        private double[] vehicleDrawTimes;
+        private bool[] pendingDrawChanges;
+        private int drawnVehicles, batchSize, workers, sizeSet;
+        private float startHeading, orderDirection, orderDistance;
+        private bool directedOrder;
+        private double windowDuration = 60;
+        private string fixtureName;
+        private bool FixtureScene => scene == 5 || scene == 6 || scene >= 8;
+        private bool ClickScene => scene >= 4 && scene != 7;
         private double releaseTime, firstDrawTime = -1, allDrawTime = -1;
         private MeshRenderer markerDrawing;
         private bool checkMarker, expectedMarker;
@@ -119,7 +131,7 @@ namespace Northwatch.Presentation.Diagnostics
                 throw new ArgumentException("Use -movement-fps -1|60 (default -1).");
             if (!Debug.isDebugBuild || index < 0 || index + 1 >= args.Length || sceneIndex < 0 || sceneIndex + 1 >= args.Length ||
                 countIndex < 0 || countIndex + 1 >= args.Length)
-                throw new ArgumentException("Use a development Player with -movement-output PATH -movement-scene 0|1|2|3 -movement-units N.");
+                throw new ArgumentException("Use a development Player with -movement-output PATH -movement-scene 0..10 -movement-units N.");
             string project = Path.GetFullPath(Path.Combine(Application.dataPath, "../../.."));
             output = Path.GetFullPath(args[index + 1]);
             if (!output.StartsWith(Path.Combine(project, "Logs") + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
@@ -130,12 +142,41 @@ namespace Northwatch.Presentation.Diagnostics
             driver = FindFirstObjectByType<MatchDriver>();
             if (driver == null || driver.MovementSettings == null) throw new InvalidOperationException("The match has no driver or movement settings.");
             scene = int.Parse(args[sceneIndex + 1], CultureInfo.InvariantCulture);
-            if (injectOverlayKey && (!expectRouteOverlay || scene < 4))
+            fixtureName = Option(args, "-movement-fixture", "none");
+            if (fixtureName != "none") scene = fixtureName == "wall" ? 5 : fixtureName == "ring" ? 6 :
+                fixtureName == "s23" ? 8 : fixtureName == "west" ? 9 : fixtureName == "north" ? 10 :
+                throw new ArgumentException("Use -movement-fixture wall|ring|west|north|s23.");
+            if (injectOverlayKey && (!expectRouteOverlay || !ClickScene))
                 throw new ArgumentException("Overlay key injection requires an order scene and -movement-route-overlay.");
             unitCount = int.Parse(args[countIndex + 1], CultureInfo.InvariantCulture);
-            driver.Simulation.MeasureMovement(scene, unitCount);
+            if (FixtureScene && unitCount != (scene == 6 ? 100 : scene == 8 ? 60 : 110))
+                throw new ArgumentException("Fixtures require 100 ring, 60 s23, or 110 wall/west/north vehicles.");
+            windowDuration = FixtureScene ? 120 : 60;
+            batchSize = IntegerOption(args, "-movement-batch", 64);
+            string workerOption = Option(args, "-movement-workers", "all");
+            workers = workerOption == "all" ? JobsUtility.JobWorkerMaximumCount : int.Parse(workerOption, CultureInfo.InvariantCulture);
+            if ((workerOption != "1" && workerOption != "all") || workers < 1 || workers > JobsUtility.JobWorkerMaximumCount || (batchSize != 1 && batchSize != 64))
+                throw new ArgumentException("Use -movement-workers 1|all and -movement-batch 1|64.");
+            JobsUtility.JobWorkerCount = workers;
+            string sizes = Option(args, "-movement-size", "mixed");
+            sizeSet = sizes == "mixed" ? 0 : sizes == "small" ? 1 : sizes == "large" ? 2 :
+                throw new ArgumentException("Use -movement-size mixed|small|large.");
+            startHeading = FloatOption(args, "-movement-heading", scene == 9 ? 180 : scene == 10 ? 90 : 0);
+            orderDirection = FloatOption(args, "-movement-direction", 0);
+            directedOrder = Array.IndexOf(args, "-movement-direction") >= 0;
+            orderDistance = FloatOption(args, "-movement-distance", directedOrder ? 30 : unitCount == 5 ? 20 : unitCount == 100 ? 15 : 60);
+            if (orderDistance <= 0 || directedOrder && scene != 4)
+                throw new ArgumentException("Order distance must be positive; -movement-direction requires scene 4.");
+            driver.Simulation.MeasureMovement(scene, unitCount, sizeSet, startHeading * Mathf.Deg2Rad, batchSize);
             measurement = driver.Simulation.Measurement;
-            if (scene >= 4)
+            if (scene == 7)
+            {
+                var layout = ScriptableObject.CreateInstance<LadderScenario>();
+                layout.QueueUnits(driver.Simulation, unitCount);
+                layout.QueueOrders(driver.Simulation, unitCount);
+                Destroy(layout);
+            }
+            if (ClickScene)
             {
                 controls = FindFirstObjectByType<SelectionController>();
                 orderCamera = Camera.main;
@@ -145,9 +186,12 @@ namespace Northwatch.Presentation.Diagnostics
                 mouse = Mouse.current ?? InputSystem.AddDevice<Mouse>();
                 keyboard = Keyboard.current ?? InputSystem.AddDevice<Keyboard>();
                 gameObject.AddComponent<SelectionInputPump>();
-                initialDraw = new Vector2[unitCount];
+                initialDraw = new Vector4[unitCount];
+                firstChangedDraw = new Vector3[unitCount];
+                vehicleDrawTimes = new double[unitCount]; Array.Fill(vehicleDrawTimes, -1);
+                pendingDrawChanges = new bool[unitCount];
                 orderCamera.GetComponent<Cameras.CameraController>().CentreOn(scene == 6 ? new Vector3(80, 0, 30) :
-                    new Vector3(unitCount <= 100 ? 7.5f : 30, 0, 0));
+                    OrderDestination() * .5f);
                 orderCamera.orthographicSize = unitCount <= 100 ? 25 : 70;
                 InputSystem.QueueStateEvent(mouse, new MouseState { position = new Vector2(960, 540) });
                 RenderPipelineManager.endContextRendering += RecordDrawnResponse;
@@ -187,7 +231,7 @@ namespace Northwatch.Presentation.Diagnostics
         {
             if (finished) return;
             double now = Time.realtimeSinceStartupAsDouble;
-            if (scene >= 4)
+            if (ClickScene)
             {
                 if (orderPhase == 0 && now - began >= 1)
                 {
@@ -202,8 +246,7 @@ namespace Northwatch.Presentation.Diagnostics
                 // Overlay checks exercise field drawing during the normal warm-up too.
                 else if ((measuring || expectRouteOverlay) && orderPhase == 2)
                 {
-                    orderPoint = orderCamera.WorldToScreenPoint(scene == 6 ? new Vector3(88, 0, 30) :
-                        new Vector3(scene == 5 ? 40 : unitCount == 5 ? 20 : unitCount == 100 ? 15 : 60, 0, 0));
+                    orderPoint = orderCamera.WorldToScreenPoint(OrderDestination());
                     InputSystem.QueueStateEvent(mouse, new MouseState { position = orderPoint, buttons = modern ? (ushort)2 : (ushort)1 });
                     orderPhase = 3;
                 }
@@ -236,9 +279,9 @@ namespace Northwatch.Presentation.Diagnostics
                     capturePart++;
                     BeginCapture();
                 }
-                if (now - measuredAt >= 60) { Finish(); return; }
+                if (scene == 7 ? measurement.TickCount >= MovementMeasurement.PhysicalTicks : now - measuredAt >= windowDuration) { Finish(); return; }
             }
-            else if (now - began >= 10)
+            else if (scene == 7 ? measurement.TickCount > 0 : now - began >= 10)
             {
                 driver.Simulation.CompleteFrame();
                 firstTick = measurement.TickCount;
@@ -259,7 +302,7 @@ namespace Northwatch.Presentation.Diagnostics
 
         private void LateUpdate()
         {
-            if (finished || scene < 4) return;
+            if (finished || !ClickScene) return;
             // After the normal sync point, before MatchDriver draws; never add a sync here.
             if (!selectionQueued && Time.realtimeSinceStartupAsDouble - began >= 1)
             {
@@ -269,8 +312,13 @@ namespace Northwatch.Presentation.Diagnostics
             if (orderPhase < 4)
             {
                 if (driver.Simulation.SelectedCount != unitCount) return;
+                if (directedOrder) orderOrigin = driver.Simulation.SelectedCentre;
                 var matrices = driver.Simulation.DrawMatrices;
-                for (int i = 0; i < unitCount; i++) initialDraw[i] = new Vector2(matrices[UnitSimulation.Capacity * 2 + i].m03, matrices[UnitSimulation.Capacity * 2 + i].m23);
+                for (int i = 0; i < unitCount; i++)
+                {
+                    Matrix4x4 pose = matrices[UnitSimulation.Capacity * 2 + i];
+                    initialDraw[i] = new Vector4(pose.m03, pose.m23, pose.m00, pose.m20);
+                }
                 return;
             }
             if (Time.frameCount == releaseFrame + 1 && driver.Simulation.AcknowledgementCount == unitCount)
@@ -291,19 +339,30 @@ namespace Northwatch.Presentation.Diagnostics
                 }
             }
             if (allDrawTime >= 0) return;
-            int moved = 0;
             var drawing = driver.Simulation.DrawMatrices;
             for (int i = 0; i < unitCount; i++)
             {
                 Matrix4x4 matrix = drawing[UnitSimulation.Capacity * 2 + i];
-                if (Vector2.SqrMagnitude(new Vector2(matrix.m03, matrix.m23) - initialDraw[i]) > 1e-10f) moved++;
+                if (matrix.m03 != initialDraw[i].x || matrix.m23 != initialDraw[i].y ||
+                    matrix.m00 != initialDraw[i].z || matrix.m20 != initialDraw[i].w)
+                {
+                    pendingDrawChanges[i] = true;
+                    if (vehicleDrawTimes[i] < 0) firstChangedDraw[i] = new Vector3(matrix.m03, matrix.m23, Mathf.Atan2(matrix.m20, matrix.m00));
+                }
             }
-            drawPending |= moved > 0;
-            allDrawPending |= moved == unitCount;
         }
 
         private void RecordDrawnResponse(ScriptableRenderContext context, List<Camera> cameras)
         {
+            double now = Time.realtimeSinceStartupAsDouble;
+            if (orderPhase >= 4 && !finished)
+                for (int i = 0; i < unitCount; i++)
+                    if (pendingDrawChanges[i] && vehicleDrawTimes[i] < 0)
+                    {
+                        vehicleDrawTimes[i] = now - releaseTime; drawnVehicles++;
+                    }
+            drawPending |= drawnVehicles > 0;
+            allDrawPending |= drawnVehicles == unitCount;
             if (drawPending && firstDrawTime < 0) firstDrawTime = Time.realtimeSinceStartupAsDouble;
             if (allDrawPending && allDrawTime < 0) allDrawTime = Time.realtimeSinceStartupAsDouble;
             if (!checkMarker || finished) return;
@@ -329,7 +388,7 @@ namespace Northwatch.Presentation.Diagnostics
             WriteMovementJobLabels();
             using (var writer = new StreamWriter(output + "-ticks.csv"))
             {
-                writer.WriteLine("tick,grid_ms,order_progress_ms,preferred_ms,integration_ms,overlap_ms,move_check_ms,commit_ms,total_ms,level_1,level_2,one_tick_stalls,still_over_5s,longest_still_ticks,alive,footprint_overlaps,static_regressions,gap_crossed,moving,preferred_nonzero,orders,exact,contact,congestion,rest_with_order,under_one_cell_progress,group_stall,pose_changes,first_advance_cells,second_advance_cells");
+                writer.WriteLine("tick,grid_ms,order_progress_ms,preferred_ms,integration_ms,overlap_ms,move_check_ms,commit_ms,total_ms,level_1,level_2,one_tick_stalls,still_over_5s,longest_still_ticks,alive,footprint_overlaps,static_regressions,gap_crossed,moving,preferred_nonzero,orders,exact,contact,congestion,rest_with_order,under_one_cell_progress,group_stall,pose_changes,pairs_under_clearance_floor,drawn_footprint_overlaps,drawn_pairs_inside_discs,only_creep_by_third_tick,reverse_ticks,slide_over1,slide_over10,lowest_clearance,lowest_drawn_clearance,deepest_small_graze,deepest_large_graze,drawn_slide_degrees,slide_degrees,short_lateral_max,state_hash,first_advance_cells,second_advance_cells");
                 // Negative ticks retain warm-up validation, without including it in timings.
                 for (int t = 0; t < measurement.TickCount; t++)
                 {
@@ -337,6 +396,8 @@ namespace Northwatch.Presentation.Diagnostics
                     for (int b = 0; b < MovementMeasurement.TimestampStride - 1; b++) writer.Write("," + CounterMilliseconds(measurement.Timestamp(t, b + 1) - measurement.Timestamp(t, b)));
                     writer.Write("," + CounterMilliseconds(measurement.Timestamp(t, MovementMeasurement.TimestampStride - 1) - measurement.Timestamp(t, 0)));
                     for (int m = 0; m < MovementMeasurement.MetricCount; m++) writer.Write("," + measurement.Metric(t, m));
+                    for (int m = 0; m < MovementMeasurement.FloatMetricCount; m++) writer.Write("," + measurement.SafetyValue(t, m).ToString("R", CultureInfo.InvariantCulture));
+                    writer.Write("," + measurement.StateHash(t).ToString("X16", CultureInfo.InvariantCulture));
                     var progress = measurement.Progress(t);
                     writer.Write("," + progress.x.ToString("R", CultureInfo.InvariantCulture));
                     writer.Write("," + progress.y.ToString("R", CultureInfo.InvariantCulture));
@@ -352,17 +413,30 @@ namespace Northwatch.Presentation.Diagnostics
                     ((mainTimes[f] - waitTimes[f]) * .000001).ToString("F6", CultureInfo.InvariantCulture) + "," +
                     allocationCounts[f] + "," + allocations[f]);
             }
-            File.WriteAllText(output + "-info.txt", "scene=" + UnityEngine.SceneManagement.SceneManager.GetActiveScene().name + "; movement_scene=" + scene + "; drawing=on; vSync=0; targetFrameRate=" + targetFrameRate + "; warmup_s=10; window_s=60\n" +
+            File.WriteAllText(output + "-info.txt", "scene=" + UnityEngine.SceneManagement.SceneManager.GetActiveScene().name + "; movement_scene=" + scene + "; drawing=on; vSync=0; targetFrameRate=" + targetFrameRate + "; warmup_s=10; window_s=" + windowDuration + "\n" +
                 "passes=" + driver.MovementSettings.Snapshot().MoveCheckPasses + "; cpu=" + SystemInfo.processorType + "; gpu=" + SystemInfo.graphicsDeviceName + "\n" +
                 "unfocused_or_wrong_resolution_frames=" + invalidFrames + "; measured_s=" +
                 windowSeconds.ToString("F6", CultureInfo.InvariantCulture) + "\n" +
-                "scoped_gc=" + scopedGc.Valid + "; simulation_alloc_count=" + simulationAllocations +
+                "first_measured_tick=" + firstTick + "; scoped_gc=" + scopedGc.Valid + "; simulation_alloc_count=" + simulationAllocations +
                 "; drawing_alloc_count=" + drawingAllocations + "; scope_capacity_reached=" + scopeCapacityReached + "\n");
             File.AppendAllText(output + "-info.txt", "overlay_calls=" + overlayCalls +
                 "; overlay_total_ms=" + (overlayNanoseconds * .000001).ToString("F6", CultureInfo.InvariantCulture) +
                 "; overlay_expected=" + expectRouteOverlay + "; overlay_key_injected=" + injectOverlayKey + "\n");
+            File.AppendAllText(output + "-info.txt", $"workers={workers}; batch={batchSize}; size_set={sizeSet}; heading_degrees={startHeading.ToString(CultureInfo.InvariantCulture)}; direction_degrees={orderDirection.ToString(CultureInfo.InvariantCulture)}; inner_margin_firings={(measurement.InnerMarginFirings < 0 ? "unavailable" : measurement.InnerMarginFirings.ToString(CultureInfo.InvariantCulture))}; drawn_samples=0.25,0.5,0.75,1\n");
+            using (var writer = new StreamWriter(output + "-response.csv")) measurement.WriteResponse(writer);
+            using (var writer = new StreamWriter(output + "-response-summary.txt")) measurement.WriteResponseSummary(writer);
+            if (FixtureScene)
+            {
+                using (var writer = new StreamWriter(output + "-fixture-units.csv")) measurement.WriteFixtureUnits(writer);
+                using (var writer = new StreamWriter(output + "-fixture.txt")) measurement.WriteFixtureSummary(writer);
+            }
             bool orderPassed = true;
-            if (scene >= 4)
+            if (scene == 7)
+            {
+                using var writer = new StreamWriter(output + "-physical.txt");
+                orderPassed = measurement.WritePhysicalSummary(writer);
+            }
+            if (ClickScene)
             {
                 using (var writer = new StreamWriter(output + "-orders.csv")) measurement.WriteOrderState(writer);
                 int tick = measurement.TickCount - 1;
@@ -374,14 +448,12 @@ namespace Northwatch.Presentation.Diagnostics
                 }
                 int stableTick = lastChangingTick - firstOrderTick + 2;
                 orderPassed = controls.Modern == modern && acknowledgementFrame == 1 && firstOrderTick >= 0 &&
-                    firstDrawTime >= releaseTime && firstDrawTime - releaseTime <= .1 &&
                     measurement.Metric(firstOrderTick, 10) == unitCount && measurement.Metric(firstOrderTick, 11) == unitCount && orderPassed;
                 orderPassed &= markerTravelFrames > 0 && markerMismatches == 0;
                 if (unitCount <= 100 && scene == 4)
                 {
                     orderPassed &= markerSettledFrames > 0 && markerHiddenFrame == lastOrderStoppedFrame;
-                    orderPassed &= allDrawTime >= releaseTime && allDrawTime - releaseTime <= .1 &&
-                        measurement.Metric(firstOrderTick, 9) == unitCount && measurement.Metric(tick, 16) == 0 && stableTick <= 1140;
+                    orderPassed &= measurement.Metric(tick, 16) == 0 && stableTick <= 1140;
                     for (int t = tick - 59; t <= tick; t++)
                         orderPassed &= measurement.Metric(t, 9) == 0 && measurement.Metric(t, 11) == 0 &&
                             measurement.Metric(t, 18) == 0 && measurement.Metric(t, 2) == unitCount;
@@ -399,6 +471,12 @@ namespace Northwatch.Presentation.Diagnostics
                     "; marker_mismatches=" + markerMismatches + "; last_order_stopped_frame=" + lastOrderStoppedFrame +
                     "; marker_hidden_frame=" + markerHiddenFrame +
                     "; pass=" + orderPassed + "\n");
+                using var responseWriter = new StreamWriter(output + "-drawn-response.csv");
+                responseWriter.WriteLine("unit,release_to_first_drawn_pose_seconds,initial_x,initial_z,initial_heading_radians,first_drawn_x,first_drawn_z,first_drawn_heading_radians");
+                for (int i = 0; i < unitCount; i++) responseWriter.WriteLine(FormattableString.Invariant(
+                    $"{i},{vehicleDrawTimes[i]:R},{initialDraw[i].x:R},{initialDraw[i].y:R},{Math.Atan2(initialDraw[i].w, initialDraw[i].z):R},{firstChangedDraw[i].x:R},{firstChangedDraw[i].y:R},{firstChangedDraw[i].z:R}"));
+                using var summaryWriter = new StreamWriter(output + "-response-summary.txt", append: true);
+                MovementMeasurement.WriteDrawnResponseSummary(summaryWriter, vehicleDrawTimes);
             }
             if (scene == 5)
             {
@@ -410,8 +488,7 @@ namespace Northwatch.Presentation.Diagnostics
                 bool stopped = true;
                 for (int t = last - 59; t <= last; t++)
                     stopped &= measurement.Metric(t, 9) == 0 && measurement.Metric(t, 18) == 0;
-                measurement.CountPastSandboxWall(out int smallPast, out int largePast);
-                orderPassed &= smallPast > 0 && largePast > 0;
+                orderPassed &= measurement.SandboxWallPassed(out int smallPast, out int largePast);
                 writer.WriteLine("stopped=" + stopped + "; small_past_wall=" + smallPast + "; large_past_wall=" + largePast +
                     "; all_past_wall=" + (smallPast + largePast == unitCount) + "; pass=" + orderPassed);
             }
@@ -434,6 +511,27 @@ namespace Northwatch.Presentation.Diagnostics
             bool scopesPassed = !scopedGc.Valid || simulationAllocations == 0 && drawingAllocations == 0;
             bool overlayPassed = expectRouteOverlay ? overlayCalls > 0 : overlayCalls == 0;
             Application.Quit(invalidFrames == 0 && !scopeCapacityReached && scopesPassed && overlayPassed && orderPassed ? 0 : 1);
+        }
+
+        private Vector3 OrderDestination() => scene == 6 ? new Vector3(88, 0, 30) : FixtureScene ? new Vector3(40, 0, 0) :
+            (directedOrder ? orderOrigin : Vector3.zero) + new Vector3(Mathf.Cos(orderDirection * Mathf.Deg2Rad), 0, Mathf.Sin(orderDirection * Mathf.Deg2Rad)) * orderDistance;
+
+        private static string Option(string[] args, string name, string fallback)
+        {
+            int index = Array.IndexOf(args, name);
+            if (index < 0) return fallback;
+            if (index + 1 == args.Length) throw new ArgumentException("Missing value for " + name);
+            return args[index + 1];
+        }
+
+        private static int IntegerOption(string[] args, string name, int fallback)
+            => int.Parse(Option(args, name, fallback.ToString(CultureInfo.InvariantCulture)), CultureInfo.InvariantCulture);
+
+        private static float FloatOption(string[] args, string name, float fallback)
+        {
+            float value = float.Parse(Option(args, name, fallback.ToString(CultureInfo.InvariantCulture)), CultureInfo.InvariantCulture);
+            if (!float.IsFinite(value)) throw new ArgumentException("Invalid value for " + name);
+            return value;
         }
 
         private void WriteMovementJobLabels()

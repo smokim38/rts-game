@@ -41,6 +41,10 @@ namespace Northwatch.EditorTools
             BuildWindows();
         }
 
+        // Both existing scenes are required: scene 7 uses the ladder Player; scenes 4-6
+        // use the sandbox Player. Fixture options are runtime arguments, not saved assets.
+        public static void BuildMeasurementPlayers() => BuildStaticMapChecks();
+
         public static void AnalyzeCapture()
         {
             string[] args = Environment.GetCommandLineArgs();

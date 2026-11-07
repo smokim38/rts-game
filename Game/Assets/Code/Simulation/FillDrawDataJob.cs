@@ -40,9 +40,9 @@ namespace Northwatch.Simulation
                 if (Orders[1].w > 0 && unit.OrderVersion == (int)Orders[1].w &&
                     (unit.HasMoveOrder || QueuedMoves[slot] != 0)) markerCount++;
                 if (Selected[slot] != 0) selectedCentre += Positions[slot];
-                float3 position = math.lerp(unit.Previous.Position, Positions[slot], Interpolation);
-                float angle = unit.Previous.Heading + math.atan2(math.sin(unit.Heading - unit.Previous.Heading),
-                    math.cos(unit.Heading - unit.Previous.Heading)) * Interpolation;
+                MovementPose pose = DrawnPose.Sample(unit.Previous, Positions[slot], unit.Heading, Interpolation);
+                float3 position = pose.Position;
+                float angle = pose.Heading;
                 float cosine = math.cos(angle) * width, sine = math.sin(angle) * width;
                 int index = Selected[slot] != 0 ? Alive.Length * 2 + selected++ :
                     Sides[slot] == Side.First ? first++ : Alive.Length + second++;

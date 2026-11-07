@@ -9,6 +9,9 @@ namespace Northwatch.Simulation.Movement
 {
     internal sealed class MovementPipeline : IDisposable
     {
+        // This motor has no inner-margin rule. A negative count means unavailable,
+        // rather than claiming that a rule which never ran fired zero times.
+        internal int InnerMarginFirings => -1;
         internal readonly MovementParameters Settings;
         internal SpatialGrid Grid;
         internal NativeArray<MovementPose> Start, Integrated, Corrected;
