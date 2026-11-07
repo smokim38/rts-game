@@ -6,7 +6,11 @@ namespace Northwatch.Simulation
     {
         internal bool Remove;
         internal bool Move;
+        internal bool AllOnSide;
+        internal bool RenewEnded;
+        internal ulong ExecuteTick;
         internal bool Applied;
+        internal bool Consumed;
         internal ulong RequestId;
         internal UnitHandle Handle;
         internal Side Side;

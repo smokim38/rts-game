@@ -14,12 +14,13 @@ namespace Northwatch.Simulation
         public const float MapHalfWidth = 128f;
         internal UnitState State;
         private MovementPipeline movement;
+        private LadderCrossing ladderCrossing;
         internal StaticMaps StaticMaps { get; private set; }
         private StaticMaps openFieldMaps;
         public double StaticMapBuildMilliseconds { get; private set; }
         public long StaticMapBytes => StaticMaps?.MapBytes ?? 0;
         public long StaticMapScratchBytes => StaticMaps?.ScratchBytes ?? 0;
-        private NativeArray<UnitCommand> commands;
+        private NativeArray<UnitCommand> commands, sideOrders;
         private NativeArray<int> commandCounts, queuedMoves;
         private NativeArray<Matrix4x4> matrices, nextMatrices;
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
@@ -88,7 +89,7 @@ namespace Northwatch.Simulation
         private int commandCount { get => commandCounts[0]; set => commandCounts[0] = value; }
         private int queuedAdds;
         private ulong commandBatch;
-        private bool scheduled, disposed;
+        private bool scheduled, disposed, renewEndedOrders;
         public ulong TickCount { get; private set; }
 
         public UnitSimulation()
@@ -96,6 +97,7 @@ namespace Northwatch.Simulation
             State = new UnitState(Capacity);
             emptyWalkable = new NativeArray<byte>(0, Allocator.Persistent);
             commands = new NativeArray<UnitCommand>(Capacity * 4, Allocator.Persistent);
+            sideOrders = new NativeArray<UnitCommand>(2, Allocator.Persistent);
             commandCounts = new NativeArray<int>(1, Allocator.Persistent);
             queuedMoves = new NativeArray<int>(Capacity, Allocator.Persistent);
             matrices = new NativeArray<Matrix4x4>(Capacity * 4, Allocator.Persistent);
@@ -153,6 +155,15 @@ namespace Northwatch.Simulation
         }
 
         public int Count { get { RequireComplete(); return State.Summary[0]; } }
+        public int MovingOrderCount { get { RequireComplete(); return State.Summary[8]; } }
+        public bool MovingOrdersValid { get { RequireComplete(); return State.Summary[13] == 0; } }
+
+        public int RenewedOrderCount(int arrivalRule)
+        {
+            RequireComplete();
+            if (arrivalRule < 1 || arrivalRule > 4) throw new ArgumentOutOfRangeException(nameof(arrivalRule));
+            return State.Summary[8 + arrivalRule];
+        }
         public int RemainingCapacity { get { RequireComplete(); return Capacity - Count - queuedAdds; } }
         public int PlacementResult { get { RequireComplete(); return State.Summary[5]; } }
         public int PlacementVersion { get { RequireComplete(); return State.Summary[6]; } }
@@ -166,6 +177,39 @@ namespace Northwatch.Simulation
             commands[commandCount++] = new UnitCommand
                 { Side = side, Size = size, Position = centre, BlockCount = count };
             queuedAdds += count;
+            return true;
+        }
+
+        public bool QueueLaneBlock(Side side, UnitSize size, Vector3 centre, int count, float gap)
+        {
+            RequireComplete();
+            if (count < 1) return false;
+            centre.z = BlockPlacement.LaneCentre(count, size, gap,
+                movement == null ? MovementParameters.DefaultSlotSpacing : movement.Settings.SlotSpacing) * (side == Side.First ? 1 : -1);
+            return QueueBlock(side, size, centre, count);
+        }
+
+        public void MeasureLadderCrossing(int cycleTicks, int cycles, int sampleTicks, float distance)
+        {
+            RequireComplete();
+            if (TickCount != 0 || ladderCrossing != null || cycleTicks < 1 || cycles < 1 ||
+                sampleTicks < 1 || !math.isfinite(distance) || distance <= 0)
+                throw new ArgumentException("Enable ladder crossing counters once, before the first tick.");
+            ladderCrossing = new LadderCrossing(cycleTicks, cycles, sampleTicks, distance);
+        }
+
+        public LadderCycleCounts LadderCrossingCount(int cycle, Side side)
+        { RequireComplete(); return ladderCrossing.Count(cycle, side); }
+
+        public bool QueueSideMove(Side side, Vector3 destination, ulong executeTick, bool renewEnded = false)
+        {
+            RequireComplete();
+            if ((byte)side > 1 || !math.all(math.isfinite((float3)destination)) ||
+                math.abs(destination.x) > MapHalfWidth || math.abs(destination.z) > MapHalfWidth ||
+                commandCount >= Capacity * 2) return false;
+            commands[commandCount++] = new UnitCommand
+                { Move = true, AllOnSide = true, Side = side, Position = destination, ExecuteTick = executeTick, RenewEnded = renewEnded };
+            renewEndedOrders |= renewEnded;
             return true;
         }
 
@@ -227,6 +271,7 @@ namespace Northwatch.Simulation
             for (int tick = 0; tick < ticks; tick++)
             {
                 pending = ApplyCommands(pending);
+                if (ladderCrossing != null) pending = ladderCrossing.Begin(State, TickCount + 1, pending);
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
                 if (Measurement != null)
                 {
@@ -237,6 +282,8 @@ namespace Northwatch.Simulation
                 else
 #endif
                 if (movement != null) pending = movement.Schedule(State, pending, tick: TickCount + 1);
+                if (ladderCrossing != null && movement != null)
+                    pending = ladderCrossing.End(State, movement, TickCount + 1, pending);
                 TickCount++;
             }
             if (ticks > 0) { queuedAdds = 0; commandBatch++; }
@@ -253,6 +300,7 @@ namespace Northwatch.Simulation
         private JobHandle ApplyCommands(JobHandle dependency) => new ApplyCommandsJob
         {
             State = State, Commands = commands, CommandCount = commandCounts, QueuedMoves = queuedMoves, Tick = TickCount + 1,
+            SideOrders = sideOrders, RenewEndedOrders = renewEndedOrders,
             SlotSpacing = movement == null ? MovementParameters.DefaultSlotSpacing : movement.Settings.SlotSpacing,
             Walkable = StaticMaps == null ? emptyWalkable : StaticMaps.Walkable
         }.Schedule(dependency);
@@ -290,12 +338,14 @@ namespace Northwatch.Simulation
             CompleteFrame();
             State.Dispose();
             movement?.Dispose();
+            ladderCrossing?.Dispose();
             StaticMaps?.Dispose();
             openFieldMaps?.Dispose();
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
             Measurement?.Dispose();
 #endif
             commands.Dispose();
+            sideOrders.Dispose();
             emptyWalkable.Dispose();
             commandCounts.Dispose(); queuedMoves.Dispose();
             matrices.Dispose();
