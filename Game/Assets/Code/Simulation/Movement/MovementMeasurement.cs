@@ -15,8 +15,8 @@ namespace Northwatch.Simulation.Movement
     public sealed class MovementMeasurement : IDisposable
     {
         public const int SampleCapacity = 8192;
-        public const int MetricCount = 23;
-        public const int FloatMetricCount = 5;
+        public const int MetricCount = 26;
+        public const int FloatMetricCount = 7;
         public const float ClearanceFloor = .000025f;
         public const int TimestampStride = 8;
         internal NativeArray<byte> Walkable;
@@ -34,20 +34,25 @@ namespace Northwatch.Simulation.Movement
         private NativeArray<int> orderVersions, orderAges;
         private NativeArray<float4> sightTransitions;
         private NativeArray<int2> sightState;
+        private NativeArray<double> shortLateral;
+        private NativeArray<int4> fixtureFacts;
+        private NativeArray<int> blockers, lastMoved;
         private readonly int scene;
         private readonly UnitState state;
         private readonly float startHeading;
+        private readonly int sizeSet;
         public int BatchSize { get; }
         internal int RemainingTicks => (scene == 7 ? 1800 : SampleCapacity) - TickCount;
         public int TickCount { get; private set; }
 
-        internal MovementMeasurement(UnitState state, int scene, int count, float startHeading = 0, int batchSize = 64)
+        internal MovementMeasurement(UnitState state, int scene, int count, float startHeading = 0, int batchSize = 64, int sizeSet = 0)
         {
-            if (scene < 0 || scene > 7 || count < 2 || count > state.Alive.Length)
+            if (scene < 0 || scene > 10 || count < 2 || count > state.Alive.Length)
                 throw new ArgumentOutOfRangeException(nameof(scene));
             this.scene = scene;
             this.state = state;
             this.startHeading = startHeading;
+            this.sizeSet = sizeSet;
             BatchSize = batchSize;
             Walkable = new NativeArray<byte>(256 * 256, Allocator.Persistent);
             Timestamps = new NativeArray<long>(SampleCapacity * TimestampStride, Allocator.Persistent);
@@ -66,6 +71,10 @@ namespace Northwatch.Simulation.Movement
             orderAges = new NativeArray<int>(state.Alive.Length, Allocator.Persistent);
             sightTransitions = new NativeArray<float4>(state.Alive.Length, Allocator.Persistent);
             sightState = new NativeArray<int2>(state.Alive.Length, Allocator.Persistent);
+            shortLateral = new NativeArray<double>(state.Alive.Length, Allocator.Persistent);
+            fixtureFacts = new NativeArray<int4>(state.Alive.Length, Allocator.Persistent);
+            blockers = new NativeArray<int>(state.Alive.Length, Allocator.Persistent);
+            lastMoved = new NativeArray<int>(state.Alive.Length, Allocator.Persistent);
             new SetupJob { State = state, Map = Walkable, Scene = scene, Count = count }.Schedule().Complete();
         }
 
@@ -73,7 +82,7 @@ namespace Northwatch.Simulation.Movement
         {
             if (TickCount == SampleCapacity) throw new InvalidOperationException("Movement sample capacity exhausted.");
             if (TickCount == 0)
-                dependency = new InitialHeadingJob { State = state, Heading = startHeading }.Schedule(dependency);
+                dependency = new InitialHeadingJob { State = state, Heading = startHeading, Scene = scene, SizeSet = sizeSet }.Schedule(dependency);
             if (scene >= 4) return dependency; // Real commands supply the sandbox order.
             return new InputJob { Positions = state.Positions, Sizes = state.Sizes, Alive = state.Alive,
                 Units = state.Movement, Scene = scene }.Schedule(state.Alive.Length, 64, dependency);
@@ -94,6 +103,8 @@ namespace Northwatch.Simulation.Movement
                 Violations = violations, Progress = progress, InitialPositions = initialPositions,
                 FloatSamples = floatSamples, Safety = safety, DrawnSafety = drawnSafety, DrawnViolations = drawnViolations,
                 Hashes = hashes, FirstResponse = firstResponse, OrderVersions = orderVersions, OrderAges = orderAges,
+                ShortLateral = shortLateral, FixtureFacts = fixtureFacts, Blockers = blockers, LastMoved = lastMoved,
+                Proposed = pipeline.Corrected, Grid = pipeline.Grid,
                 Settings = pipeline.Settings, Scene = scene, Tick = TickCount++ }.Schedule(handle);
         }
 
@@ -105,6 +116,93 @@ namespace Northwatch.Simulation.Movement
         public float SafetyValue(int tick, int metric) => floatSamples[tick * FloatMetricCount + metric];
         public ulong StateHash(int tick) => hashes[tick];
         public int3 FirstResponse(int unit) => firstResponse[unit].xyz;
+
+        // #220 measures distance to the whole heading arc (including its reverse arc).
+        // Long steps contribute angles; sub-.01 steps contribute unsigned lateral distance.
+        internal static float SlidingAngle(float2 step, float start, float end)
+        {
+            float direction = math.atan2(step.y, step.x);
+            return math.degrees(math.min(ArcDistance(direction, start, end), ArcDistance(direction + math.PI, start, end)));
+        }
+
+        private static float ArcDistance(float direction, float start, float end)
+        {
+            float turn = Wrap(end - start), relative = Wrap(direction - start);
+            if (relative >= math.min(0, turn) && relative <= math.max(0, turn)) return 0;
+            return math.min(math.abs(relative), math.abs(Wrap(direction - end)));
+        }
+
+        private static float Wrap(float angle) => math.atan2(math.sin(angle), math.cos(angle));
+
+        public void WriteResponseSummary(TextWriter writer)
+        {
+            writer.WriteLine("metric,lowest,median,highest,never");
+            for (int metric = 0; metric < 3; metric++)
+            {
+                var values = new int[state.Alive.Length]; int n = 0, never = 0;
+                for (int i = 0; i < state.Alive.Length; i++)
+                    if (state.Alive[i] != 0 && orderVersions[i] != 0)
+                    { int value = firstResponse[i][metric]; if (value == 0) never++; else values[n++] = value; }
+                Array.Sort(values, 0, n);
+                writer.WriteLine($"{(metric == 0 ? "first_pose_tick" : metric == 1 ? "first_step_tick" : "first_half_speed_tick")},{ResponseQuantile(values, n, 0)},{ResponseQuantile(values, n, math.max(0, (n + never - 1) / 2))},{ResponseQuantile(values, n, math.max(0, n + never - 1))},{never}");
+            }
+            int creep = 0;
+            for (int i = 0; i < state.Alive.Length; i++) if (state.Alive[i] != 0 && firstResponse[i].w == 1) creep++;
+            writer.WriteLine($"only_creep_by_third_tick,{creep}; report_only=True; S2.1=unresolved");
+        }
+
+        private static string ResponseQuantile(int[] values, int observed, int index)
+            => index < observed ? values[index].ToString(CultureInfo.InvariantCulture) : "never";
+
+        public void WriteFixtureUnits(TextWriter writer)
+        {
+            writer.WriteLine("unit,short_step_lateral_total,first_forward_tick,delivered,group_stall,max_still_after_forward,still6_after_forward,jam_chain_candidate,blocker");
+            for (int i = 0; i < state.Alive.Length; i++)
+            {
+                if (state.Alive[i] == 0) continue;
+                int4 facts = fixtureFacts[i]; MovementUnit unit = state.Movement[i];
+                bool delivered = scene == 6 ? unit.ArrivalRule >= 1 && unit.ArrivalRule <= 3 :
+                    state.Positions[i].x > 21 + Footprint.Radius(state.Sizes[i]);
+                writer.WriteLine(FormattableString.Invariant($"{i},{shortLateral[i]:R},{facts.x},{delivered},{unit.ArrivalRule == 4},{facts.z},{facts.z > 180},{(facts.w & 1) != 0},{blockers[i]}"));
+            }
+        }
+
+        public void WriteFixtureSummary(TextWriter writer)
+        {
+            int delivered = 0, stalls = 0, late = 0, neverForward = 0, lastForward = 0, still6 = 0, jams = 0, longest = 0;
+            for (int i = 0; i < state.Alive.Length; i++)
+            {
+                if (state.Alive[i] == 0) continue;
+                MovementUnit unit = state.Movement[i]; int4 facts = fixtureFacts[i];
+                if (scene == 6 ? unit.ArrivalRule >= 1 && unit.ArrivalRule <= 3 : state.Positions[i].x > 21 + Footprint.Radius(state.Sizes[i])) delivered++;
+                if (unit.ArrivalRule == 4) stalls++;
+                if (firstResponse[i].x == 0 || firstResponse[i].x > 3) late++;
+                if (facts.x == 0) neverForward++; else lastForward = math.max(lastForward, facts.x);
+                if (facts.z > 180) still6++;
+                if ((facts.w & 1) != 0) jams++;
+                longest = math.max(longest, facts.z);
+            }
+            float slide = 0, lateral = 0, smallGraze = 0, largeGraze = 0;
+            long overlaps = 0, staticErrors = 0, reverse = 0;
+            for (int t = 0; t < TickCount; t++)
+            {
+                slide = math.max(slide, SafetyValue(t, 5)); lateral = math.max(lateral, SafetyValue(t, 6));
+                smallGraze = math.max(smallGraze, SafetyValue(t, 2)); largeGraze = math.max(largeGraze, SafetyValue(t, 3));
+                overlaps += Metric(t, 6); staticErrors += Metric(t, 7); reverse += Metric(t, 23);
+            }
+            writer.WriteLine("source,delivered,group_stalls,pose_after_third_or_never,last_first_forward_tick,never_forward,still6_after_forward,jam_chain,longest_still_after_forward");
+            writer.WriteLine($"today,{delivered},{stalls},{late},{lastForward},{neverForward},{still6},{jams},{longest}");
+            // Retained #220 step2, variant 10 with front_first=True (R+F). Its S2.3
+            // ran both 1.25 and 1.3; report both rather than choose the easier column.
+            string[] reference = sizeSet == 0 ? new[] { "56,54,0,45,0,54,54,1455", "100,0,0,58,0,0,0,73", "60,0,0,32,0,0,0,41", "56,54,0,138,0,54,54,1390", "55,55,0,106,0,55,55,1482" } :
+                sizeSet == 1 ? new[] { "110,0,0,45,0,0,0,158", "100,0,0,58,0,0,0,73", "60,0,0,37,0,0,0,35", "110,0,0,138,0,0,0,161", "58,52,0,106,0,52,52,1561" } :
+                new[] { "63,0,0,49,0,0,0,158", "64,36,0,45,0,36,36,245", "60,0,0,27,0,0,0,45", "63,0,0,156,0,26,0,184", "63,0,0,118,0,31,0,218" };
+            int row = scene == 5 ? 0 : scene == 6 ? 1 : scene == 8 ? 2 : scene == 9 ? 3 : 4;
+            writer.WriteLine("220_R+F," + reference[row]);
+            if (scene == 8) writer.WriteLine("220_R+F_spacing1.3," + (sizeSet == 0 ? "60,0,0,15,0,0,0,42" : sizeSet == 1 ? "58,2,0,1,0,2,2,1205" : "6,54,0,1,0,54,54,851"));
+            writer.WriteLine(FormattableString.Invariant($"slide_degrees={slide:R}; short_lateral_max={lateral:R}; footprint_overlaps={overlaps}; static_errors={staticErrors}; reverse_ticks={reverse}; small_drawn_graze={smallGraze:R}; large_drawn_graze={largeGraze:R}"));
+            writer.WriteLine("jam_chain_today=reconstructed_final_proposal_candidate; 220=instrumented_first_failed_forward_candidate; flow_lines=report_only; scene5_historical_delivered=26/110; scene6_historical_delivered=15/100");
+        }
 
         public void WriteResponse(TextWriter writer)
         {
@@ -147,6 +245,7 @@ namespace Northwatch.Simulation.Movement
             drawnSafety.Dispose(); drawnViolations.Dispose(); hashes.Dispose(); firstResponse.Dispose();
             orderVersions.Dispose(); orderAges.Dispose();
             sightTransitions.Dispose(); sightState.Dispose();
+            shortLateral.Dispose(); fixtureFacts.Dispose(); blockers.Dispose(); lastMoved.Dispose();
         }
 
         [BurstCompile]
@@ -190,12 +289,23 @@ namespace Northwatch.Simulation.Movement
         {
             internal UnitState State;
             internal float Heading;
+            internal int Scene, SizeSet;
             public void Execute()
             {
                 for (int i = 0; i < State.Alive.Length; i++)
                 {
                     if (State.Alive[i] == 0) continue;
                     MovementUnit unit = State.Movement[i];
+                    if (Scene == 8)
+                    {
+                        float spacing = MovementParameters.DefaultSlotSpacing;
+                        float width = SizeSet == 2 ? 1 : .5f;
+                        float3 position;
+                        if (i < 50) position = new float3((2 - i / 10) * width * spacing, 0, (i % 10 - 4.5f) * width * spacing);
+                        else if (SizeSet == 0) position = new float3(-spacing - .94f * spacing / 1.25f - (i - 50) / 5 * spacing, 0, ((i - 50) % 5 - 2) * spacing);
+                        else position = new float3(-2 * width * spacing - .94f * spacing / 1.25f * width / .75f - (i - 50) / 5 * width * spacing, 0, ((i - 50) % 5 - 2) * width * spacing);
+                        State.Positions[i] = position; unit.Home = position.xz; unit.Previous.Position = position;
+                    }
                     unit.Heading = Heading; unit.Previous.Heading = Heading;
                     State.Movement[i] = unit;
                 }
@@ -350,6 +460,11 @@ namespace Northwatch.Simulation.Movement
             internal NativeArray<ulong> Hashes;
             internal NativeArray<int4> FirstResponse;
             internal NativeArray<int> OrderVersions, OrderAges;
+            internal NativeArray<double> ShortLateral;
+            internal NativeArray<int4> FixtureFacts;
+            internal NativeArray<int> Blockers, LastMoved;
+            [ReadOnly] internal NativeArray<MovementPose> Proposed;
+            [ReadOnly] internal SpatialGrid Grid;
             internal MovementParameters Settings;
             internal int Tick, Scene;
             public void Execute()
@@ -364,6 +479,8 @@ namespace Northwatch.Simulation.Movement
                 float minimum = float.PositiveInfinity, drawnMinimum = float.PositiveInfinity;
                 float3 drawnMaxima = 0;
                 int underFloor = 0, creepOnly = 0;
+                int reverse = 0, overOne = 0, overTen = 0;
+                float angleMax = 0; double lateralMax = 0;
                 int2 drawnErrors = 0;
                 var hash = new PhysicalHash();
                 for (int i = 0; i < State.Alive.Length; i++)
@@ -372,6 +489,22 @@ namespace Northwatch.Simulation.Movement
                     if (State.Alive[i] == 0) continue;
                     alive++;
                     MovementUnit unit = State.Movement[i];
+                    float2 displacement = State.Positions[i].xz - unit.Previous.Position.xz;
+                    float length = math.length(displacement);
+                    float angle = SlidingAngle(displacement, unit.Previous.Heading, unit.Heading);
+                    if (length >= .01f)
+                    { angleMax = math.max(angleMax, angle); if (angle > 1) overOne++; if (angle > 10) overTen++; }
+                    else if (length > 0) ShortLateral[i] += length * math.sin(math.radians(angle));
+                    lateralMax = math.max(lateralMax, ShortLateral[i]);
+                    bool moved = math.lengthsq(displacement) > 1e-10f;
+                    bool reversing = moved && math.dot(displacement, Footprint.Axis(unit.Heading)) < -1e-7f;
+                    if (reversing) reverse++;
+                    if (math.lengthsq(displacement) >= 1e-12f) LastMoved[i] = Tick + 1;
+                    int4 fixture = FixtureFacts[i];
+                    if (fixture.x == 0 && moved && !reversing && unit.OrderVersion != 0) fixture.x = OrderAges[i] + 1;
+                    fixture.y = fixture.x > 0 && unit.HasMoveOrder && math.lengthsq(displacement) < 1e-12f ? fixture.y + 1 : 0;
+                    fixture.z = math.max(fixture.z, fixture.y); FixtureFacts[i] = fixture;
+                    Blockers[i] = FirstProposedBlocker(i);
                     hash.Add(State.Positions[i]); hash.Add((uint)State.Sizes[i]); hash.Add((uint)State.Sides[i]); hash.Add(unit);
                     minimum = math.min(minimum, Safety[i].x);
                     underFloor += (int)Safety[i].y;
@@ -434,12 +567,42 @@ namespace Northwatch.Simulation.Movement
                 Samples[offset + 17] = groupStall; Samples[offset + 18] = poseChanges;
                 Samples[offset + 19] = underFloor; Samples[offset + 20] = drawnErrors.x;
                 Samples[offset + 21] = drawnErrors.y; Samples[offset + 22] = creepOnly;
+                Samples[offset + 23] = reverse; Samples[offset + 24] = overOne; Samples[offset + 25] = overTen;
                 int floatOffset = Tick * FloatMetricCount;
                 FloatSamples[floatOffset] = minimum; FloatSamples[floatOffset + 1] = drawnMinimum;
                 FloatSamples[floatOffset + 2] = drawnMaxima.y; FloatSamples[floatOffset + 3] = drawnMaxima.z;
                 FloatSamples[floatOffset + 4] = drawnMaxima.x;
+                FloatSamples[floatOffset + 5] = angleMax; FloatSamples[floatOffset + 6] = (float)lateralMax;
+                for (int i = 0; i < State.Alive.Length; i++)
+                {
+                    if (State.Alive[i] == 0) continue;
+                    int latest = 0, next = Blockers[i];
+                    for (int n = 0; n < State.Alive.Length && next >= 0; n++)
+                    { latest = math.max(latest, LastMoved[next]); next = Blockers[next]; }
+                    int4 facts = FixtureFacts[i];
+                    if (facts.x > 0 && facts.y > 180 && Tick + 1 - latest > 180) facts.w |= 1;
+                    FixtureFacts[i] = facts;
+                }
                 Hashes[Tick] = hash.Value;
                 Progress[Tick] = advance / math.max(sides, 1);
+            }
+
+            // Today's motor has no #220 spike trace. Reconstruct the first rejecting
+            // neighbour of its final proposed pose; label the resulting jam a candidate.
+            private int FirstProposedBlocker(int i)
+            {
+                if (math.distancesq(State.Positions[i], State.Movement[i].Previous.Position) > 1e-10f) return -1;
+                MovementPose mine = Proposed[i], start = State.Movement[i].Previous;
+                var query = new SpatialQuery(Grid, start.Position.xz, Footprint.Radius(State.Sizes[i]) + Footprint.LargeRadius + 2 * Settings.StepBound);
+                while (query.Next(out int j))
+                {
+                    if (i == j) continue;
+                    MovementPose other = State.Movement[j].Previous;
+                    float limit = Footprint.Overlap(start, State.Sizes[i], other, State.Sizes[j]);
+                    if (Footprint.Overlap(mine, State.Sizes[i], other, State.Sizes[j]) > limit ||
+                        Footprint.Overlap(mine, State.Sizes[i], Proposed[j], State.Sizes[j]) > limit) return j;
+                }
+                return -1;
             }
         }
 

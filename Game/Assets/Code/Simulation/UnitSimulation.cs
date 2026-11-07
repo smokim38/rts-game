@@ -66,21 +66,28 @@ namespace Northwatch.Simulation
                 throw new InvalidOperationException("Enable movement measurement once, before the first frame.");
             if (sizeSet < 0 || sizeSet > 2 || !math.isfinite(startHeading) || batchSize < 1)
                 throw new ArgumentException("Invalid measurement size set, heading or batch size.");
-            Measurement = new MovementMeasurement(State, scene, count, startHeading, batchSize);
-            if (scene == 5 || scene == 6)
+            Measurement = new MovementMeasurement(State, scene, count, startHeading, batchSize, sizeSet);
+            bool fixture = scene == 5 || scene == 6 || scene >= 8;
+            if (fixture)
             {
                 if (StaticMaps == null) throw new InvalidOperationException("Obstacle measurement requires the sandbox layout.");
                 Measurement.Walkable.CopyFrom(StaticMaps.Walkable);
             }
             MovementParameters settings = movement.Settings;
             movement.Dispose();
+            if (!fixture && StaticMaps != null)
+            {
+                // Scene 4's response experiment is open ground even in the sandbox Player.
+                using var noObstacles = new NativeArray<StaticBox>(0, Allocator.TempJob);
+                StaticMaps.ScheduleBuild(noObstacles).Complete();
+            }
             movement = new MovementPipeline(Capacity, settings, Measurement.Walkable, StaticMaps ?? openFieldMaps);
-            bool mixed = scene == 5 && sizeSet == 0 && count == 110;
-            int smallCount = mixed ? 100 : count;
-            if (scene >= 4 && scene <= 6 && !QueueBlock(Side.First, sizeSet == 2 ? UnitSize.Large : UnitSize.Small,
+            bool secondBlock = fixture && scene != 6;
+            int smallCount = secondBlock ? count - 10 : count;
+            if ((scene >= 4 && scene <= 6 || scene >= 8) && !QueueBlock(Side.First, sizeSet == 2 ? UnitSize.Large : UnitSize.Small,
                 scene == 6 ? new Vector3(60, 0, 30) : Vector3.zero, smallCount))
                 throw new InvalidOperationException("Could not queue the measured open-map block.");
-            if (mixed && !QueueBlock(Side.First, UnitSize.Large, new Vector3(-12, 0, -15), 10))
+            if (secondBlock && !QueueBlock(Side.First, sizeSet == 1 ? UnitSize.Small : UnitSize.Large, new Vector3(-12, 0, -15), 10))
                 throw new InvalidOperationException("Could not queue the measured large cubes.");
         }
 #endif
