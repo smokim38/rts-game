@@ -106,9 +106,9 @@ namespace Northwatch.Simulation.Movement
                     for (int y = 0; y < 256; y++)
                         if (Scene == 3 || y < 126 || y > 128) Map[y * 256 + 128] = 0;
                 State.Summary[0] = State.Summary[1] = Count;
-                // Preserve the ADR 0012 synthetic scene for comparison with #153.
-                var first = new BlockPlacement(Count / 2, UnitSize.Small, new float3(-80, 0, 0), 1);
-                var second = new BlockPlacement(Count - Count / 2, UnitSize.Large, new float3(80, 0, 0), 1);
+                // ADR 0019 requires disc-clear entry in the synthetic scene too.
+                var first = new BlockPlacement(Count / 2, UnitSize.Small, new float3(-80, 0, 0));
+                var second = new BlockPlacement(Count - Count / 2, UnitSize.Large, new float3(80, 0, 0));
                 for (int i = 0; i < Count; i++)
                 {
                     bool firstSide = i < Count / 2;

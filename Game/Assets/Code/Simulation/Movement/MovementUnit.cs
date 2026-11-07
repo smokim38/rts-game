@@ -8,6 +8,8 @@ namespace Northwatch.Simulation.Movement
         internal float Heading;
         internal float2 Velocity, PreferredVelocity, NewVelocity, Home;
         internal float2 Goal;
+        internal float2 Spot, SpotOffset;
+        internal bool HasOwnSpot;
         internal bool HasMoveOrder;
         internal int OrderVersion;
         internal ushort GoalRegion;

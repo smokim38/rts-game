@@ -168,14 +168,16 @@ namespace Northwatch.Simulation
         public int PlacementResult { get { RequireComplete(); return State.Summary[5]; } }
         public int PlacementVersion { get { RequireComplete(); return State.Summary[6]; } }
 
-        public bool QueueBlock(Side side, UnitSize size, Vector3 centre, int count)
+        public float SlotSpacing => movement == null ? MovementParameters.DefaultSlotSpacing : movement.Settings.SlotSpacing;
+
+        public bool QueueBlock(Side side, UnitSize size, Vector3 centre, int count, bool reverseRows = false)
         {
             RequireComplete();
             if ((byte)side > 1 || (byte)size > 1 || count < 1 || count > RemainingCapacity ||
                 !math.all(math.isfinite((float3)centre)) || math.abs(centre.x) > MapHalfWidth ||
                 math.abs(centre.z) > MapHalfWidth || commandCount >= Capacity * 2) return false;
             commands[commandCount++] = new UnitCommand
-                { Side = side, Size = size, Position = centre, BlockCount = count };
+                { Side = side, Size = size, Position = centre, BlockCount = count, ReverseRows = reverseRows };
             queuedAdds += count;
             return true;
         }
@@ -186,7 +188,17 @@ namespace Northwatch.Simulation
             if (count < 1) return false;
             centre.z = BlockPlacement.LaneCentre(count, size, gap,
                 movement == null ? MovementParameters.DefaultSlotSpacing : movement.Settings.SlotSpacing) * (side == Side.First ? 1 : -1);
-            return QueueBlock(side, size, centre, count);
+            return QueueBlock(side, size, centre, count, reverseRows: side == Side.Second);
+        }
+
+        public float LaneOrderZ(Side side, UnitSize size, int count, float gap)
+        {
+            var block = new BlockPlacement(count, size, new float3(0, 0,
+                BlockPlacement.LaneCentre(count, size, gap, SlotSpacing) * (side == Side.First ? 1 : -1)),
+                SlotSpacing, side == Side.Second);
+            float sum = 0;
+            for (int i = 0; i < count; i++) sum += block.Position(i).z;
+            return sum / count;
         }
 
         public void MeasureLadderCrossing(int cycleTicks, int cycles, int sampleTicks, float distance)

@@ -22,12 +22,23 @@ namespace Northwatch.EditorTools
         {
             const string templates = "ProjectSettings/SceneTemplateSettings.json";
             byte[] before = File.Exists(templates) ? File.ReadAllBytes(templates) : null;
-            try { BuildAssets(); }
+            try { BuildSpacing(); BuildAssets(); }
             finally
             {
                 if (before != null) File.WriteAllBytes(templates, before);
                 else if (File.Exists(templates)) File.Delete(templates);
             }
+        }
+
+        public static void BuildSpacing()
+        {
+            var settings = AssetDatabase.LoadAssetAtPath<MovementSettings>(SandboxSceneBuilder.MovementSettingsPath);
+            if (settings == null) throw new InvalidOperationException("Movement settings are missing.");
+            var serialized = new SerializedObject(settings);
+            serialized.FindProperty("slotSpacing").floatValue = Northwatch.Simulation.Movement.MovementParameters.DefaultSlotSpacing;
+            serialized.ApplyModifiedPropertiesWithoutUndo();
+            settings.Snapshot();
+            AssetDatabase.SaveAssetIfDirty(settings);
         }
 
         private static void BuildAssets()

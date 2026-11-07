@@ -4,9 +4,17 @@ namespace Northwatch.Simulation.Movement
 {
     internal static class Footprint
     {
+        internal const float DiscMargin = .0001f;
         internal const float LargeRadius = .7071067811865476f;
         internal static float HalfWidth(UnitSize size) => size == UnitSize.Small ? .25f : .5f;
         internal static float Radius(UnitSize size) => HalfWidth(size) * 1.4142135623730951f;
+        internal static bool DiscsTooClose(float2 a, UnitSize aSize, float2 b, UnitSize bSize)
+        {
+            // Round the entry threshold to float32, then compare in double so an
+            // exactly represented boundary is accepted by both Mono and Burst.
+            double clearance = (float)((double)Radius(aSize) + Radius(bSize) + DiscMargin);
+            return math.distancesq((double2)a, (double2)b) < clearance * clearance;
+        }
         internal static float2 Axis(float heading) => new float2(math.cos(heading), math.sin(heading));
         internal static float2 Perpendicular(float2 axis) => new float2(-axis.y, axis.x);
 

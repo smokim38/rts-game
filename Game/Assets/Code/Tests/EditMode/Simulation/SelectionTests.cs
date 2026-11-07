@@ -27,20 +27,21 @@ namespace Northwatch.Tests.EditMode.Simulation
         public void BoxIncludesCentresOnEveryEdgeAndExcludesOutsideAndEnemy()
         {
             using var simulation = new UnitSimulation();
-            Vector3[] positions = { new Vector3(-0.5f, 0, -0.5f), new Vector3(0.5f, 0, 0.5f),
-                new Vector3(-0.5f, 0, 0.5f), new Vector3(0.5f, 0, -0.5f), Vector3.zero,
-                new Vector3(0.5001f, 0, 0), new Vector3(0, 0, -0.5001f) };
+            var projection = new Matrix4x4 { m00 = .25f, m12 = .25f, m33 = 1 };
+            Vector3[] positions = { new Vector3(-2, 0, -2), new Vector3(2, 0, 2),
+                new Vector3(-2, 0, 2), new Vector3(2, 0, -2), Vector3.zero,
+                new Vector3(2.0004f, 0, 0), new Vector3(0, 0, -2.0004f) };
             var handles = new UnitHandle[positions.Length];
             for (int i = 0; i < positions.Length; i++) handles[i] = Add(simulation, positions[i]);
-            UnitHandle enemy = Add(simulation, Vector3.zero, Side.Second);
-            simulation.QueueSelection(Box()); Frame(simulation);
+            UnitHandle enemy = Add(simulation, new Vector3(0, 0, 3), Side.Second);
+            simulation.QueueSelection(SelectionRequest.Box(projection, Rect.MinMaxRect(.25f, .25f, .75f, .75f))); Frame(simulation);
             for (int i = 0; i < handles.Length; i++) Assert.That(simulation.IsSelected(handles[i]), Is.EqualTo(i < 5));
             Assert.That(simulation.IsSelected(enemy), Is.False);
             Assert.That(simulation.SelectedCount, Is.EqualTo(5));
             Assert.That(simulation.DrawCount(Side.First), Is.EqualTo(7));
-            Assert.That(simulation.DrawMatrices[UnitSimulation.Capacity * 2].m03, Is.EqualTo(-0.5f));
+            Assert.That(simulation.DrawMatrices[UnitSimulation.Capacity * 2].m03, Is.EqualTo(-2f));
             // Zero-area boxes retain a centre exactly on their boundary.
-            simulation.QueueSelection(SelectionRequest.Box(Projection, new Rect(0.5f, 0.5f, 0, 0))); Frame(simulation);
+            simulation.QueueSelection(SelectionRequest.Box(projection, new Rect(0.5f, 0.5f, 0, 0))); Frame(simulation);
             Assert.That(simulation.SelectedCount, Is.EqualTo(1));
             Assert.That(simulation.IsSelected(handles[4]), Is.True);
         }
@@ -84,8 +85,8 @@ namespace Northwatch.Tests.EditMode.Simulation
             Assert.That(simulation.IsSelected(own), Is.True);
             simulation.QueueSelection(Click(0.26f)); Frame(simulation);
             Assert.That(simulation.SelectedCount, Is.Zero);
-            Add(simulation, new Vector3(0, 2, 0), Side.Second);
-            simulation.QueueSelection(Click(0)); Frame(simulation);
+            Add(simulation, new Vector3(-1, 2, 0), Side.Second);
+            simulation.QueueSelection(SelectionRequest.Click(new Ray(new Vector3(-5, 10, 0), new Vector3(.5f, -1, 0)))); Frame(simulation);
             Assert.That(simulation.SelectedCount, Is.Zero);
         }
 
@@ -144,14 +145,14 @@ namespace Northwatch.Tests.EditMode.Simulation
             using var simulation = new UnitSimulation();
             UnitHandle first = Add(simulation, Vector3.zero);
             UnitHandle second = Add(simulation, new Vector3(0.8f, 0, 0));
-            UnitHandle offscreen = Add(simulation, new Vector3(1.1f, 0, 0));
-            UnitHandle enemy = Add(simulation, new Vector3(-0.5f, 0, 0), Side.Second);
-            simulation.QueueAdd(Side.First, UnitSize.Large, new Vector3(-0.8f, 0, 0), out ulong request);
+            UnitHandle offscreen = Add(simulation, new Vector3(1.6f, 0, 0));
+            UnitHandle enemy = Add(simulation, new Vector3(-.8f, 0, 0), Side.Second);
+            simulation.QueueAdd(Side.First, UnitSize.Large, new Vector3(-.8f, 0, 2), out ulong request);
             Frame(simulation, 1);
             simulation.TryGetAddedHandle(request, out UnitHandle large);
             void DoubleClick(bool shift) => simulation.QueueSelection(SelectionRequest.PointerClick(
                 new Ray(new Vector3(0, 10, 0), Vector3.down), Projection, true, true, false, shift, true));
-            simulation.QueueSelection(Click(-0.8f)); Frame(simulation);
+            simulation.QueueSelection(SelectionRequest.Click(new Ray(new Vector3(-.8f, 10, 2), Vector3.down))); Frame(simulation);
             DoubleClick(true); Frame(simulation);
             Assert.That(simulation.SelectedCount, Is.EqualTo(3));
             Assert.That(simulation.IsSelected(large), Is.True);

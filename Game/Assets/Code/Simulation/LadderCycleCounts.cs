@@ -4,6 +4,6 @@ namespace Northwatch.Simulation
     public struct LadderCycleCounts
     {
         public int cycle, side, units, passed, met;
-        public float travelShare;
+        public float travelShare, minimumTravelShare;
     }
 }

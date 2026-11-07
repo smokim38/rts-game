@@ -145,19 +145,19 @@ namespace Northwatch.Tests.EditMode.EditorTools
                 WriteArray(writer, simulation.State.Sides); WriteArray(writer, simulation.State.Sizes);
                 WriteArray(writer, simulation.State.Alive); WriteArray(writer, simulation.State.Generations);
                 WriteArray(writer, simulation.State.FreeSlots);
-                // Keep #224's movement baseline; #232's added diagnostic tally is tested by the ladder tests.
+                // The ladder tests cover the added diagnostic tally separately.
                 WriteArray(writer, simulation.State.Summary.GetSubArray(0, 8));
                 WriteArray(writer, simulation.DrawMatrices);
             }
             byte[] bytes = stream.ToArray();
             Assert.That((Vector3)simulation.State.Positions[0], Is.Not.EqualTo(initial), "Scenario exercises movement");
             using var hash = SHA256.Create();
-            // Issue #224 presentation-only baseline, captured with the cube renderer at
-            // c7cd0824cd520a80a5c9bb2726d6a0fb45b6e286. Re-pin this hash when an Issue
-            // intentionally changes simulation behavior, defaults, state fields or this scenario.
+            // Re-pinned for Issue #257 / ADR 0019: pitch 1.42, own spots and the new
+            // spot state fields intentionally change this simulation byte stream.
+            // Re-pin only for an intentional simulation/default/state/scenario change.
             Assert.That(BitConverter.ToString(hash.ComputeHash(bytes)).Replace("-", ""),
-                Is.EqualTo("FD42D6BE3F76ECB56AFE7A21DB980E33DA825C065A45547AB8D1744583E4AD8E"),
-                "Issue #224 baseline changed; intentional simulation changes must re-pin the documented hash.");
+                Is.EqualTo("BF5D43C3845666CA52DC6DC5F5E75D9D33B43D1855D9F8E64FF2D106C6845D3F"),
+                "Issue #257 baseline changed; intentional simulation changes must re-pin the documented hash.");
         }
 
         private static void WriteArray<T>(BinaryWriter writer, NativeArray<T> values) where T : struct

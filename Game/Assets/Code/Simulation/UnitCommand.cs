@@ -16,6 +16,8 @@ namespace Northwatch.Simulation
         internal Side Side;
         internal UnitSize Size;
         internal float3 Position;
+        internal float2 SpotOffset;
+        internal bool ReverseRows;
         internal int BlockCount;
     }
 }

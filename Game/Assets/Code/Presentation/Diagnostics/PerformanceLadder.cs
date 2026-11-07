@@ -139,7 +139,7 @@ namespace Northwatch.Presentation.Diagnostics
                 if (!waitRecorder.Valid) throw new InvalidOperationException("Simulation wait recorder unavailable.");
             }
             scenario.QueueUnits(driver.Simulation, unitCount);
-            scenario.QueueOrders(driver.Simulation);
+            scenario.QueueOrders(driver.Simulation, unitCount);
             started = Time.realtimeSinceStartupAsDouble;
         }
 

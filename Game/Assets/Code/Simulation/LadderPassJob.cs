@@ -34,8 +34,8 @@ namespace Northwatch.Simulation
                 }
             }
             oldMeans /= math.max(sizes, 1); means /= math.max(sizes, 1);
-            var first = new LadderCycleCounts { cycle = Cycle, units = sizes.x };
-            var second = new LadderCycleCounts { cycle = Cycle, side = 1, units = sizes.y };
+            var first = new LadderCycleCounts { cycle = Cycle, units = sizes.x, minimumTravelShare = float.MaxValue };
+            var second = new LadderCycleCounts { cycle = Cycle, side = 1, units = sizes.y, minimumTravelShare = float.MaxValue };
             for (int i = 0; i < Snapshots.Length; i++)
             {
                 float4 snapshot = Snapshots[i];
@@ -46,8 +46,9 @@ namespace Northwatch.Simulation
                     var count = side == 0 ? first : second;
                     if ((Previous[i].x - oldMeans[1 - side]) * (snapshot.x - means[1 - side]) < 0) count.passed++;
                     count.met += Met[i];
-                    count.travelShare += math.distance(Previous[i].xz, snapshot.xy) /
-                        (snapshot.w * Seconds * math.max(1, sizes[side]));
+                    float travel = math.distance(Previous[i].xz, snapshot.xy) / (snapshot.w * Seconds);
+                    count.travelShare += travel / math.max(1, sizes[side]);
+                    count.minimumTravelShare = math.min(count.minimumTravelShare, travel);
                     if (side == 0) first = count; else second = count;
                 }
                 Previous[i] = new float3(snapshot.x, 0, snapshot.y); Met[i] = 0;

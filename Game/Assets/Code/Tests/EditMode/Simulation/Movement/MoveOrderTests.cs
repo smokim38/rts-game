@@ -32,13 +32,13 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
             Frame(simulation);
         }
 
-        private static void Spawn(UnitSimulation simulation, bool lattice, bool touching = false)
+        private static void Spawn(UnitSimulation simulation, bool lattice)
         {
-            if (lattice || touching)
+            if (lattice)
                 for (int i = 0; i < 100; i++)
                     Assert.That(simulation.QueueAdd(Side.First, UnitSize.Small,
-                        new Vector3((i % 10 - 4.5f) * (touching ? .5f : .625f), 0,
-                            (i / 10 - 4.5f) * (touching ? .5f : .625f))), Is.True);
+                        new Vector3((i % 10 - 4.5f) * .71f, 0,
+                            (i / 10 - 4.5f) * .71f)), Is.True);
             else Assert.That(simulation.QueueBlock(Side.First, UnitSize.Small, Vector3.zero, 100), Is.True);
             Frame(simulation, 1);
         }
@@ -109,13 +109,12 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
             TestContext.WriteLine($"ring_units={count}; size={size}; exact={exact}; contact={contact}; congestion={congestion}; group_stalls={groupStalls}; searches={searches}; requests={requests}");
         }
 
-        [TestCase(true, true, false)] [TestCase(false, true, false)]
-        [TestCase(true, false, false)] [TestCase(false, false, false)]
-        [TestCase(true, false, true)] [TestCase(false, false, true)]
-        public void ClickQueuesSnapshotAndNextTickPlansEverySelectedUnit(bool classic, bool lattice, bool touching)
+        [TestCase(true, true)] [TestCase(false, true)]
+        [TestCase(true, false)] [TestCase(false, false)]
+        public void ClickQueuesSnapshotAndNextTickPlansEverySelectedUnit(bool classic, bool lattice)
         {
             using var simulation = new UnitSimulation(Settings());
-            Spawn(simulation, lattice, touching);
+            Spawn(simulation, lattice);
             SelectAll(simulation); Order(simulation, new Vector3(20, 0, 0), classic);
             Assert.That(simulation.AcknowledgementCount, Is.EqualTo(100));
             Assert.That(simulation.MoveMarkerVersion, Is.EqualTo(1));
@@ -130,10 +129,83 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
                 Assert.That(math.lengthsq(simulation.State.Movement[i].PreferredVelocity), Is.GreaterThan(0));
                 if (math.lengthsq(simulation.State.Movement[i].Velocity) > 0) started++;
             }
-            TestContext.WriteLine("First tick moving=" + started + "/100; lattice=" + lattice + "; touching=" + touching + "; classic=" + classic);
-            if (!touching) Assert.That(started, Is.EqualTo(100), "Units with velocity on the first normally spaced tick");
+            TestContext.WriteLine("First tick moving=" + started + "/100; lattice=" + lattice + "; classic=" + classic);
+            Assert.That(started, Is.EqualTo(100), "Units with velocity on the first normally spaced tick");
             Frame(simulation, 0, 1);
             Assert.That(simulation.AcknowledgementCount, Is.Zero);
+        }
+
+        [Test]
+        public void OwnSpotsCaptureTheClickSnapshotAndNewOrdersCaptureTheCurrentShape()
+        {
+            using var simulation = new UnitSimulation(Settings());
+            simulation.QueueAdd(Side.First, UnitSize.Small, new Vector3(-3, 0, -1));
+            simulation.QueueAdd(Side.First, UnitSize.Small, new Vector3(3, 0, 1));
+            Frame(simulation, 1); SelectAll(simulation); Order(simulation, new Vector3(20, 0, 5));
+            simulation.State.Positions[0] = new float3(-4, 0, -2);
+            simulation.State.Positions[1] = new float3(4, 0, 2);
+            Frame(simulation, 1);
+            for (int i = 0; i < 2; i++)
+            {
+                var unit = simulation.State.Movement[i];
+                Assert.That(unit.SpotOffset, Is.EqualTo(new float2(i == 0 ? -3 : 3, i == 0 ? -1 : 1)));
+                Assert.That(unit.HasOwnSpot, Is.True);
+                Assert.That(unit.Spot, Is.EqualTo(unit.Goal + unit.SpotOffset));
+                Assert.That(unit.PreferredVelocity.y, Is.GreaterThan(0), "An order inside the old z span must still centre on the click.");
+            }
+            float2 centre = (simulation.State.Positions[0].xz + simulation.State.Positions[1].xz) * .5f;
+            float2 offset = simulation.State.Positions[0].xz - centre;
+            Order(simulation, new Vector3(30, 0, 0)); Frame(simulation, 1);
+            Assert.That(simulation.State.Movement[0].SpotOffset, Is.EqualTo(offset));
+        }
+
+        [Test]
+        public void MembersReachOwnSpotsPastTheSharedGoal()
+        {
+            using var simulation = new UnitSimulation(Settings());
+            simulation.QueueAdd(Side.First, UnitSize.Small, Vector3.zero);
+            simulation.QueueAdd(Side.First, UnitSize.Small, new Vector3(-10, 0, 0));
+            Frame(simulation, 1); SelectAll(simulation); Order(simulation, Vector3.right);
+            for (int tick = 0; tick < 180; tick++) Frame(simulation, 1);
+            for (int i = 0; i < 2; i++)
+            {
+                var unit = simulation.State.Movement[i];
+                Assert.That(unit.Spot, Is.EqualTo(new float2(i == 0 ? 6 : -4, 0)));
+                Assert.That(math.distance(simulation.State.Positions[i].xz, unit.Spot), Is.LessThan(.05f));
+                Assert.That(unit.HasMoveOrder, Is.False);
+                Assert.That(unit.ArrivalRule, Is.EqualTo(1));
+            }
+        }
+
+        [Test]
+        public void OwnSpotsKeepRuleThreeAtTheSharedGoal()
+        {
+            using var ownedState = new UnitState(1);
+            var state = ownedState;
+            using var pipeline = new MovementPipeline(1, Settings());
+            state.Alive[0] = 1;
+            state.Movement[0] = new MovementUnit { HasMoveOrder = true, Mode = MovementMode.Moving,
+                Goal = float2.zero, Spot = new float2(3, 0), HasOwnSpot = true,
+                OrderVersion = 1, BestGoalDistance = 0, LastProgressTick = 1 };
+            pipeline.Schedule(state, default, tick: 31).Complete();
+            Assert.That(state.Movement[0].ArrivalRule, Is.EqualTo(3));
+        }
+
+        [TestCase(true)] [TestCase(false)]
+        public void ContactArrivalAppliesOnlyWhenTheOwnSpotFellBack(bool validSpot)
+        {
+            using var ownedState = new UnitState(2);
+            var state = ownedState;
+            using var pipeline = new MovementPipeline(2, Settings());
+            state.Alive[0] = state.Alive[1] = 1;
+            state.Positions[1] = new float3(.71f, 0, 0);
+            state.Movement[0] = new MovementUnit { HasMoveOrder = true, Mode = MovementMode.Moving,
+                Goal = new float2(3, 0), Spot = new float2(3, 0), HasOwnSpot = validSpot,
+                OrderVersion = 1, BestGoalDistance = 3, LastProgressTick = 1 };
+            state.Movement[1] = new MovementUnit { Mode = MovementMode.Idle, OrderVersion = 1 };
+            pipeline.Schedule(state, default, tick: 1).Complete();
+            Assert.That(state.Movement[0].ArrivalRule, Is.EqualTo(validSpot ? 0 : 2));
+            Assert.That(state.Movement[0].HasMoveOrder, Is.EqualTo(validSpot));
         }
 
         [Test]
@@ -198,7 +270,8 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
         public void MarkerCountsUntilLastActualArrivalAndDoesNotReappear()
         {
             using var simulation = new UnitSimulation(Settings());
-            simulation.QueueAdd(Side.First, UnitSize.Small, Vector3.zero);
+            // Different speeds keep arrivals staggered when own spots give equal travel distances.
+            simulation.QueueAdd(Side.First, UnitSize.Large, Vector3.zero);
             simulation.QueueAdd(Side.First, UnitSize.Small, new Vector3(-5, 0, 0)); Frame(simulation, 1);
             SelectAll(simulation); Order(simulation, new Vector3(10, 0, 0));
             bool sawOneHolder = false;
@@ -237,20 +310,20 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
             Assert.That(simulation.MoveMarkerCount, Is.EqualTo(1));
         }
 
-        [TestCase(false, false, 15f, 0f)] [TestCase(true, false, 15f, 0f)] [TestCase(false, true, 15f, 0f)]
-        [TestCase(false, false, 14.9999542f, -.0000152587891f)]
-        [TestCase(false, false, 15.04f, 0f)] [TestCase(true, false, 15.04f, 0f)]
-        [TestCase(false, false, 14.96f, 0f)] [TestCase(true, false, 14.96f, 0f)]
-        [TestCase(false, false, 15f, .04f)] [TestCase(true, false, 15f, .04f)]
-        [TestCase(false, false, 15f, -.04f)] [TestCase(true, false, 15f, -.04f)]
-        [TestCase(false, false, 15.03f, .03f)] [TestCase(true, false, 15.03f, .03f)]
-        [TestCase(false, false, 14.97f, .03f)] [TestCase(true, false, 14.97f, .03f)]
-        [TestCase(false, false, 15.03f, -.03f)] [TestCase(true, false, 15.03f, -.03f)]
-        [TestCase(false, false, 14.97f, -.03f)] [TestCase(true, false, 14.97f, -.03f)]
-        public void HundredUnitsComeToRestWithoutAnyTickAddingFootprintOverlap(bool lattice, bool touching, float goalX, float goalZ)
+        [TestCase(false, 15f, 0f)] [TestCase(true, 15f, 0f)]
+        [TestCase(false, 14.9999542f, -.0000152587891f)]
+        [TestCase(false, 15.04f, 0f)] [TestCase(true, 15.04f, 0f)]
+        [TestCase(false, 14.96f, 0f)] [TestCase(true, 14.96f, 0f)]
+        [TestCase(false, 15f, .04f)] [TestCase(true, 15f, .04f)]
+        [TestCase(false, 15f, -.04f)] [TestCase(true, 15f, -.04f)]
+        [TestCase(false, 15.03f, .03f)] [TestCase(true, 15.03f, .03f)]
+        [TestCase(false, 14.97f, .03f)] [TestCase(true, 14.97f, .03f)]
+        [TestCase(false, 15.03f, -.03f)] [TestCase(true, 15.03f, -.03f)]
+        [TestCase(false, 14.97f, -.03f)] [TestCase(true, 14.97f, -.03f)]
+        public void HundredUnitsComeToRestWithoutAnyTickAddingFootprintOverlap(bool lattice, float goalX, float goalZ)
         {
             using var simulation = new UnitSimulation(Settings());
-            Spawn(simulation, lattice, touching);
+            Spawn(simulation, lattice);
             var goal = new Vector3(goalX, 0, goalZ);
             var initialDistance = new float[100]; var moved = new bool[100];
             for (int i = 0; i < 100; i++) initialDistance[i] = math.distance(simulation.State.Positions[i], (float3)goal);
@@ -293,13 +366,12 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
                 min = math.min(min, simulation.State.Positions[i].xz - extent);
                 max = math.max(max, simulation.State.Positions[i].xz + extent);
             }
-            TestContext.WriteLine("lattice=" + lattice + "; touching=" + touching + "; goal=" + goalX + "," + goalZ + "; T=" + (lastChange + 1) +
+            TestContext.WriteLine("lattice=" + lattice + "; goal=" + goalX + "," + goalZ + "; T=" + (lastChange + 1) +
                 "; first_tick_moving=" + firstTickMoving + "; all_moved_tick=" + allMovedTick +
                 "; exact/contact/congestion/group_stall=" + stopped[1] + "/" + stopped[2] + "/" + stopped[3] + "/" + stopped[4] +
                 "; moving=" + moving + "; orders=" + orders + "; at_rest_with_order=" + restWithOrder +
                 "; S2.2_area_ratio=" + ((max.x - min.x) * (max.y - min.y) / 25) +
                 "; under_one_cell_progress=" + insufficientProgress + "; least_progress=" + leastProgress);
-            if (touching) return; // Owner ruling: touching starts are reported until movement steps 4 and 5.
             Assert.That(firstTickMoving, Is.EqualTo(100));
             Assert.That(moving, Is.Zero, "All units must be at rest at tick 1200");
             Assert.That(orders, Is.Zero);

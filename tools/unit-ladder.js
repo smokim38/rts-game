@@ -8,6 +8,7 @@ const STEPS = Object.freeze([10, 50, 100, 200, 300, 400, 500, 1000, 2000]);
 const LOW_REGRESSION_CUTOFF_MS = 3.0;
 const INCOMPLETE_CROSSING = 'window closed before both crossing cycles finished';
 const MOVEMENT_STATUS = 'armies mostly stuck, movement unsolved';
+const LANE_LAYOUT = 'Armies pass side by side on separate lanes; head-on is not tested (S3.4).';
 const JOB_MARKERS = Object.freeze(['ApplyCommandsJob', 'SelectionJob', 'PublishFieldsJob', 'RequestFieldsJob',
   'AssignFieldBuildJob', 'BuildFlowFieldJob', 'BucketUnitsJob', 'BuildSpatialGridJob', 'OrderProgressJob',
   'PreferredVelocityJob', 'IntegrateMovementJob', 'OverlapMovementJob', 'MoveCheckPassJob', 'CommitMovementJob',
@@ -15,7 +16,7 @@ const JOB_MARKERS = Object.freeze(['ApplyCommandsJob', 'SelectionJob', 'PublishF
 const finitePositive = value => Number.isFinite(value) && value > 0;
 const average = values => values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
 const publicCrossing = (counts, limit) => Array.isArray(counts) ? counts.slice(0, limit).map(count => Object.fromEntries(
-  ['cycle', 'side', 'units', 'passed', 'met', 'travelShare'].map(key => [key, Number.isFinite(count?.[key]) ? count[key] : null]))) : null;
+  ['cycle', 'side', 'units', 'passed', 'met', 'travelShare', 'minimumTravelShare'].map(key => [key, Number.isFinite(count?.[key]) ? count[key] : null]))) : null;
 function median(values) {
   if (values.length !== 3 || !values.every(Number.isFinite)) throw Error('Three finite runs required.');
   return [...values].sort((a, b) => a - b)[1];
@@ -33,6 +34,7 @@ function summarizeRun(meta, rows, units) {
     crossing: publicCrossing(meta.crossing, 4),
     cycleZeroCrossing: publicCrossing(meta.cycleZeroCrossing, 2)
   };
+  if (meta.scenarioVersion !== 4) reasons.push('incorrect scenario version');
   if (!meta.featureEnabled) reasons.push('FrameTimingManager unavailable or timer clocks differ');
   if (meta.focusLost) reasons.push('focus lost');
   if (meta.paused) reasons.push('paused');
@@ -97,7 +99,9 @@ function checkCrossing(meta, units) {
     if (!count || count.cycle !== Math.floor(i / 2) || count.side !== i % 2 || count.units !== half ||
         !Number.isSafeInteger(count.passed) || count.passed < 0 || count.passed > half ||
         !Number.isSafeInteger(count.met) || count.met < 0 || count.met > half ||
-        !Number.isFinite(count.travelShare) || count.travelShare < 0)
+        !Number.isFinite(count.travelShare) || count.travelShare < 0 ||
+        !Number.isFinite(count.minimumTravelShare) || count.minimumTravelShare < 0 ||
+        count.minimumTravelShare > count.travelShare + .00001)
       reasons.push('missing or invalid crossing counters');
   }
   return { checked: true, reasons: [...new Set(reasons)] };
@@ -215,11 +219,12 @@ function renderEntry(data) {
   const number = value => value == null ? 'unavailable' : value.toFixed(3);
   return `# Unit performance ladder — ${data.date}\n\nContext: ${data.context}\n\nCommit: ${data.commit}\n\n` +
     `Reference-class: ${data.referenceClass}\n\nLadder height: ${data.height} (${MOVEMENT_STATUS})\n\nComparison: ${data.comparison || 'none (new series)'}\n\n` +
-    'Scenario version 3: the two armies receive seeded orders along separate offset lanes to alternating far ends every 20 simulation seconds (ADRs 0017 and 0018). Pass, meet and travel shares are reported, not required. Commands, spatial grid, flow fields and movement run at 30 Hz; instanced drawing uses the current game mesh every frame (ADR 0016). Ended orders are renewed before the next movement step; live orders are never renewed early. All movement rules stay enabled, but rule 2 (contact with an arrived member) cannot fire because renewal removes idle members before its next check. Targeting, combat and commander AI are not implemented. Version 1 held position: versions 1 and 3 are not a like-for-like series. Each attempt reports renewals by arrival rules 1 (exact goal), 2, 3 (goal-disc congestion), 4 (six-second group stall), the window-close tick, cycle 0 and both judged cycles. Travel share is mean endpoint displacement in any direction divided by free travel; it cannot distinguish sideways movement from progress along the lane. These results do not establish smooth movement or the cost of free movement or mixing armies.\n\n' +
+    'Scenario version 4: the two armies receive seeded orders along separate offset lanes to alternating far ends every 20 simulation seconds (ADRs 0017, 0018 and 0019). Spawn pitch is 1.42, both blocks fill from the seam outward, and orders use the mean z of each spawn block with own spots. Pass, meet and travel shares are reported, not required. Commands, spatial grid, flow fields and movement run at 30 Hz; instanced drawing uses the current game mesh every frame (ADR 0016). Ended orders are renewed before the next movement step; live orders are never renewed early. All movement rules stay enabled, but rule 2 (contact with an arrived member) cannot fire because renewal removes idle members before its next check. Targeting, combat and commander AI are not implemented. Version 1 held position: versions 1, 3 and 4 are not a like-for-like series. Each attempt reports renewals by arrival rules 1 (exact goal), 2, 3 (goal-disc congestion), 4 (six-second group stall), the window-close tick, cycle 0 and both judged cycles. Travel share is mean endpoint displacement in any direction divided by free travel; it cannot distinguish sideways movement from progress along the lane. These results do not establish smooth movement or the cost of free movement or mixing armies.\n\n' +
     '| Units | Average ms | 1% low ms | Maximum ms | CPU main ms | GPU ms | FPS | Result |\n' +
     '| --- | --- | --- | --- | --- | --- | --- | --- |\n' + data.steps.map(step =>
       `| ${step.units} | ${number(step.frameMs)} | ${number(step.lowMs)} | ${number(step.maxMs)} | ${number(step.mainMs)} | ${number(step.gpuMs)} | ${number(step.fps)} | ${step.result}${step.regressed ? ', regressed' : ''}${step.previouslyPassing ? ', previously passing' : ''} |`).join('\n') +
     `\n\nCrossing shares, ${MOVEMENT_STATUS} (worst judged cycle across valid attempts; first / second side):\n\n` +
+    LANE_LAYOUT + '\n\n' +
     '| Units | Pass share | Meet share | Travel share | Cycle 0 travel share |\n| --- | --- | --- | --- | --- |\n' +
     data.steps.map(step => {
       const shares = (key, field = 'crossing') => [0, 1].map(side => {
@@ -227,7 +232,13 @@ function renderEntry(data) {
         return counts.length ? number(Math.min(...counts.map(c => key === 'travelShare' ? c[key] : c[key] / c.units))) : 'unchecked';
       }).join(' / ');
       return `| ${step.units} | ${shares('passed')} | ${shares('met')} | ${shares('travelShare')} | ${shares('travelShare', 'cycleZeroCrossing')} |`;
-    }).join('\n') + '\n\n' + renderMovementCost(data.movementCost, number) +
+    }).join('\n') + '\n\nLowest single-vehicle travel share (worst valid attempt; first / second side):\n\n' +
+    '| Units | Cycle 0 | Cycle 1 | Cycle 2 |\n| --- | --- | --- | --- |\n' +
+    data.steps.map(step => '| ' + step.units + ' | ' + [0, 1, 2].map(cycle => [0, 1].map(side => {
+      const counts = step.attempts.filter(run => run.valid && run.crossingChecked).flatMap(run =>
+        (cycle === 0 ? run.cycleZeroCrossing : run.crossing).filter(c => c.side === side && c.cycle === cycle));
+      return counts.length ? number(Math.min(...counts.map(c => c.minimumTravelShare))) : 'unchecked';
+    }).join(' / ')).join(' | ') + ' |').join('\n') + '\n\n' + renderMovementCost(data.movementCost, number) +
     '\nMachine-readable summary (includes all attempts, three-run averages/spread and missing optional samples):\n\n```json\n' + JSON.stringify(data, null, 2) + '\n```\n';
 }
 
@@ -246,7 +257,7 @@ function renderMovementCost(cost, number) {
 }
 
 function movementCost(worker, waitMeta, csv, commit) {
-  if (worker.commit !== commit || waitMeta.commit !== commit || worker.scenarioVersion !== 3 || waitMeta.scenarioVersion !== 3 ||
+  if (worker.commit !== commit || waitMeta.commit !== commit || worker.scenarioVersion !== 4 || waitMeta.scenarioVersion !== 4 ||
       worker.frameRate !== 25 || !worker.ticks || !worker.oneTickFrames || !finitePositive(worker.meanMs) || !finitePositive(worker.p99Ms) ||
       ![20, 40, 60].includes(worker.profileSeconds) || worker.gcAllocBytes !== 0 ||
       typeof worker.crossingChecked !== 'boolean' || !worker.crossingValid ||

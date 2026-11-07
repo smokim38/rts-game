@@ -9,10 +9,10 @@ namespace Northwatch.Tests.EditMode.Simulation
 {
     public sealed class BlockPlacementTests
     {
-        [TestCase(UnitSize.Small, 1.05f)]
-        [TestCase(UnitSize.Small, 1.3f)]
-        [TestCase(UnitSize.Large, 1.05f)]
-        [TestCase(UnitSize.Large, 1.3f)]
+        [TestCase(UnitSize.Small, 1.42f)]
+        [TestCase(UnitSize.Small, 1.43f)]
+        [TestCase(UnitSize.Large, 1.42f)]
+        [TestCase(UnitSize.Large, 1.43f)]
         public void SpawnUsesMatchSlotSpacingAndKeepsFootprintsInsideMap(UnitSize size, float spacing)
         {
             var asset = ScriptableObject.CreateInstance<Northwatch.Presentation.MovementSettings>();
@@ -52,7 +52,7 @@ namespace Northwatch.Tests.EditMode.Simulation
             Assert.That(simulation.PlacementResult, Is.EqualTo(count));
             Assert.That(simulation.DrawCount(Side.Second), Is.EqualTo(count));
             AssertPlacement(simulation);
-            float half = (size == UnitSize.Small ? 0.5f : 1f) * 0.5f;
+            float half = Northwatch.Simulation.Movement.Footprint.Radius(size);
             float2 minimum = new float2(float.MaxValue), maximum = new float2(float.MinValue);
             for (int i = 0; i < count; i++)
             {
@@ -146,19 +146,63 @@ namespace Northwatch.Tests.EditMode.Simulation
             Assert.That(simulation.Count, Is.Zero);
         }
 
+        [TestCase(UnitSize.Small, UnitSize.Small, 0f)]
+        [TestCase(UnitSize.Small, UnitSize.Large, 0f)]
+        [TestCase(UnitSize.Large, UnitSize.Small, 0f)]
+        [TestCase(UnitSize.Large, UnitSize.Large, 0f)]
+        [TestCase(UnitSize.Small, UnitSize.Small, -.00001f)]
+        [TestCase(UnitSize.Small, UnitSize.Large, -.00001f)]
+        [TestCase(UnitSize.Large, UnitSize.Small, -.00001f)]
+        [TestCase(UnitSize.Large, UnitSize.Large, -.00001f)]
+        public void SingleAndBlockEntryUseTheSameStoredDiscBoundary(UnitSize first, UnitSize second, float adjustment)
+        {
+            float distance = Northwatch.Simulation.Movement.Footprint.Radius(first) +
+                Northwatch.Simulation.Movement.Footprint.Radius(second) + Northwatch.Simulation.Movement.Footprint.DiscMargin + adjustment;
+            foreach (bool block in new[] { false, true })
+            {
+                using var simulation = new UnitSimulation();
+                simulation.QueueAdd(Side.First, first, Vector3.zero);
+                var point = new Vector3(distance, 0, 0);
+                if (block) simulation.QueueBlock(Side.Second, second, point, 1);
+                else simulation.QueueAdd(Side.Second, second, point);
+                Tick(simulation);
+                Assert.That(simulation.Count, Is.EqualTo(adjustment == 0 ? 2 : 1), "block=" + block);
+            }
+        }
+
+        [Test]
+        public void RoundedTouchingPairIsRefusedByBothEntryPaths()
+        {
+            foreach (bool block in new[] { false, true })
+            {
+                using var simulation = new UnitSimulation();
+                simulation.QueueAdd(Side.First, UnitSize.Small, new Vector3(100, 0, 0));
+                if (block) simulation.QueueBlock(Side.Second, UnitSize.Small, new Vector3(100.5f, 0, .5f), 1);
+                else simulation.QueueAdd(Side.Second, UnitSize.Small, new Vector3(100.5f, 0, .5f));
+                Tick(simulation);
+                Assert.That(simulation.Count, Is.EqualTo(1));
+            }
+            using var blockFirst = new UnitSimulation();
+            blockFirst.QueueBlock(Side.First, UnitSize.Small, new Vector3(100, 0, 0), 1);
+            blockFirst.QueueAdd(Side.Second, UnitSize.Small, new Vector3(100.5f, 0, .5f), out ulong refused);
+            Tick(blockFirst);
+            Assert.That(blockFirst.Count, Is.EqualTo(1));
+            Assert.That(blockFirst.TryGetAddedHandle(refused, out _), Is.False);
+        }
+
         private static void AssertPlacement(UnitSimulation simulation)
         {
             for (int a = 0; a < simulation.Count; a++)
             {
                 float3 position = simulation.State.Positions[a];
-                float half = simulation.State.Sizes[a] == UnitSize.Small ? 0.25f : 0.5f;
+                float half = Northwatch.Simulation.Movement.Footprint.Radius(simulation.State.Sizes[a]);
                 Assert.That(position.y, Is.Zero);
                 Assert.That(math.cmax(math.abs(position.xz)) + half, Is.LessThanOrEqualTo(128));
                 for (int b = 0; b < a; b++)
                 {
-                    float clearance = half + (simulation.State.Sizes[b] == UnitSize.Small ? 0.25f : 0.5f);
-                    float2 distance = math.abs(position.xz - simulation.State.Positions[b].xz);
-                    if (math.all(distance < clearance)) Assert.Fail("Cubes overlap.");
+                    float clearance = half + Northwatch.Simulation.Movement.Footprint.Radius(simulation.State.Sizes[b]) +
+                        Northwatch.Simulation.Movement.Footprint.DiscMargin;
+                    if (math.distance(position.xz, simulation.State.Positions[b].xz) < clearance) Assert.Fail("Entry discs lack their margin.");
                 }
             }
         }
