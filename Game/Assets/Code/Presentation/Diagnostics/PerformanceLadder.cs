@@ -3,6 +3,7 @@ using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using Northwatch.Simulation;
+using Unity.Profiling;
 using UnityEngine;
 using Debug = UnityEngine.Debug;
 
@@ -20,9 +21,15 @@ namespace Northwatch.Presentation.Diagnostics
         private double started, windowStart, windowEnd;
         private long previousCallback;
         private ulong lastDelivered;
-        private bool measuring, draining, finished, focusLost, paused, featureEnabled, profile;
+        private bool measuring, draining, finished, focusLost, paused, featureEnabled, profile, waitMode;
         private bool activeUnitsValid = true;
+        private readonly int[] warmupRenewals = new int[4], measuredRenewals = new int[4];
         private double profileSeconds = 60;
+        private ProfilerRecorder waitRecorder;
+        private long[] waitTimes;
+        private int waitFrames, previousCompletedTicks;
+        private ulong windowCloseTick;
+        private string commit;
 
         [DllImport("kernel32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
@@ -97,8 +104,13 @@ namespace Northwatch.Presentation.Diagnostics
                 !output.StartsWith(logs, StringComparison.OrdinalIgnoreCase))
                 throw new ArgumentException("Ladder output must be under this project's Logs folder.");
             Directory.CreateDirectory(Path.GetDirectoryName(output));
+            commit = File.ReadAllText(Path.Combine(project, "Builds/PerformanceLadder/commit.txt")).Trim();
+            if (!System.Text.RegularExpressions.Regex.IsMatch(commit, "^[0-9a-f]{40}$"))
+                throw new InvalidOperationException("Missing measured build commit.");
             profile = Array.IndexOf(arguments, "-ladder-profile") >= 0;
-            if (profile != Debug.isDebugBuild) throw new InvalidOperationException("Use the release Player for measurements and development Player for captures.");
+            waitMode = Array.IndexOf(arguments, "-ladder-wait") >= 0;
+            if ((profile || waitMode) != Debug.isDebugBuild || (profile && waitMode))
+                throw new InvalidOperationException("Use release for measurements, development with either -ladder-profile or -ladder-wait for cost runs.");
             int secondsIndex = Array.IndexOf(arguments, "-ladder-profile-seconds");
             if (secondsIndex >= 0 && (!profile || secondsIndex + 1 >= arguments.Length ||
                 !double.TryParse(arguments[secondsIndex + 1], NumberStyles.Float, CultureInfo.InvariantCulture, out profileSeconds) ||
@@ -118,9 +130,16 @@ namespace Northwatch.Presentation.Diagnostics
             featureEnabled = FrameTimingManager.IsFeatureEnabled() &&
                 FrameTimingManager.GetCpuTimerFrequency() == (ulong)frequency;
             buffer = new LadderFrameBuffer(scenario.FrameCapacity, 0);
-            if (!driver.Simulation.QueueBlock(Side.First, scenario.FirstSize, scenario.FirstSpawn, unitCount / 2) ||
-                !driver.Simulation.QueueBlock(Side.Second, scenario.SecondSize, scenario.SecondSpawn, unitCount / 2))
-                throw new InvalidOperationException("Ladder blocks could not be queued.");
+            if (waitMode)
+            {
+                waitTimes = new long[scenario.FrameCapacity];
+                waitRecorder = ProfilerRecorder.StartNew(ProfilerCategory.Scripts, "Northwatch.Simulation.Wait", 1,
+                    ProfilerRecorderOptions.StartImmediately | ProfilerRecorderOptions.WrapAroundWhenCapacityReached |
+                    ProfilerRecorderOptions.SumAllSamplesInFrame);
+                if (!waitRecorder.Valid) throw new InvalidOperationException("Simulation wait recorder unavailable.");
+            }
+            scenario.QueueUnits(driver.Simulation, unitCount);
+            scenario.QueueOrders(driver.Simulation);
             started = Time.realtimeSinceStartupAsDouble;
         }
 
@@ -138,6 +157,7 @@ namespace Northwatch.Presentation.Diagnostics
                 measuring = true; windowStart = now;
                 buffer.Begin(previousCallback);
                 renderedStart = Time.renderedFrameCount;
+                for (int rule = 1; rule <= 4; rule++) warmupRenewals[rule - 1] = driver.Simulation.RenewedOrderCount(rule);
 #if DEVELOPMENT_BUILD
                 if (profile)
                 {
@@ -149,6 +169,15 @@ namespace Northwatch.Presentation.Diagnostics
             }
             if (measuring)
             {
+                // LastValue is the previous rendered frame; keep the completed
+                // tick count from that frame beside it (ADR 0012 set C).
+                if (waitMode && previousCompletedTicks > 0)
+                {
+                    if (waitFrames == waitTimes.Length) { Fail("Wait buffer overflow."); return; }
+                    waitTimes[waitFrames++] = waitRecorder.LastValue;
+                }
+                activeUnitsValid &= driver.Simulation.Count == unitCount && driver.Simulation.MovingOrdersValid &&
+                    driver.Simulation.DrawCount(Side.First) == unitCount / 2 && driver.Simulation.DrawCount(Side.Second) == unitCount / 2;
 #if DEVELOPMENT_BUILD
                 if (profile && now - windowStart >= profileSeconds)
                 {
@@ -161,14 +190,15 @@ namespace Northwatch.Presentation.Diagnostics
                     measuring = false; draining = true; windowEnd = now;
                     renderedEnd = Time.renderedFrameCount;
                     buffer.End();
+                    windowCloseTick = driver.Simulation.TickCount;
+                    for (int rule = 1; rule <= 4; rule++)
+                        measuredRenewals[rule - 1] = driver.Simulation.RenewedOrderCount(rule) - warmupRenewals[rule - 1];
                 }
                 else
                 {
                     buffer.Rendered(callback);
                     focusLost |= !Application.isFocused;
                     featureEnabled &= FrameTimingManager.IsFeatureEnabled();
-                    activeUnitsValid &= driver.Simulation.Count == unitCount &&
-                        driver.Simulation.DrawCount(Side.First) == unitCount / 2 && driver.Simulation.DrawCount(Side.Second) == unitCount / 2;
                 }
             }
             uint count = FrameTimingManager.GetLatestTimings((uint)latest.Length, latest);
@@ -184,6 +214,7 @@ namespace Northwatch.Presentation.Diagnostics
             lastDelivered = newest;
             FrameTimingManager.CaptureFrameTimings();
             previousCallback = callback;
+            previousCompletedTicks = driver.CompletedTicks;
             if (draining && now - windowEnd >= scenario.DrainSeconds) Finish();
         }
 
@@ -201,6 +232,21 @@ namespace Northwatch.Presentation.Diagnostics
             }
 #endif
             Directory.CreateDirectory(Path.GetDirectoryName(output));
+            var crossing = new LadderCycleCounts[4];
+            var cycleZeroCrossing = new LadderCycleCounts[2];
+            for (int side = 0; side < 2; side++)
+                cycleZeroCrossing[side] = driver.Simulation.LadderCrossingCount(0, (Side)side);
+            for (int cycle = 1; cycle <= 2; cycle++)
+                for (int side = 0; side < 2; side++)
+                    crossing[(cycle - 1) * 2 + side] = driver.Simulation.LadderCrossingCount(cycle, (Side)side);
+            if (waitMode)
+            {
+                using var writer = new StreamWriter(output + "-wait.csv");
+                writer.WriteLine("waitMs");
+                for (int i = 0; i < waitFrames; i++)
+                    writer.WriteLine((waitTimes[i] * .000001).ToString("R", CultureInfo.InvariantCulture));
+                waitRecorder.Dispose();
+            }
             using (var writer = new StreamWriter(output + ".csv"))
             {
                 writer.WriteLine("callback,timestamp,samples,frameMs,mainMs,gpuMs");
@@ -215,8 +261,13 @@ namespace Northwatch.Presentation.Diagnostics
             // Only allow-listed hardware/build fields are collected; raw output stays ignored.
             File.WriteAllText(output + ".json", JsonUtility.ToJson(new RunMetadata
             {
-                units = unitCount, scenarioVersion = scenario.Version, seed = scenario.Seed,
+                units = unitCount, scenarioVersion = scenario.Version, seed = scenario.Seed, commit = commit,
                 featureEnabled = featureEnabled, focusLost = focusLost, paused = paused, activeUnitsValid = activeUnitsValid,
+                renewedOrdersByArrivalRule = measuredRenewals, warmupRenewedOrdersByArrivalRule = warmupRenewals,
+                windowCloseTick = windowCloseTick, crossing = crossing, cycleZeroCrossing = cycleZeroCrossing,
+                meetDistance = scenario.MeetDistance,
+                laneGap = scenario.LaneGap, spawnDistance = scenario.SecondSpawn.x - scenario.FirstSpawn.x,
+                profile = profile, waitMode = waitMode, profileSeconds = profileSeconds,
                 bufferInvalid = buffer.Invalid, renderedFrames = renderedEnd - renderedStart,
                 matchedSamples = buffer.Matched, unmatchedSamples = buffer.Unmatched,
                 recordedFrames = buffer.Count, seconds = windowEnd - windowStart,
@@ -237,8 +288,14 @@ namespace Northwatch.Presentation.Diagnostics
         {
             public int units, scenarioVersion, seed, renderedFrames, recordedFrames, matchedSamples, unmatchedSamples, width, height, cores, threads, vramMb, ramMb, vsync, targetFrameRate;
             public bool featureEnabled, focusLost, paused, bufferInvalid, borderless, development, activeUnitsValid;
+            public int[] renewedOrdersByArrivalRule, warmupRenewedOrdersByArrivalRule;
+            public ulong windowCloseTick;
+            public LadderCycleCounts[] crossing, cycleZeroCrossing;
+            public float meetDistance, laneGap, spawnDistance;
+            public bool profile, waitMode;
+            public double profileSeconds;
             public double seconds, warmupSeconds;
-            public string unity, api, quality, cpu, gpu, graphicsVersion;
+            public string unity, api, quality, cpu, gpu, graphicsVersion, commit;
         }
     }
 }

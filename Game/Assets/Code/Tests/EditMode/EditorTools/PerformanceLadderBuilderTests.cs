@@ -18,6 +18,35 @@ namespace Northwatch.Tests.EditMode.EditorTools
 {
     public sealed class PerformanceLadderBuilderTests
     {
+        [TestCase(0, 2)] [TestCase(1, 4)]
+        public void WorkerCrossingValidationAcceptsLowSharesAndRejectsMalformedCounters(int firstCycle, int length)
+        {
+            var counts = new Northwatch.Simulation.LadderCycleCounts[length];
+            for (int i = 0; i < length; i++) counts[i] = new Northwatch.Simulation.LadderCycleCounts
+                { cycle = firstCycle + i / 2, side = i % 2, units = 1000, passed = 1, met = 0, travelShare = .0045f };
+            MethodInfo validate = typeof(LadderProfileAnalysis).GetMethod("CrossingCountsValid", BindingFlags.Static | BindingFlags.NonPublic);
+            bool Valid(Northwatch.Simulation.LadderCycleCounts[] values) => (bool)validate.Invoke(null, new object[] { values, firstCycle, length });
+            Assert.That(Valid(counts), Is.True);
+            Assert.That(Valid(null), Is.False);
+            Assert.That(Valid(new Northwatch.Simulation.LadderCycleCounts[0]), Is.False);
+            for (int i = 0; i < length; i++)
+            {
+                var original = counts[i];
+                foreach (string field in new[] { "cycle", "side", "units", "passed", "met", "travelShare" })
+                {
+                    object malformed = original;
+                    typeof(Northwatch.Simulation.LadderCycleCounts).GetField(field).SetValue(malformed,
+                        field == "travelShare" ? (object)float.NaN : -1);
+                    counts[i] = (Northwatch.Simulation.LadderCycleCounts)malformed;
+                    Assert.That(Valid(counts), Is.False, field);
+                    counts[i] = original;
+                }
+                counts[i].passed = 1001; Assert.That(Valid(counts), Is.False); counts[i] = original;
+                counts[i].met = 1001; Assert.That(Valid(counts), Is.False); counts[i] = original;
+                counts[i].travelShare = -1; Assert.That(Valid(counts), Is.False); counts[i] = original;
+            }
+        }
+
         [Test]
         public void OversizedCaptureIsRejectedBeforeLoadingOrReportingSuccess()
         {
@@ -159,7 +188,7 @@ namespace Northwatch.Tests.EditMode.EditorTools
             Assert.That(roots.SelectMany(root => root.GetComponentsInChildren<Canvas>()).Any(), Is.False);
             Camera camera = roots.Select(root => root.GetComponent<Camera>()).Single(value => value != null);
             var scenario = AssetDatabase.LoadAssetAtPath<LadderScenario>(PerformanceLadderBuilder.ScenarioPath);
-            Assert.That(scenario.Version, Is.EqualTo(1));
+            Assert.That(scenario.Version, Is.EqualTo(3));
             Assert.That(scenario.WarmupSeconds, Is.EqualTo(10));
             Assert.That(scenario.WindowSeconds, Is.EqualTo(60));
             camera.aspect = 16f / 9f;
