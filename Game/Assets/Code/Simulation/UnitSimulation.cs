@@ -59,13 +59,15 @@ namespace Northwatch.Simulation
             return true;
         }
 
-        public void MeasureMovement(int scene, int count)
+        public void MeasureMovement(int scene, int count, int sizeSet = 0, float startHeading = 0, int batchSize = 64)
         {
             RequireComplete();
             if (movement == null || Measurement != null || TickCount != 0)
                 throw new InvalidOperationException("Enable movement measurement once, before the first frame.");
-            Measurement = new MovementMeasurement(State, scene, count);
-            if (scene >= 5)
+            if (sizeSet < 0 || sizeSet > 2 || !math.isfinite(startHeading) || batchSize < 1)
+                throw new ArgumentException("Invalid measurement size set, heading or batch size.");
+            Measurement = new MovementMeasurement(State, scene, count, startHeading, batchSize);
+            if (scene == 5 || scene == 6)
             {
                 if (StaticMaps == null) throw new InvalidOperationException("Obstacle measurement requires the sandbox layout.");
                 Measurement.Walkable.CopyFrom(StaticMaps.Walkable);
@@ -73,10 +75,12 @@ namespace Northwatch.Simulation
             MovementParameters settings = movement.Settings;
             movement.Dispose();
             movement = new MovementPipeline(Capacity, settings, Measurement.Walkable, StaticMaps ?? openFieldMaps);
-            int smallCount = scene == 5 && count == 110 ? 100 : count;
-            if (scene >= 4 && !QueueBlock(Side.First, UnitSize.Small, scene == 6 ? new Vector3(60, 0, 30) : Vector3.zero, smallCount))
+            bool mixed = scene == 5 && sizeSet == 0 && count == 110;
+            int smallCount = mixed ? 100 : count;
+            if (scene >= 4 && scene <= 6 && !QueueBlock(Side.First, sizeSet == 2 ? UnitSize.Large : UnitSize.Small,
+                scene == 6 ? new Vector3(60, 0, 30) : Vector3.zero, smallCount))
                 throw new InvalidOperationException("Could not queue the measured open-map block.");
-            if (scene == 5 && count == 110 && !QueueBlock(Side.First, UnitSize.Large, new Vector3(-12, 0, -15), 10))
+            if (mixed && !QueueBlock(Side.First, UnitSize.Large, new Vector3(-12, 0, -15), 10))
                 throw new InvalidOperationException("Could not queue the measured large cubes.");
         }
 #endif
@@ -272,6 +276,9 @@ namespace Northwatch.Simulation
             if (ticks < 0) throw new ArgumentOutOfRangeException(nameof(ticks));
             if (!math.isfinite(interpolation) || interpolation < 0 || interpolation > 1)
                 throw new ArgumentOutOfRangeException(nameof(interpolation));
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            if (Measurement != null) ticks = math.min(ticks, Measurement.RemainingTicks);
+#endif
             if (ticks > 0) pending = ApplyCommands(pending);
             pending = new SelectionJob
             {
@@ -288,7 +295,8 @@ namespace Northwatch.Simulation
                 if (Measurement != null)
                 {
                     pending = Measurement.Input(State, pending);
-                    pending = movement.Schedule(State, pending, 64, Measurement.Timestamps, Measurement.TickCount * MovementMeasurement.TimestampStride, TickCount + 1);
+                    pending = movement.Schedule(State, pending, Measurement.BatchSize, Measurement.Timestamps,
+                        Measurement.TickCount * MovementMeasurement.TimestampStride, TickCount + 1);
                     pending = Measurement.Record(State, movement, pending);
                 }
                 else
