@@ -279,9 +279,9 @@ namespace Northwatch.Presentation.Diagnostics
                     capturePart++;
                     BeginCapture();
                 }
-                if (scene == 7 ? measurement.TickCount >= 1800 : now - measuredAt >= windowDuration) { Finish(); return; }
+                if (scene == 7 ? measurement.TickCount >= MovementMeasurement.PhysicalTicks : now - measuredAt >= windowDuration) { Finish(); return; }
             }
-            else if (scene == 7 || now - began >= 10)
+            else if (scene == 7 ? measurement.TickCount > 0 : now - began >= 10)
             {
                 driver.Simulation.CompleteFrame();
                 firstTick = measurement.TickCount;
@@ -417,12 +417,12 @@ namespace Northwatch.Presentation.Diagnostics
                 "passes=" + driver.MovementSettings.Snapshot().MoveCheckPasses + "; cpu=" + SystemInfo.processorType + "; gpu=" + SystemInfo.graphicsDeviceName + "\n" +
                 "unfocused_or_wrong_resolution_frames=" + invalidFrames + "; measured_s=" +
                 windowSeconds.ToString("F6", CultureInfo.InvariantCulture) + "\n" +
-                "scoped_gc=" + scopedGc.Valid + "; simulation_alloc_count=" + simulationAllocations +
+                "first_measured_tick=" + firstTick + "; scoped_gc=" + scopedGc.Valid + "; simulation_alloc_count=" + simulationAllocations +
                 "; drawing_alloc_count=" + drawingAllocations + "; scope_capacity_reached=" + scopeCapacityReached + "\n");
             File.AppendAllText(output + "-info.txt", "overlay_calls=" + overlayCalls +
                 "; overlay_total_ms=" + (overlayNanoseconds * .000001).ToString("F6", CultureInfo.InvariantCulture) +
                 "; overlay_expected=" + expectRouteOverlay + "; overlay_key_injected=" + injectOverlayKey + "\n");
-            File.AppendAllText(output + "-info.txt", $"workers={workers}; batch={batchSize}; size_set={sizeSet}; heading_degrees={startHeading.ToString(CultureInfo.InvariantCulture)}; direction_degrees={orderDirection.ToString(CultureInfo.InvariantCulture)}; inner_margin_rule=absent_on_baseline_motor; drawn_samples=0.25,0.5,0.75,1\n");
+            File.AppendAllText(output + "-info.txt", $"workers={workers}; batch={batchSize}; size_set={sizeSet}; heading_degrees={startHeading.ToString(CultureInfo.InvariantCulture)}; direction_degrees={orderDirection.ToString(CultureInfo.InvariantCulture)}; inner_margin_firings={(measurement.InnerMarginFirings < 0 ? "unavailable" : measurement.InnerMarginFirings.ToString(CultureInfo.InvariantCulture))}; drawn_samples=0.25,0.5,0.75,1\n");
             using (var writer = new StreamWriter(output + "-response.csv")) measurement.WriteResponse(writer);
             using (var writer = new StreamWriter(output + "-response-summary.txt")) measurement.WriteResponseSummary(writer);
             if (FixtureScene)
@@ -431,6 +431,11 @@ namespace Northwatch.Presentation.Diagnostics
                 using (var writer = new StreamWriter(output + "-fixture.txt")) measurement.WriteFixtureSummary(writer);
             }
             bool orderPassed = true;
+            if (scene == 7)
+            {
+                using var writer = new StreamWriter(output + "-physical.txt");
+                orderPassed = measurement.WritePhysicalSummary(writer);
+            }
             if (ClickScene)
             {
                 using (var writer = new StreamWriter(output + "-orders.csv")) measurement.WriteOrderState(writer);
@@ -483,8 +488,7 @@ namespace Northwatch.Presentation.Diagnostics
                 bool stopped = true;
                 for (int t = last - 59; t <= last; t++)
                     stopped &= measurement.Metric(t, 9) == 0 && measurement.Metric(t, 18) == 0;
-                measurement.CountPastSandboxWall(out int smallPast, out int largePast);
-                orderPassed &= smallPast > 0 && largePast > 0;
+                orderPassed &= measurement.SandboxWallPassed(out int smallPast, out int largePast);
                 writer.WriteLine("stopped=" + stopped + "; small_past_wall=" + smallPast + "; large_past_wall=" + largePast +
                     "; all_past_wall=" + (smallPast + largePast == unitCount) + "; pass=" + orderPassed);
             }

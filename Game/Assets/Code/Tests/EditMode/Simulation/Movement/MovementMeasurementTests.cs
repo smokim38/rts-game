@@ -69,6 +69,107 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
             Assert.That(measurement.Metric(3, 23), Is.EqualTo(1));
         }
 
+        [TestCase(10)] [TestCase(50)] [TestCase(100)] [TestCase(200)] [TestCase(300)]
+        [TestCase(400)] [TestCase(500)] [TestCase(1000)] [TestCase(2000)]
+        public void PhysicalSceneAcceptsEveryLadderRung(int count)
+        {
+            using var simulation = new UnitSimulation(Settings());
+            simulation.MeasureMovement(7, count);
+            var layout = ScriptableObject.CreateInstance<Northwatch.Presentation.Diagnostics.LadderScenario>();
+            try { layout.QueueUnits(simulation, count); layout.QueueOrders(simulation, count); }
+            finally { Object.DestroyImmediate(layout); }
+            simulation.ScheduleFrame(1); simulation.CompleteFrame();
+            Assert.That(simulation.Count, Is.EqualTo(count));
+            Assert.That(simulation.Measurement.RemainingTicks, Is.EqualTo(MovementMeasurement.PhysicalTicks - 1));
+        }
+
+        [TestCase(0)] [TestCase(4)] [TestCase(5)] [TestCase(6)] [TestCase(8)]
+        public void OnlyThePhysicalSceneClampsScheduledTicks(int scene)
+        {
+            using var state = new UnitState(2);
+            using var measurement = new MovementMeasurement(state, scene, 2);
+            Assert.That(measurement.RemainingTicks, Is.EqualTo(int.MaxValue));
+        }
+
+        [TestCase(0, true, true)]
+        [TestCase(1, false, true)]
+        [TestCase(2, true, false)]
+        public void PhysicalVerdictRequiresCompleteTicksAndSeparatesTickAndDrawnSafety(int fault, bool gate3, bool gate13)
+        {
+            using var ownedState = new UnitState(2); UnitState state = ownedState;
+            using var measurement = new MovementMeasurement(state, 7, 2);
+            using var pipeline = new MovementPipeline(2, Settings(), measurement.Walkable);
+            Place(state, 0, 0); Place(state, 1, new float2(10, 0));
+            using var incomplete = new StringWriter();
+            Assert.That(measurement.WritePhysicalSummary(incomplete), Is.False);
+            StringAssert.Contains("complete=False", incomplete.ToString());
+            for (int tick = 0; tick < MovementMeasurement.PhysicalTicks - 1; tick++) Record(state, pipeline, measurement);
+            if (fault == 1) Place(state, 1, new float2(2 * Footprint.Radius(UnitSize.Small) + .00001f, 0));
+            if (fault == 2)
+            {
+                var unit = state.Movement[0]; unit.Heading = .2f; state.Movement[0] = unit;
+                state.Positions[0] = new float3(math.cos(.2f) * .1f, 0, math.sin(.2f) * .1f);
+            }
+            Record(state, pipeline, measurement);
+            using var writer = new StringWriter();
+            Assert.That(measurement.WritePhysicalSummary(writer), Is.EqualTo(gate3 && gate13));
+            StringAssert.Contains($"gate_3_pass={gate3}; gate_13b_pass={gate13}", writer.ToString());
+            Assert.That(measurement.InnerMarginFirings, Is.EqualTo(pipeline.InnerMarginFirings));
+            StringAssert.Contains("inner_margin_firings=unavailable", writer.ToString());
+        }
+
+        [TestCase(0, 1, 1, true)] [TestCase(0, 1, 0, false)]
+        [TestCase(1, 1, 0, true)] [TestCase(1, 0, 1, false)]
+        [TestCase(2, 0, 1, true)] [TestCase(2, 1, 0, false)]
+        public void WallGateRequiresOnlyTheSizesInItsFixture(int sizeSet, int small, int large, bool passed)
+        {
+            using var ownedState = new UnitState(2); UnitState state = ownedState;
+            using var measurement = new MovementMeasurement(state, 5, 2, sizeSet: sizeSet);
+            Place(state, 0, new float2(small > 0 ? 40 : 0, 0));
+            Place(state, 1, new float2(large > 0 ? 40 : 0, 10)); state.Sizes[1] = UnitSize.Large;
+            Assert.That(measurement.SandboxWallPassed(out int smallPast, out int largePast), Is.EqualTo(passed));
+            Assert.That(smallPast, Is.EqualTo(small)); Assert.That(largePast, Is.EqualTo(large));
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void SightTransitionFlagsRuleFourWhileStillAdvancingOnlyAfterTheDistanceSwitch(bool enterSight)
+        {
+            using var ownedState = new UnitState(2); UnitState state = ownedState;
+            using var measurement = new MovementMeasurement(state, 5, 2);
+            using var maps = new StaticMaps(16, 16);
+            using var pipeline = new MovementPipeline(2, Settings(), measurement.Walkable, maps);
+            FlowFieldPool fields = pipeline.Fields;
+            var unitFields = fields.UnitFields; var goals = fields.Goals;
+            var distances = fields.Distances; var directions = fields.Directions;
+            unitFields[0] = 0; goals[0] = 10;
+            for (int i = 0; i < 256; i++) distances[i] = 10;
+            Place(state, 0, new float2(-127.5f));
+            var unit = state.Movement[0];
+            unit.HasMoveOrder = unit.HasOwnSpot = true; unit.Mode = MovementMode.Moving;
+            unit.OrderVersion = 1; unit.ProgressField = 0; unit.LastProgressTick = 1;
+            unit.BestGoalDistance = 1; unit.Goal = unit.Spot = new float2(-117.5f, -127.5f);
+            state.Movement[0] = unit;
+            state.Positions[0] += new float3(.1f, 0, 0); Record(state, pipeline, measurement);
+            for (int i = 0; i < 256; i++) directions[i] = enterSight ? (byte)8 : (byte)0;
+            unit.Previous.Position = state.Positions[0]; state.Movement[0] = unit;
+            state.Positions[0] += new float3(.1f, 0, 0); Record(state, pipeline, measurement);
+            // The saved field best remains below straight distance even though this unit
+            // keeps advancing. The actual planner's group timeout can therefore end it.
+            using var progress = new NativeParallelHashMap<int, ulong>(2, Allocator.TempJob);
+            new OrderProgressJob { Positions = state.Positions, Alive = state.Alive, Units = state.Movement,
+                LatestProgress = progress, Tick = 181, HasFields = true, UnitFields = fields.UnitFields, Fields = fields.Reader }.Schedule().Complete();
+            new PreferredVelocityJob { Positions = state.Positions, Alive = state.Alive, Sizes = state.Sizes, Units = state.Movement,
+                Planned = pipeline.Planned, Grid = pipeline.Grid, LatestProgress = progress, Settings = pipeline.Settings,
+                Tick = 181, HasFields = true, UnitFields = fields.UnitFields, Fields = fields.Reader }.ScheduleParallel(2, 1, default).Complete();
+            unit = pipeline.Planned[0];
+            Assert.That(unit.ArrivalRule, Is.EqualTo(4));
+            Assert.That(math.distance(unit.Spot, state.Positions[0].xz), Is.GreaterThan(unit.BestGoalDistance));
+            unit.Previous.Position = state.Positions[0]; state.Movement[0] = unit;
+            Record(state, pipeline, measurement);
+            using var writer = new StringWriter(); measurement.WriteFixtureSummary(writer);
+            StringAssert.Contains($"rule4_while_moving_after_sight_switch_candidates={(enterSight ? 1 : 0)}", writer.ToString());
+        }
+
         [TestCase(5, 2)] [TestCase(9, 2)] [TestCase(10, 2)]
         [TestCase(6, 1)] [TestCase(8, 1)]
         public void FixtureDeliveryRetainsThe220ParkedShortAndRingDefinitions(int scene, int expected)
@@ -81,6 +182,8 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
             Record(state, pipeline, measurement);
             using var writer = new StringWriter(); measurement.WriteFixtureSummary(writer);
             StringAssert.Contains($"today,{expected},0,", writer.ToString());
+            StringAssert.Contains("delivered_definition=" + (scene == 6 ? "arrival_rule_1_2_or_3" :
+                scene == 8 ? "past_wall" : "past_wall_or_arrival_rule_1_2_or_3"), writer.ToString());
             if (scene == 5 || scene == 9 || scene == 10) StringAssert.Contains("220_R+F,110,0,", writer.ToString());
             StringAssert.Contains("worse_than_220_R+F=", writer.ToString());
         }
@@ -171,13 +274,13 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
         // Run on the clean source commit for ADR 0019 row 14; these are reports,
         // not pass/fail interpretations of S2.1. Normal tests exercise the recorder above.
         [TestCase(0)] [TestCase(30)] [TestCase(45)] [TestCase(90)] [TestCase(135)] [TestCase(180)]
-        [Explicit("ADR 0019 row 14 baseline: run after the Producer commits the measurement sources.")]
+        [Explicit("ADR 0019 row 14 baseline report: select explicitly on the committed baseline revision.")]
         public void ResponseFactsForTwoThousandVehicles(float degrees)
             => ResponseFacts(degrees, 2000, "Logs/259-response");
 
         [TestCase(0)] [TestCase(30)] [TestCase(45)] [TestCase(90)] [TestCase(135)] [TestCase(180)]
         public void ResponseHarnessExercisesEveryDirectionWithASmallBlock(float degrees)
-            => ResponseFacts(degrees, 16, "Logs/259-response-harness-check");
+            => ResponseFacts(degrees, 16, null);
 
         private static void ResponseFacts(float degrees, int count, string directory)
         {
@@ -190,12 +293,16 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
             var goal = simulation.SelectedCentre + new Vector3(math.cos(math.radians(degrees)), 0, math.sin(math.radians(degrees))) * 30;
             Assert.That(simulation.QueueSideMove(Side.First, goal, simulation.TickCount + 1), Is.True);
             int observed = ObserveResponse(simulation, count);
-            Directory.CreateDirectory(directory);
-            string prefix = directory + "/direction-" + degrees;
-            using (var writer = new StreamWriter(prefix + "-units.csv")) simulation.Measurement.WriteResponse(writer);
             using var summary = new StringWriter(); simulation.Measurement.WriteResponseSummary(summary);
             summary.WriteLine($"observation_ticks={observed}; limit_ticks=1800; report_only=True; units={count}; distance=30; pitch=0.71; slotSpacing=1.42");
-            File.WriteAllText(prefix + "-summary.txt", summary.ToString()); TestContext.WriteLine(summary.ToString());
+            if (directory != null)
+            {
+                Directory.CreateDirectory(directory);
+                string prefix = directory + "/direction-" + degrees;
+                using (var writer = new StreamWriter(prefix + "-units.csv")) simulation.Measurement.WriteResponse(writer);
+                File.WriteAllText(prefix + "-summary.txt", summary.ToString());
+            }
+            TestContext.WriteLine(summary.ToString());
         }
 
         private static int ObserveResponse(UnitSimulation simulation, int count)
@@ -212,7 +319,7 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
         }
 
         [Test]
-        [Explicit("ADR 0019 row 14 compressed column baseline: run after the Producer commits the measurement sources.")]
+        [Explicit("ADR 0019 row 14 compressed column baseline report: select explicitly on the committed baseline revision.")]
         public void ResponseFactsForACompressedFortyFiveRankColumn()
         {
             using var simulation = new UnitSimulation(Settings());

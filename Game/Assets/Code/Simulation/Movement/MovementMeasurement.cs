@@ -18,6 +18,7 @@ namespace Northwatch.Simulation.Movement
         public const int MetricCount = 26;
         public const int FloatMetricCount = 7;
         public const float ClearanceFloor = .000025f;
+        public const int PhysicalTicks = 1800;
         public const int TimestampStride = 8;
         private const int JamCandidateFlag = 1, FixtureResponseFlag = 2;
         internal NativeArray<byte> Walkable;
@@ -43,8 +44,9 @@ namespace Northwatch.Simulation.Movement
         private readonly float startHeading;
         private readonly int sizeSet;
         public int BatchSize { get; }
-        internal int RemainingTicks => (scene == 7 ? 1800 : SampleCapacity) - TickCount;
+        internal int RemainingTicks => scene == 7 ? PhysicalTicks - TickCount : int.MaxValue;
         public int TickCount { get; private set; }
+        public int InnerMarginFirings { get; private set; } = -1;
 
         internal MovementMeasurement(UnitState state, int scene, int count, float startHeading = 0, int batchSize = 64, int sizeSet = 0)
         {
@@ -91,6 +93,7 @@ namespace Northwatch.Simulation.Movement
 
         internal JobHandle Record(UnitState state, MovementPipeline pipeline, JobHandle dependency)
         {
+            InnerMarginFirings = pipeline.InnerMarginFirings;
             // Validation follows the final chain timestamp, so it is outside stage timings.
             if (pipeline.Fields != null)
                 dependency = new SightTransitionJob { State = state, Fields = pipeline.Fields.Reader,
@@ -117,6 +120,30 @@ namespace Northwatch.Simulation.Movement
         public float SafetyValue(int tick, int metric) => floatSamples[tick * FloatMetricCount + metric];
         public ulong StateHash(int tick) => hashes[tick];
         public int3 FirstResponse(int unit) => firstResponse[unit].xyz;
+
+        public bool WritePhysicalSummary(TextWriter writer)
+        {
+            float slide = 0, lateral = 0, drawnSlide = 0;
+            float clearance = float.PositiveInfinity, drawnClearance = float.PositiveInfinity;
+            long overlaps = 0, staticErrors = 0, underFloor = 0, drawnOverlaps = 0, insideDiscs = 0;
+            for (int t = 0; t < TickCount; t++)
+            {
+                slide = math.max(slide, SafetyValue(t, 5)); lateral = math.max(lateral, SafetyValue(t, 6));
+                drawnSlide = math.max(drawnSlide, SafetyValue(t, 4));
+                clearance = math.min(clearance, SafetyValue(t, 0)); drawnClearance = math.min(drawnClearance, SafetyValue(t, 1));
+                overlaps += Metric(t, 6); staticErrors += Metric(t, 7); underFloor += Metric(t, 19);
+                drawnOverlaps += Metric(t, 20); insideDiscs += Metric(t, 21);
+            }
+            bool complete = TickCount == PhysicalTicks;
+            bool gate3 = complete && slide <= 1 && lateral <= .01f && overlaps == 0 && staticErrors == 0 && underFloor == 0;
+            bool gate13 = complete && drawnSlide <= 1 && drawnOverlaps == 0 && insideDiscs == 0;
+            writer.WriteLine($"ticks={TickCount}; expected_ticks={PhysicalTicks}; complete={complete}");
+            writer.WriteLine(FormattableString.Invariant($"slide_degrees={slide:R}; short_lateral_max={lateral:R}; footprint_overlaps={overlaps}; static_errors={staticErrors}; pairs_under_clearance_floor={underFloor}; lowest_clearance={clearance:R}"));
+            writer.WriteLine(FormattableString.Invariant($"drawn_slide_degrees={drawnSlide:R}; drawn_footprint_overlaps={drawnOverlaps}; drawn_pairs_inside_discs={insideDiscs}; lowest_drawn_clearance={drawnClearance:R}"));
+            writer.WriteLine("inner_margin_firings=" + (InnerMarginFirings < 0 ? "unavailable" : InnerMarginFirings.ToString(CultureInfo.InvariantCulture)));
+            writer.WriteLine($"gate_3_pass={gate3}; gate_13b_pass={gate13}; pass={gate3 && gate13}");
+            return gate3 && gate13;
+        }
 
         // #220 measures distance to the whole heading arc (including its reverse arc).
         // Long steps contribute angles; sub-.01 steps contribute unsigned lateral distance.
@@ -213,6 +240,8 @@ namespace Northwatch.Simulation.Movement
             }
             writer.WriteLine("source,delivered,group_stalls,pose_after_third_or_never,last_first_forward_tick,never_forward,still6_after_forward,jam_chain,longest_still_after_forward");
             writer.WriteLine($"today,{delivered},{stalls},{late},{lastForward},{neverForward},{still6},{jams},{longest}");
+            writer.WriteLine("delivered_definition=" + (scene == 6 ? "arrival_rule_1_2_or_3" :
+                scene == 8 ? "past_wall" : "past_wall_or_arrival_rule_1_2_or_3"));
             // Retained #220 step2, variant 10 with front_first=True (R+F). Its S2.3
             // ran both 1.25 and 1.3; report both rather than choose the easier column.
             string[] reference = sizeSet == 0 ? new[] { "56,54,0,45,0,54,54,1455", "100,0,0,58,0,0,0,73", "60,0,0,32,0,0,0,41", "56,54,0,138,0,54,54,1390", "55,55,0,106,0,55,55,1482" } :
@@ -249,6 +278,12 @@ namespace Northwatch.Simulation.Movement
             for (int i = 0; i < state.Alive.Length; i++)
                 if (state.Alive[i] != 0)
                     writer.WriteLine($"{i},{orderVersions[i]},{firstResponse[i].x},{firstResponse[i].y},{firstResponse[i].z},{firstResponse[i].w == 1}");
+        }
+
+        public bool SandboxWallPassed(out int small, out int large)
+        {
+            CountPastSandboxWall(out small, out large);
+            return (sizeSet == 2 || small > 0) && (sizeSet == 1 || large > 0);
         }
 
         public void CountPastSandboxWall(out int small, out int large)
