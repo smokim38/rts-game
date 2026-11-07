@@ -19,6 +19,7 @@ namespace Northwatch.Simulation.Movement
         public const int FloatMetricCount = 7;
         public const float ClearanceFloor = .000025f;
         public const int TimestampStride = 8;
+        private const int JamCandidateFlag = 1, FixtureResponseFlag = 2;
         internal NativeArray<byte> Walkable;
         internal NativeArray<long> Timestamps;
         private NativeArray<int> samples, stillTicks;
@@ -154,16 +155,36 @@ namespace Northwatch.Simulation.Movement
         private static string ResponseQuantile(int[] values, int observed, int index)
             => index < observed ? values[index].ToString(CultureInfo.InvariantCulture) : "never";
 
+        public static void WriteDrawnResponseSummary(TextWriter writer, double[] times)
+        {
+            var values = (double[])times.Clone(); int never = 0;
+            for (int i = 0; i < values.Length; i++)
+                if (values[i] < 0) { values[i] = double.PositiveInfinity; never++; }
+            Array.Sort(values);
+            string Quantile(int index) => values.Length == 0 || double.IsPositiveInfinity(values[index])
+                ? "never" : values[index].ToString("R", CultureInfo.InvariantCulture);
+            writer.WriteLine($"release_to_first_drawn_pose_seconds,{Quantile(0)},{Quantile(Math.Max(0, (values.Length - 1) / 2))},{Quantile(Math.Max(0, values.Length - 1))},{never}");
+            writer.WriteLine("drawn_response_report_only=True; S2.1=unresolved; never_sorts_after_observed=True");
+        }
+
+        private bool Delivered(int i)
+        {
+            MovementUnit unit = state.Movement[i];
+            bool arrived = unit.ArrivalRule >= 1 && unit.ArrivalRule <= 3;
+            if (scene == 6) return arrived;
+            bool past = state.Positions[i].x > 21 + Footprint.Radius(state.Sizes[i]);
+            return past || arrived && (scene == 5 || scene == 9 || scene == 10);
+        }
+
         public void WriteFixtureUnits(TextWriter writer)
         {
-            writer.WriteLine("unit,short_step_lateral_total,first_forward_tick,delivered,group_stall,max_still_after_forward,still6_after_forward,jam_chain_candidate,blocker");
+            writer.WriteLine("unit,short_step_lateral_total,first_forward_tick,delivered,group_stall,max_still_after_forward,still6_after_forward,jam_chain_candidate,blocker,220_pose_changed_by_third_tick");
             for (int i = 0; i < state.Alive.Length; i++)
             {
                 if (state.Alive[i] == 0) continue;
                 int4 facts = fixtureFacts[i]; MovementUnit unit = state.Movement[i];
-                bool delivered = scene == 6 ? unit.ArrivalRule >= 1 && unit.ArrivalRule <= 3 :
-                    state.Positions[i].x > 21 + Footprint.Radius(state.Sizes[i]);
-                writer.WriteLine(FormattableString.Invariant($"{i},{shortLateral[i]:R},{facts.x},{delivered},{unit.ArrivalRule == 4},{facts.z},{facts.z > 180},{(facts.w & 1) != 0},{blockers[i]}"));
+                bool delivered = Delivered(i);
+                writer.WriteLine(FormattableString.Invariant($"{i},{shortLateral[i]:R},{facts.x},{delivered},{unit.ArrivalRule == 4},{facts.z},{facts.z > 180},{(facts.w & JamCandidateFlag) != 0},{blockers[i]},{(facts.w & FixtureResponseFlag) != 0}"));
             }
         }
 
@@ -174,12 +195,12 @@ namespace Northwatch.Simulation.Movement
             {
                 if (state.Alive[i] == 0) continue;
                 MovementUnit unit = state.Movement[i]; int4 facts = fixtureFacts[i];
-                if (scene == 6 ? unit.ArrivalRule >= 1 && unit.ArrivalRule <= 3 : state.Positions[i].x > 21 + Footprint.Radius(state.Sizes[i])) delivered++;
+                if (Delivered(i)) delivered++;
                 if (unit.ArrivalRule == 4) stalls++;
-                if (firstResponse[i].x == 0 || firstResponse[i].x > 3) late++;
+                if ((facts.w & FixtureResponseFlag) == 0) late++;
                 if (facts.x == 0) neverForward++; else lastForward = math.max(lastForward, facts.x);
                 if (facts.z > 180) still6++;
-                if ((facts.w & 1) != 0) jams++;
+                if ((facts.w & JamCandidateFlag) != 0) jams++;
                 longest = math.max(longest, facts.z);
             }
             float slide = 0, lateral = 0, smallGraze = 0, largeGraze = 0;
@@ -196,11 +217,29 @@ namespace Northwatch.Simulation.Movement
             // ran both 1.25 and 1.3; report both rather than choose the easier column.
             string[] reference = sizeSet == 0 ? new[] { "56,54,0,45,0,54,54,1455", "100,0,0,58,0,0,0,73", "60,0,0,32,0,0,0,41", "56,54,0,138,0,54,54,1390", "55,55,0,106,0,55,55,1482" } :
                 sizeSet == 1 ? new[] { "110,0,0,45,0,0,0,158", "100,0,0,58,0,0,0,73", "60,0,0,37,0,0,0,35", "110,0,0,138,0,0,0,161", "58,52,0,106,0,52,52,1561" } :
-                new[] { "63,0,0,49,0,0,0,158", "64,36,0,45,0,36,36,245", "60,0,0,27,0,0,0,45", "63,0,0,156,0,26,0,184", "63,0,0,118,0,31,0,218" };
+                new[] { "110,0,0,49,0,0,0,158", "64,36,0,45,0,36,36,245", "60,0,0,27,0,0,0,45", "110,0,0,156,0,26,0,184", "110,0,0,118,0,31,0,218" };
             int row = scene == 5 ? 0 : scene == 6 ? 1 : scene == 8 ? 2 : scene == 9 ? 3 : 4;
             writer.WriteLine("220_R+F," + reference[row]);
             if (scene == 8) writer.WriteLine("220_R+F_spacing1.3," + (sizeSet == 0 ? "60,0,0,15,0,0,0,42" : sizeSet == 1 ? "58,2,0,1,0,2,2,1205" : "6,54,0,1,0,54,54,851"));
             writer.WriteLine(FormattableString.Invariant($"slide_degrees={slide:R}; short_lateral_max={lateral:R}; footprint_overlaps={overlaps}; static_errors={staticErrors}; reverse_ticks={reverse}; small_drawn_graze={smallGraze:R}; large_drawn_graze={largeGraze:R}"));
+            writer.WriteLine($"S={slide <= 1 && lateral <= .01f}; O={overlaps == 0 && staticErrors == 0}; V={reverse == 0}; drawn_graze={smallGraze <= .0064f && largeGraze <= .0013f}; R={late == 0}; D={neverForward == 0 && lastForward <= (scene == 9 || scene == 10 ? 240 : 90)}; C={delivered == state.Summary[0]}; G={stalls == 0}; J_candidate={jams == 0}");
+            string[] comparison = reference[row].Split(',');
+            int[] today = { delivered, stalls, late, lastForward, neverForward, still6, jams, longest };
+            writer.Write("worse_than_220_R+F=");
+            bool worse = false;
+            string[] names = { "delivered", "group_stalls", "pose_after_third_or_never", "last_first_forward_tick", "never_forward", "still6_after_forward", "jam_chain_candidate", "longest_still_after_forward" };
+            for (int i = 0; i < today.Length; i++)
+            {
+                int baseline = int.Parse(comparison[i], CultureInfo.InvariantCulture);
+                if (i == 0 ? today[i] >= baseline : today[i] <= baseline) continue;
+                if (worse) writer.Write(',');
+                writer.Write(names[i]); worse = true;
+            }
+            writer.WriteLine(worse ? "; flow_comparison_report_only=True" : "none; flow_comparison_report_only=True");
+            int sightSwitchStalls = 0;
+            for (int i = 0; i < state.Alive.Length; i++)
+                if (state.Alive[i] != 0 && sightTransitions[i].w != 0) sightSwitchStalls++;
+            writer.WriteLine($"rule4_while_moving_after_sight_switch_candidates={sightSwitchStalls}; details=orders.csv");
             writer.WriteLine("jam_chain_today=reconstructed_final_proposal_candidate; 220=instrumented_first_failed_forward_candidate; flow_lines=report_only; scene5_historical_delivered=26/110; scene6_historical_delivered=15/100");
         }
 
@@ -226,7 +265,7 @@ namespace Northwatch.Simulation.Movement
         public void WriteOrderState(TextWriter writer)
         {
             // Called only after the driver's final completion, outside the measured window.
-            writer.WriteLine("unit,x,z,heading,goal_x,goal_z,velocity_x,velocity_z,has_order,arrival_rule,best_distance,last_progress_tick,size,last_sight_entry_tick,straight_minus_best_at_sight_entry,rule4_tick,rule4_while_moving_after_sight_switch");
+            writer.WriteLine("unit,x,z,heading,goal_x,goal_z,velocity_x,velocity_z,has_order,arrival_rule,best_distance,last_progress_tick,size,last_sight_entry_tick,straight_minus_best_at_sight_entry,rule4_tick,rule4_while_moving_after_sight_switch_candidate");
             for (int i = 0; i < state.Alive.Length; i++)
             {
                 if (state.Alive[i] == 0) continue;
@@ -263,12 +302,14 @@ namespace Northwatch.Simulation.Movement
                 MovementUnit unit = State.Movement[i];
                 int2 old = SightState[i]; float4 facts = Facts[i];
                 if (old.y != unit.OrderVersion) { old = new int2(0, unit.OrderVersion); facts = 0; }
-                bool inSight = Fields.Sample(UnitFields[i], State.Positions[i].xz, out var sample) == FlowSampleStatus.Ready && sample.InSight;
+                // PreferredVelocity samples the start pose. Sampling the committed endpoint
+                // instead would attribute a sight switch one tick before the planner sees it.
+                bool inSight = Fields.Sample(UnitFields[i], unit.Previous.Position.xz, out var sample) == FlowSampleStatus.Ready && sample.InSight;
                 float2 target = unit.HasOwnSpot ? unit.Spot : unit.Goal;
-                if (inSight && (old.x & 1) == 0 && unit.HasMoveOrder)
+                if (inSight && (old.x & 1) == 0 && (unit.HasMoveOrder || unit.ArrivalRule == 4))
                 {
                     facts.x = Tick;
-                    facts.y = math.distance(target, State.Positions[i].xz) - unit.BestGoalDistance;
+                    facts.y = math.distance(target, unit.Previous.Position.xz) - unit.BestGoalDistance;
                 }
                 if (unit.ArrivalRule == 4 && facts.z == 0)
                 {
@@ -489,6 +530,11 @@ namespace Northwatch.Simulation.Movement
                     if (State.Alive[i] == 0) continue;
                     alive++;
                     MovementUnit unit = State.Movement[i];
+                    if (unit.OrderVersion != OrderVersions[i])
+                    {
+                        OrderVersions[i] = unit.OrderVersion; OrderAges[i] = 0; FirstResponse[i] = 0;
+                        FixtureFacts[i] = 0;
+                    }
                     float2 displacement = State.Positions[i].xz - unit.Previous.Position.xz;
                     float length = math.length(displacement);
                     float angle = SlidingAngle(displacement, unit.Previous.Heading, unit.Heading);
@@ -501,6 +547,10 @@ namespace Northwatch.Simulation.Movement
                     if (reversing) reverse++;
                     if (math.lengthsq(displacement) >= 1e-12f) LastMoved[i] = Tick + 1;
                     int4 fixture = FixtureFacts[i];
+                    // Row 14 counts any bitwise pose change; #220's fixture response
+                    // uses its measured-drive / wrapped-turn tolerances instead.
+                    if (unit.OrderVersion != 0 && OrderAges[i] < 3 &&
+                        (moved || math.abs(Wrap(unit.Heading - unit.Previous.Heading)) > 1e-5f)) fixture.w |= FixtureResponseFlag;
                     if (fixture.x == 0 && moved && !reversing && unit.OrderVersion != 0) fixture.x = OrderAges[i] + 1;
                     fixture.y = fixture.x > 0 && unit.HasMoveOrder && math.lengthsq(displacement) < 1e-12f ? fixture.y + 1 : 0;
                     fixture.z = math.max(fixture.z, fixture.y); FixtureFacts[i] = fixture;
@@ -511,10 +561,6 @@ namespace Northwatch.Simulation.Movement
                     drawnMinimum = math.min(drawnMinimum, DrawnSafety[i].x);
                     drawnMaxima = math.max(drawnMaxima, DrawnSafety[i].yzw);
                     drawnErrors += DrawnViolations[i];
-                    if (unit.OrderVersion != OrderVersions[i])
-                    {
-                        OrderVersions[i] = unit.OrderVersion; OrderAges[i] = 0; FirstResponse[i] = 0;
-                    }
                     if (unit.OrderVersion != 0)
                     {
                         int age = OrderAges[i] + 1; OrderAges[i] = age;
@@ -580,7 +626,7 @@ namespace Northwatch.Simulation.Movement
                     for (int n = 0; n < State.Alive.Length && next >= 0; n++)
                     { latest = math.max(latest, LastMoved[next]); next = Blockers[next]; }
                     int4 facts = FixtureFacts[i];
-                    if (facts.x > 0 && facts.y > 180 && Tick + 1 - latest > 180) facts.w |= 1;
+                    if (facts.x > 0 && facts.y > 180 && Tick + 1 - latest > 180) facts.w |= JamCandidateFlag;
                     FixtureFacts[i] = facts;
                 }
                 Hashes[Tick] = hash.Value;

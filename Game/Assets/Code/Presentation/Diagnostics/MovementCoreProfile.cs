@@ -131,7 +131,7 @@ namespace Northwatch.Presentation.Diagnostics
                 throw new ArgumentException("Use -movement-fps -1|60 (default -1).");
             if (!Debug.isDebugBuild || index < 0 || index + 1 >= args.Length || sceneIndex < 0 || sceneIndex + 1 >= args.Length ||
                 countIndex < 0 || countIndex + 1 >= args.Length)
-                throw new ArgumentException("Use a development Player with -movement-output PATH -movement-scene 0..7 -movement-units N.");
+                throw new ArgumentException("Use a development Player with -movement-output PATH -movement-scene 0..10 -movement-units N.");
             string project = Path.GetFullPath(Path.Combine(Application.dataPath, "../../.."));
             output = Path.GetFullPath(args[index + 1]);
             if (!output.StartsWith(Path.Combine(project, "Logs") + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
@@ -155,7 +155,7 @@ namespace Northwatch.Presentation.Diagnostics
             batchSize = IntegerOption(args, "-movement-batch", 64);
             string workerOption = Option(args, "-movement-workers", "all");
             workers = workerOption == "all" ? JobsUtility.JobWorkerMaximumCount : int.Parse(workerOption, CultureInfo.InvariantCulture);
-            if (workers < 1 || workers > JobsUtility.JobWorkerMaximumCount || batchSize < 1)
+            if ((workerOption != "1" && workerOption != "all") || workers < 1 || workers > JobsUtility.JobWorkerMaximumCount || (batchSize != 1 && batchSize != 64))
                 throw new ArgumentException("Use -movement-workers 1|all and -movement-batch 1|64.");
             JobsUtility.JobWorkerCount = workers;
             string sizes = Option(args, "-movement-size", "mixed");
@@ -470,10 +470,8 @@ namespace Northwatch.Presentation.Diagnostics
                 responseWriter.WriteLine("unit,release_to_first_drawn_pose_seconds,initial_x,initial_z,initial_heading_radians,first_drawn_x,first_drawn_z,first_drawn_heading_radians");
                 for (int i = 0; i < unitCount; i++) responseWriter.WriteLine(FormattableString.Invariant(
                     $"{i},{vehicleDrawTimes[i]:R},{initialDraw[i].x:R},{initialDraw[i].y:R},{Math.Atan2(initialDraw[i].w, initialDraw[i].z):R},{firstChangedDraw[i].x:R},{firstChangedDraw[i].y:R},{firstChangedDraw[i].z:R}"));
-                var times = (double[])vehicleDrawTimes.Clone(); Array.Sort(times);
-                int never = Array.FindLastIndex(times, value => value < 0) + 1;
-                File.AppendAllText(output + "-response-summary.txt", FormattableString.Invariant(
-                    $"release_to_first_drawn_pose_seconds,lowest={(never == unitCount ? -1 : times[never]):R},median={(never == unitCount ? -1 : times[never + (unitCount - never - 1) / 2]):R},highest={times[unitCount - 1]:R},never={never}; report_only=True\n"));
+                using var summaryWriter = new StreamWriter(output + "-response-summary.txt", append: true);
+                MovementMeasurement.WriteDrawnResponseSummary(summaryWriter, vehicleDrawTimes);
             }
             if (scene == 5)
             {

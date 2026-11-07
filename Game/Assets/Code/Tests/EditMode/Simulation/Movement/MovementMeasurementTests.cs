@@ -69,6 +69,58 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
             Assert.That(measurement.Metric(3, 23), Is.EqualTo(1));
         }
 
+        [TestCase(5, 2)] [TestCase(9, 2)] [TestCase(10, 2)]
+        [TestCase(6, 1)] [TestCase(8, 1)]
+        public void FixtureDeliveryRetainsThe220ParkedShortAndRingDefinitions(int scene, int expected)
+        {
+            using var ownedState = new UnitState(2); UnitState state = ownedState;
+            using var measurement = new MovementMeasurement(state, scene, 2, sizeSet: 2);
+            using var pipeline = new MovementPipeline(2, Settings(), measurement.Walkable);
+            Place(state, 0, 0); Place(state, 1, new float2(40, 0)); state.Summary[0] = 2;
+            var unit = state.Movement[0]; unit.ArrivalRule = 1; state.Movement[0] = unit;
+            Record(state, pipeline, measurement);
+            using var writer = new StringWriter(); measurement.WriteFixtureSummary(writer);
+            StringAssert.Contains($"today,{expected},0,", writer.ToString());
+            if (scene == 5 || scene == 9 || scene == 10) StringAssert.Contains("220_R+F,110,0,", writer.ToString());
+            StringAssert.Contains("worse_than_220_R+F=", writer.ToString());
+        }
+
+        [Test]
+        public void DrawnResponseQuantilesKeepUnobservedVehiclesInThePopulation()
+        {
+            double[] times = { -1, .05, -1, .1, -1 };
+            using var writer = new StringWriter(); MovementMeasurement.WriteDrawnResponseSummary(writer, times);
+            StringAssert.Contains("release_to_first_drawn_pose_seconds,0.05,never,never,3", writer.ToString());
+            Assert.That(times, Is.EqualTo(new[] { -1, .05, -1, .1, -1 }));
+            using var empty = new StringWriter(); MovementMeasurement.WriteDrawnResponseSummary(empty, Array.Empty<double>());
+            StringAssert.Contains("release_to_first_drawn_pose_seconds,never,never,never,0", empty.ToString());
+        }
+
+        [Test]
+        public void FixtureResponseUses220TolerancesWhileRow14RecordsAnyPoseChange()
+        {
+            using var ownedState = new UnitState(2); UnitState state = ownedState;
+            using var measurement = new MovementMeasurement(state, 5, 2);
+            using var pipeline = new MovementPipeline(2, Settings(), measurement.Walkable);
+            Place(state, 0, 0); Place(state, 1, new float2(10, 0));
+            for (int tick = 0; tick < 3; tick++)
+            {
+                for (int i = 0; i < 2; i++)
+                {
+                    var unit = state.Movement[i]; unit.OrderVersion = 1;
+                    unit.Previous = new MovementPose { Position = state.Positions[i], Heading = unit.Heading };
+                    if (i == 1) unit.Heading = .1f;
+                    state.Movement[i] = unit;
+                }
+                state.Positions[0] += new float3(0, 0, .000001f);
+                Record(state, pipeline, measurement);
+            }
+            Assert.That(measurement.FirstResponse(0).x, Is.EqualTo(1));
+            Assert.That(measurement.FirstResponse(1).x, Is.EqualTo(1));
+            using var writer = new StringWriter(); measurement.WriteFixtureSummary(writer);
+            StringAssert.Contains("today,0,0,1,", writer.ToString(), "Only the turn crosses #220's response tolerance.");
+        }
+
         internal static StaticBox[] SandboxBoxes() => new[]
         {
             new StaticBox { Min = new int2(148, 88), MaxExclusive = new int2(149, 168) },
@@ -121,20 +173,42 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
         [TestCase(0)] [TestCase(30)] [TestCase(45)] [TestCase(90)] [TestCase(135)] [TestCase(180)]
         [Explicit("ADR 0019 row 14 baseline: run after the Producer commits the measurement sources.")]
         public void ResponseFactsForTwoThousandVehicles(float degrees)
+            => ResponseFacts(degrees, 2000, "Logs/259-response");
+
+        [TestCase(0)] [TestCase(30)] [TestCase(45)] [TestCase(90)] [TestCase(135)] [TestCase(180)]
+        public void ResponseHarnessExercisesEveryDirectionWithASmallBlock(float degrees)
+            => ResponseFacts(degrees, 16, "Logs/259-response-harness-check");
+
+        private static void ResponseFacts(float degrees, int count, string directory)
         {
             using var simulation = new UnitSimulation(Settings());
-            simulation.MeasureMovement(4, 2000, 1);
+            simulation.MeasureMovement(4, count, 1);
             simulation.ScheduleFrame(1); simulation.CompleteFrame();
             Assert.That(simulation.QueueSelection(SelectionRequest.Box(new Matrix4x4 { m00 = .001f, m12 = .001f, m33 = 1 }, new Rect(0, 0, 1, 1))), Is.True);
             simulation.ScheduleFrame(0); simulation.CompleteFrame();
+            Assert.That(simulation.SelectedCount, Is.EqualTo(count));
             var goal = simulation.SelectedCentre + new Vector3(math.cos(math.radians(degrees)), 0, math.sin(math.radians(degrees))) * 30;
             Assert.That(simulation.QueueSideMove(Side.First, goal, simulation.TickCount + 1), Is.True);
-            for (int tick = 0; tick < 180; tick++) { simulation.ScheduleFrame(1); simulation.CompleteFrame(); }
-            Directory.CreateDirectory("Logs/259-response");
-            string prefix = "Logs/259-response/direction-" + degrees;
+            int observed = ObserveResponse(simulation, count);
+            Directory.CreateDirectory(directory);
+            string prefix = directory + "/direction-" + degrees;
             using (var writer = new StreamWriter(prefix + "-units.csv")) simulation.Measurement.WriteResponse(writer);
             using var summary = new StringWriter(); simulation.Measurement.WriteResponseSummary(summary);
+            summary.WriteLine($"observation_ticks={observed}; limit_ticks=1800; report_only=True; units={count}; distance=30; pitch=0.71; slotSpacing=1.42");
             File.WriteAllText(prefix + "-summary.txt", summary.ToString()); TestContext.WriteLine(summary.ToString());
+        }
+
+        private static int ObserveResponse(UnitSimulation simulation, int count)
+        {
+            for (int tick = 1; tick <= 1800; tick++)
+            {
+                simulation.ScheduleFrame(1); simulation.CompleteFrame();
+                bool allHalfSpeed = tick >= 3;
+                for (int i = 0; i < count; i++)
+                    if (simulation.State.Alive[i] != 0 && simulation.Measurement.FirstResponse(i).z == 0) allHalfSpeed = false;
+                if (allHalfSpeed) return tick;
+            }
+            return 1800;
         }
 
         [Test]
@@ -153,29 +227,36 @@ namespace Northwatch.Tests.EditMode.Simulation.Movement
                     Mode = i == 0 ? MovementMode.Hold : MovementMode.Idle,
                     Previous = new MovementPose { Position = position } };
             }
-            int compressionTicks = 0; bool compressed = false; float maxGap = 0;
+            int compressionTicks = 0; bool compressed = false; float minGap = 0, maxGap = 0;
             for (; compressionTicks < 1800; compressionTicks++)
             {
                 if (compressionTicks % 150 == 0) Assert.That(simulation.QueueSideMove(Side.First, new Vector3(30, 0, 0), simulation.TickCount + 1), Is.True);
                 simulation.ScheduleFrame(1); simulation.CompleteFrame();
-                maxGap = float.NegativeInfinity; bool stopped = true;
+                minGap = float.PositiveInfinity; maxGap = float.NegativeInfinity; bool stopped = true;
                 for (int i = 1; i < 46; i++)
                 {
-                    maxGap = math.max(maxGap, math.distance(simulation.State.Positions[i], simulation.State.Positions[i - 1]) - 2 * Footprint.Radius(UnitSize.Small));
-                    stopped &= math.all(simulation.State.Positions[i] == simulation.State.Movement[i].Previous.Position);
+                    float gap = math.distance(simulation.State.Positions[i], simulation.State.Positions[i - 1]) - 2 * Footprint.Radius(UnitSize.Small);
+                    minGap = math.min(minGap, gap); maxGap = math.max(maxGap, gap);
+                    MovementUnit unit = simulation.State.Movement[i];
+                    stopped &= math.all(simulation.State.Positions[i] == unit.Previous.Position) && unit.Heading == unit.Previous.Heading;
                 }
                 if (stopped && maxGap < .001f) { compressed = true; break; }
             }
             Directory.CreateDirectory("Logs/259-response");
             using var writer = new StreamWriter("Logs/259-response/column.csv");
-            writer.WriteLine(FormattableString.Invariant($"compressed={compressed}; compression_ticks={compressionTicks}; max_disc_gap={maxGap:R}; report_only=True"));
+            writer.WriteLine(FormattableString.Invariant($"compressed={compressed}; compression_ticks={compressionTicks + (compressed ? 1 : 0)}; min_disc_gap={minGap:R}; max_disc_gap={maxGap:R}; inside_bare_discs={minGap < 0}; report_only=True; protocol=remove_held_vehicle_then_order_45_followers"));
             if (compressed)
             {
                 Assert.That(simulation.QueueRemove(new UnitHandle(0, simulation.State.Generations[0])), Is.True);
                 Assert.That(simulation.QueueSideMove(Side.First, new Vector3(30, 0, 0), simulation.TickCount + 1), Is.True);
-                for (int tick = 0; tick < 180; tick++) { simulation.ScheduleFrame(1); simulation.CompleteFrame(); }
-                writer.WriteLine("rank,first_nonzero_step_tick");
-                for (int i = 1; i < 46; i++) writer.WriteLine($"{i},{simulation.Measurement.FirstResponse(i).y}");
+                int observed = ObserveResponse(simulation, 46);
+                writer.WriteLine($"observation_ticks={observed}; limit_ticks=1800");
+            }
+            writer.WriteLine("rank,first_nonzero_step_tick");
+            for (int i = 1; i < 46; i++)
+            {
+                int firstStep = simulation.Measurement.FirstResponse(i).y;
+                writer.WriteLine($"{i},{(!compressed ? "not_run" : firstStep == 0 ? "never" : firstStep.ToString(System.Globalization.CultureInfo.InvariantCulture))}");
             }
             writer.Flush(); TestContext.WriteLine($"compressed={compressed}; compression_ticks={compressionTicks}; rank output: Logs/259-response/column.csv; report_only=True");
         }
